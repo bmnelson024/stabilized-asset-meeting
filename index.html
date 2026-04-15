@@ -287,6 +287,7 @@
 
       <!-- UPLOAD TAB -->
       <div class="tab-content active" id="tab-upload">
+        <div id="proforma-summary-card" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:20px"></div>
         <div class="upload-section">
           <div class="upload-section-title">Monthly files (re-upload each month)</div>
           <div class="upload-grid" id="monthly-upload-grid"></div>
@@ -603,6 +604,45 @@ function renderUploadTab(p) {
   ];
   document.getElementById('monthly-upload-grid').innerHTML = monthly.map(f=>uploadSlot(f,d,p.id,'monthly')).join('');
   document.getElementById('benchmark-upload-grid').innerHTML = benchmarks.map(f=>uploadSlot(f,d,p.id,'benchmark')).join('');
+
+  // Proforma summary card
+  const pfEl = document.getElementById('proforma-summary-card');
+  const pf = d.proforma;
+  if(pf && pf.rows) {
+    const noiRow = pf.rows.find(r=>r.isNOI);
+    const incRow = pf.rows.find(r=>r.isTotalIncome);
+    const expRow = pf.rows.find(r=>r.isTotalExpense);
+    const isSeeded = pf.system === 'proforma_seed';
+    const pfYear = pf.pfYear || '—';
+    const source = isSeeded ? 'Built in' : (d.proforma_filename || 'Uploaded');
+    pfEl.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="font-size:13px;font-weight:500">Proforma — Year ${pfYear}</div>
+        <span class="badge badge-ok" style="font-size:11px">${source}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        <div class="kpi-card">
+          <div class="kpi-label">Annual income</div>
+          <div style="font-size:16px;font-weight:500">${incRow?fmt(incRow.total):'—'}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${incRow?fmt(incRow.total/12)+' / mo':'—'}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Annual expense</div>
+          <div style="font-size:16px;font-weight:500">${expRow?fmt(expRow.total):'—'}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${expRow?fmt(expRow.total/12)+' / mo':'—'}</div>
+        </div>
+        <div class="kpi-card" style="border:1px solid var(--color-border-success,#c0dd97)">
+          <div class="kpi-label">Annual NOI</div>
+          <div style="font-size:16px;font-weight:500;color:var(--green)">${noiRow?fmt(noiRow.total):'—'}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${noiRow?fmt(noiRow.total/12)+' / mo':'—'}</div>
+        </div>
+      </div>
+      ${p.purchaseDate?`<div style="font-size:11px;color:var(--text3);margin-top:10px">Purchase date: ${new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</div>`:''}`;
+    pfEl.style.display = 'block';
+  } else {
+    pfEl.innerHTML = `<div style="font-size:13px;color:var(--text3)">No proforma data available — upload a proforma file below.</div>`;
+    pfEl.style.display = 'block';
+  }
 }
 
 function uploadSlot(f, d, propId, type) {
