@@ -197,6 +197,11 @@
   ::-webkit-scrollbar{width:6px;height:6px}
   ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+
+  /* RENT PROGRESSION */
+  .rp-tier-full{background:var(--green-bg);color:var(--green)}
+  .rp-tier-partial{background:var(--amber-bg);color:var(--amber)}
+  .rp-tier-classic{background:var(--bg3);color:var(--text2)}
 </style>
 </head>
 <body>
@@ -276,6 +281,7 @@
         <div class="tab" onclick="switchTab('statement')">Income / Cash flow</div>
         <div class="tab" onclick="switchTab('benchmarks')">Benchmarks</div>
         <div class="tab" onclick="switchTab('rentroll')">Rent roll</div>
+        <div class="tab" onclick="switchTab('rentprog')">Rent progression</div>
         <div class="tab" onclick="switchTab('notes')">Notes</div>
       </div>
 
@@ -286,7 +292,7 @@
           <div class="upload-grid" id="monthly-upload-grid"></div>
         </div>
         <div class="upload-section">
-          <div class="upload-section-title">Benchmarks (saved — only re-upload when changed)</div>
+          <div class="upload-section-title">Benchmarks &amp; reference (saved — only re-upload when changed)</div>
           <div class="upload-grid" id="benchmark-upload-grid"></div>
         </div>
       </div>
@@ -319,6 +325,17 @@
             <p>Upload a rent roll file on the Upload tab to view unit-level data here.</p>
           </div>
         </div>
+      </div>
+
+      <!-- RENT PROGRESSION TAB -->
+      <div class="tab-content" id="tab-rentprog">
+        <div id="rp-container">
+          <div class="upload-notice">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+            <p>Upload a current rent roll, then set acquisition rents below to see rent progression by unit type.</p>
+          </div>
+        </div>
+        <div id="acq-editor" style="display:none"></div>
       </div>
 
       <!-- NOTES TAB -->
@@ -370,46 +387,46 @@
 <script>
 // ─── SEED DATA ────────────────────────────────────────────────────────────────
 const SEED_PROPERTIES = [
-  {name:'321 Townhomes',system:'buildium',units:18,purchaseDate:'2021-11-12'},
-  {name:'9447 J Street',system:'buildium',units:2,purchaseDate:'2022-07-15'},
-  {name:'Aksarben Villas',system:'buildium',units:24,purchaseDate:'2024-06-28'},
-  {name:'Bancroft Place',system:'buildium',units:52,purchaseDate:'2023-12-15'},
-  {name:'Boulder Pointe',system:'buildium',units:52,purchaseDate:'2023-12-15'},
-  {name:'Brent Village',system:'buildium',units:180,purchaseDate:'2025-06-17'},
-  {name:'Carter Place (1003-1005 Ave K)',system:'buildium',units:20,purchaseDate:'2022-08-11'},
-  {name:'Cedar Haven',system:'buildium',units:34,purchaseDate:'2025-02-12'},
-  {name:'College Heights',system:'buildium',units:22,purchaseDate:'2023-05-26'},
-  {name:'Copperleaf',system:'buildium',units:88,purchaseDate:'2019-05-07'},
-  {name:'Cordes',system:'buildium',units:24,purchaseDate:'2020-02-21'},
-  {name:'Eagle Creek',system:'buildium',units:65,purchaseDate:'2021-08-11'},
-  {name:'Judee Estates',system:'buildium',units:56,purchaseDate:'2023-04-28'},
-  {name:'Langston Apartments',system:'buildium',units:80,purchaseDate:'2021-08-01'},
-  {name:'Maple Park / The Enclave',system:'buildium',units:77,purchaseDate:'2020-09-02'},
-  {name:'Park Place',system:'buildium',units:262,purchaseDate:'2021-12-29'},
-  {name:"Patrick's Place",system:'buildium',units:48,purchaseDate:'2021-04-16'},
-  {name:'Sandra Ann',system:'buildium',units:26,purchaseDate:'2020-11-05'},
-  {name:'Tall Oaks',system:'buildium',units:52,purchaseDate:'2020-03-10'},
-  {name:'The Landmark on Dakota',system:'buildium',units:22,purchaseDate:'2022-03-28'},
-  {name:'The Preserve',system:'buildium',units:72,purchaseDate:'2020-12-15'},
-  {name:'The Todd',system:'buildium',units:22,purchaseDate:'2022-07-15'},
-  {name:'The Vincent',system:'buildium',units:48,purchaseDate:'2019-09-05'},
-  {name:'Venice',system:'buildium',units:11,purchaseDate:'2022-05-31'},
-  {name:'Villa Blanca',system:'buildium',units:24,purchaseDate:'2022-08-12'},
-  {name:'60th Street Duplexes',system:'buildium',units:10,purchaseDate:'2024-06-08'},
-  {name:'15th Street 9 Plex',system:'appfolio',units:9,purchaseDate:'2021-10-08'},
-  {name:'Adventureland',system:'appfolio',units:72,purchaseDate:'2024-08-30'},
-  {name:'Altoona Terrace',system:'appfolio',units:83,purchaseDate:'2024-08-30'},
-  {name:'BG Flats',system:'appfolio',units:42,purchaseDate:'2022-08-10'},
-  {name:'Boulder Ridge',system:'appfolio',units:46,purchaseDate:'2021-11-18'},
-  {name:'Capitol City Villas',system:'appfolio',units:67,purchaseDate:'2022-03-15'},
-  {name:'Champion Villas',system:'appfolio',units:81,purchaseDate:'2022-09-21'},
-  {name:'Dakota Bend',system:'appfolio',units:56,purchaseDate:'2022-04-21'},
-  {name:'Dundee Village',system:'appfolio',units:20,purchaseDate:'2017-12-01'},
-  {name:'Franklin Court',system:'appfolio',units:172,purchaseDate:'2024-08-30'},
-  {name:'Grandview',system:'appfolio',units:15,purchaseDate:'2022-07-15'},
-  {name:'Lions Gate',system:'appfolio',units:38,purchaseDate:'2022-11-10'},
-  {name:'The Whitney',system:'appfolio',units:28,purchaseDate:'2021-12-19'},
-  {name:'Uptown Flats',system:'appfolio',units:19,purchaseDate:'2021-12-19'},
+  {name:'321 Townhomes',system:'buildium',units:18,purchaseDate:'2021-11-12',proforma:{income:233333,expense:83600,noi:149733,pfYear:5}},
+  {name:'9447 J Street',system:'buildium',units:2,purchaseDate:'2022-07-15',proforma:{income:285518,expense:110233,noi:175285,pfYear:4}},
+  {name:'Aksarben Villas',system:'buildium',units:24,purchaseDate:'2024-06-28',proforma:{income:426104,expense:140834,noi:285270,pfYear:2}},
+  {name:'Bancroft Place',system:'buildium',units:52,purchaseDate:'2023-12-15',proforma:{income:909593,expense:341615,noi:567979,pfYear:3}},
+  {name:'Boulder Pointe',system:'buildium',units:52,purchaseDate:'2023-12-15',proforma:{income:1107673,expense:427224,noi:680449,pfYear:3}},
+  {name:'Brent Village',system:'buildium',units:180,purchaseDate:'2025-06-17',proforma:{income:2378459,expense:1381783,noi:996677,pfYear:1}},
+  {name:'Carter Place (1003-1005 Ave K)',system:'buildium',units:20,purchaseDate:'2022-08-11',proforma:{income:289904,expense:119813,noi:170091,pfYear:4}},
+  {name:'Cedar Haven',system:'buildium',units:34,purchaseDate:'2025-02-12',proforma:null},
+  {name:'College Heights',system:'buildium',units:22,purchaseDate:'2023-05-26',proforma:{income:220484,expense:98018,noi:122466,pfYear:3}},
+  {name:'Copperleaf',system:'buildium',units:88,purchaseDate:'2019-05-07',proforma:{income:713892,expense:376781,noi:337111,pfYear:7}},
+  {name:'Cordes',system:'buildium',units:24,purchaseDate:'2020-02-21',proforma:{income:363082,expense:123868,noi:239214,pfYear:7}},
+  {name:'Eagle Creek',system:'buildium',units:65,purchaseDate:'2021-08-11',proforma:{income:764537,expense:351899,noi:412638,pfYear:5}},
+  {name:'Judee Estates',system:'buildium',units:56,purchaseDate:'2023-04-28',proforma:{income:1128154,expense:402201,noi:725953,pfYear:4}},
+  {name:'Langston Apartments',system:'buildium',units:80,purchaseDate:'2021-08-01',proforma:{income:769166,expense:366789,noi:402377,pfYear:5}},
+  {name:'Maple Park / The Enclave',system:'buildium',units:77,purchaseDate:'2020-09-02',proforma:{income:927433,expense:386542,noi:540891,pfYear:6}},
+  {name:'Park Place',system:'buildium',units:262,purchaseDate:'2021-12-29',proforma:{income:2056738,expense:955749,noi:1100988,pfYear:5}},
+  {name:"Patrick's Place",system:'buildium',units:48,purchaseDate:'2021-04-16',proforma:{income:629117,expense:283427,noi:345690,pfYear:6}},
+  {name:'Sandra Ann',system:'buildium',units:26,purchaseDate:'2020-11-05',proforma:null},
+  {name:'Tall Oaks',system:'buildium',units:52,purchaseDate:'2020-03-10',proforma:{income:610538,expense:218803,noi:391735,pfYear:7}},
+  {name:'The Landmark on Dakota',system:'buildium',units:22,purchaseDate:'2022-03-28',proforma:{income:290025,expense:101449,noi:188576,pfYear:5}},
+  {name:'The Preserve',system:'buildium',units:72,purchaseDate:'2020-12-15',proforma:{income:900166,expense:352926,noi:547240,pfYear:6}},
+  {name:'The Todd',system:'buildium',units:22,purchaseDate:'2022-07-15',proforma:{income:234725,expense:105449,noi:129276,pfYear:4}},
+  {name:'The Vincent',system:'buildium',units:48,purchaseDate:'2019-09-05',proforma:null},
+  {name:'Venice',system:'buildium',units:11,purchaseDate:'2022-05-31',proforma:{income:113224,expense:43181,noi:70043,pfYear:4}},
+  {name:'Villa Blanca',system:'buildium',units:24,purchaseDate:'2022-08-12',proforma:{income:245929,expense:89897,noi:156032,pfYear:4}},
+  {name:'60th Street Duplexes',system:'buildium',units:10,purchaseDate:'2024-06-08',proforma:{income:207000,expense:73330,noi:133670,pfYear:1}},
+  {name:'15th Street 9 Plex',system:'appfolio',units:9,purchaseDate:'2021-10-08',proforma:{income:71678,expense:27148,noi:44530,pfYear:5}},
+  {name:'Adventureland',system:'appfolio',units:72,purchaseDate:'2024-08-30',proforma:{income:749903,expense:338404,noi:411499,pfYear:2}},
+  {name:'Altoona Terrace',system:'appfolio',units:83,purchaseDate:'2024-08-30',proforma:{income:809773,expense:348363,noi:461410,pfYear:2}},
+  {name:'BG Flats',system:'appfolio',units:42,purchaseDate:'2022-08-10',proforma:{income:904987,expense:302790,noi:602197,pfYear:4}},
+  {name:'Boulder Ridge',system:'appfolio',units:46,purchaseDate:'2021-11-18',proforma:{income:692417,expense:326421,noi:365996,pfYear:5}},
+  {name:'Capitol City Villas',system:'appfolio',units:67,purchaseDate:'2022-03-15',proforma:{income:710230,expense:301729,noi:408500,pfYear:5}},
+  {name:'Champion Villas',system:'appfolio',units:81,purchaseDate:'2022-09-21',proforma:{income:1671093,expense:542960,noi:1128133,pfYear:4}},
+  {name:'Dakota Bend',system:'appfolio',units:56,purchaseDate:'2022-04-21',proforma:{income:526899,expense:235634,noi:291265,pfYear:5}},
+  {name:'Dundee Village',system:'appfolio',units:20,purchaseDate:'2017-12-01',proforma:null},
+  {name:'Franklin Court',system:'appfolio',units:172,purchaseDate:'2024-08-30',proforma:{income:1730898,expense:878989,noi:851909,pfYear:2}},
+  {name:'Grandview',system:'appfolio',units:15,purchaseDate:'2022-07-15',proforma:{income:134021,expense:58221,noi:75799,pfYear:4}},
+  {name:'Lions Gate',system:'appfolio',units:38,purchaseDate:'2022-11-10',proforma:{income:654815,expense:218959,noi:435856,pfYear:4}},
+  {name:'The Whitney',system:'appfolio',units:28,purchaseDate:'2021-12-19',proforma:{income:297156,expense:140213,noi:156943,pfYear:5}},
+  {name:'Uptown Flats',system:'appfolio',units:19,purchaseDate:'2021-12-19',proforma:{income:182128,expense:85937,noi:96191,pfYear:5}},
 ];
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
@@ -434,8 +451,30 @@ function init() {
       id: 'prop_seed_'+i,
       name: p.name,
       system: p.system,
-      units: p.units||null
+      units: p.units||null,
+      purchaseDate: p.purchaseDate||null,
     }));
+    // Pre-seed proforma data for properties that have it hard-coded
+    SEED_PROPERTIES.forEach((p,i)=>{
+      if(!p.proforma) return;
+      const id = 'prop_seed_'+i;
+      if(!propData[id]) propData[id]={};
+      if(!propData[id].proforma) {
+        propData[id].proforma = {
+          system:'proforma_seed', pfYear:p.proforma.pfYear,
+          months:Array(12).fill(''), propertyName:p.name,
+          rows:[
+            {label:'Operating Income',isNOI:false,isTotalIncome:true,isTotalExpense:false,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
+             total:p.proforma.income, values:Array(12).fill(p.proforma.income/12)},
+            {label:'Operating Expense',isNOI:false,isTotalIncome:false,isTotalExpense:true,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
+             total:p.proforma.expense, values:Array(12).fill(p.proforma.expense/12)},
+            {label:'Net Operating Income',isNOI:true,isTotalIncome:false,isTotalExpense:false,isTotal:false,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
+             total:p.proforma.noi, values:Array(12).fill(p.proforma.noi/12)},
+          ]
+        };
+        propData[id].proforma_filename = `Seeded — Year ${p.proforma.pfYear}`;
+      }
+    });
     save();
   }
   const now = new Date();
@@ -496,6 +535,7 @@ function selectProp(id) {
   renderNotesTab();
   renderStatementTab();
   renderBenchmarkTab();
+  renderRentRollTab();
 }
 
 function showView(view) {
@@ -507,11 +547,12 @@ function showView(view) {
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t,i)=>{
-    const names=['upload','statement','benchmarks','rentroll','notes'];
+    const names=['upload','statement','benchmarks','rentroll','rentprog','notes'];
     t.classList.toggle('active', names[i]===name);
   });
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
+  if(name==='rentprog') renderRentProgressionTab();
 }
 
 // ─── ADD / DELETE PROPERTY ────────────────────────────────────────────────────
@@ -566,9 +607,13 @@ function renderUploadTab(p) {
 
 function uploadSlot(f, d, propId, type) {
   const hasFile = d[f.key] ? true : false;
-  const savedLabel = hasFile ? (d[f.key+'_filename']||'File loaded') : f.sub;
+  const isSeeded = hasFile && d[f.key] && d[f.key].system === 'proforma_seed';
+  const savedLabel = hasFile
+    ? (isSeeded ? `Year ${d[f.key].pfYear} — built in (upload to override)` : (d[f.key+'_filename']||'File loaded'))
+    : f.sub;
+  const accept = f.key==='proforma' ? '.xlsx,.xls,.csv' : '.xlsx,.xls';
   return `<label class="upload-slot ${hasFile?'has-file':''}">
-    <input type="file" accept=".xlsx,.xls" onchange="handleUpload(event,'${propId}','${f.key}','${type}')">
+    <input type="file" accept="${accept}" onchange="handleUpload(event,'${propId}','${f.key}','${type}')">
     <div class="upload-slot-icon">${hasFile?'✓':'↑'}</div>
     <div class="upload-slot-label">${f.label}</div>
     <div class="upload-slot-sub">${savedLabel}</div>
@@ -578,6 +623,42 @@ function uploadSlot(f, d, propId, type) {
 function handleUpload(event, propId, fileKey, type) {
   const file = event.target.files[0];
   if(!file) return;
+  const isCsvProforma = fileKey==='proforma' && file.name.toLowerCase().endsWith('.csv');
+
+  if(isCsvProforma) {
+    // Read as text for CSV
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        const p = properties.find(x=>x.id===propId);
+        let parsed = parseProformaCsv(e.target.result, p.purchaseDate);
+        if(parsed._csvPurchaseDate && !p.purchaseDate) {
+          const pd = parsed._csvPurchaseDate;
+          if(confirm(`The proforma shows a purchase date of ${pd}. Save this to the property record?`)) {
+            p.purchaseDate = pd;
+          }
+        }
+        if(!propData[propId]) propData[propId]={};
+        propData[propId][fileKey] = parsed;
+        propData[propId][fileKey+'_filename'] = file.name;
+        save();
+        const prop = properties.find(x=>x.id===propId);
+        renderUploadTab(prop);
+        updateDetailBadge();
+        renderBenchmarkTab();
+        renderPortfolio();
+        renderSidebar(document.getElementById('prop-search').value);
+        // refresh detail meta for purchase date
+        selectProp(propId);
+      } catch(err) {
+        alert('Error parsing CSV proforma: '+err.message);
+      }
+    };
+    reader.readAsText(file);
+    return;
+  }
+
+  // All other files read as array buffer (Excel)
   const reader = new FileReader();
   reader.onload = function(e) {
     try {
@@ -589,9 +670,8 @@ function handleUpload(event, propId, fileKey, type) {
         parsed = p.system==='buildium' ? parseBuildium(ws) : parseAppfolio(ws);
       } else if(fileKey==='rentroll') {
         const ws = wb.Sheets[wb.SheetNames[0]];
-        parsed = parseRentRoll(ws);
+        parsed = parseRentRoll(ws, p.system);
       } else if(fileKey==='proforma') {
-        // Proforma uses 'Traditional Financing' sheet
         const sheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('traditional financing')) || wb.SheetNames[0];
         const ws = wb.Sheets[sheetName];
         if(!ws) throw new Error('Could not find "Traditional Financing" sheet in proforma file.');
@@ -610,6 +690,7 @@ function handleUpload(event, propId, fileKey, type) {
       renderStatementTab();
       renderBenchmarkTab();
       renderRentRollTab();
+      renderRentProgressionTab();
       renderPortfolio();
       renderSidebar(document.getElementById('prop-search').value);
     } catch(err) {
@@ -730,22 +811,94 @@ function parseBuildium(ws) {
   return {months, rows, propertyName, period:'', system:'buildium'};
 }
 
-function parseRentRoll(ws) {
+function parseRentRoll(ws, system) {
   const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
-  let headerRow = 0;
-  for(let i=0;i<Math.min(10,data.length);i++) {
-    if(data[i].filter(Boolean).length > 3) { headerRow=i; break; }
+  if(system === 'appfolio') return parseAppfolioRentRoll(data);
+  return parseBuildiumRentRoll(data);
+}
+
+function parseAppfolioRentRoll(data) {
+  let headerRow = -1;
+  for(let i=0;i<data.length;i++){
+    if(data[i] && data[i][0]==='Unit' && data[i][2]==='BD/BA') { headerRow=i; break; }
   }
+  if(headerRow<0) throw new Error('Could not find rent roll header row in Appfolio file.');
   const headers = data[headerRow].map(h=>h?h.toString().trim():'');
-  const rows = [];
-  for(let i=headerRow+1;i<data.length;i++) {
+  const units = [];
+  for(let i=headerRow+1;i<data.length;i++){
     const row = data[i];
-    if(!row.some(Boolean)) continue;
-    const obj = {};
-    headers.forEach((h,ci)=>{ if(h) obj[h]=row[ci]; });
-    rows.push(obj);
+    if(!row||!row[0]) continue;
+    const unitNum = row[0] ? row[0].toString().trim() : '';
+    if(!unitNum || unitNum.match(/^\d+ Units?$/i) || unitNum.toLowerCase().includes('total')) break;
+    const bdba = row[2] ? row[2].toString().trim() : '';
+    const unitType = normalizeUnitType(bdba, 'appfolio');
+    const tags = row[1] ? row[1].toString() : '';
+    const tier = normalizeRenovTier(tags);
+    const status = row[4] ? row[4].toString() : '';
+    const isVacant = status.toLowerCase().includes('vacant');
+    const marketRent = parseFloat(row[6]) || 0;
+    const actualRent = parseFloat(row[7]) || 0;
+    const sqft = parseInt(row[5]) || 0;
+    units.push({unitNum, unitType, tier, isVacant, marketRent, actualRent, sqft, status, tags});
   }
-  return {headers: headers.filter(Boolean), rows};
+  return {units, system:'appfolio'};
+}
+
+function parseBuildiumRentRoll(data) {
+  let headerRow = -1;
+  for(let i=0;i<data.length;i++){
+    if(data[i] && data[i][0]==='Unit' && data[i][4]==='Bed/Bath') { headerRow=i; break; }
+  }
+  if(headerRow<0) throw new Error('Could not find rent roll header row in Buildium file.');
+  const units = [];
+  for(let i=headerRow+1;i<data.length;i++){
+    const row = data[i];
+    if(!row||!row[0]) continue;
+    const unitNum = row[0].toString().trim();
+    if(unitNum.toLowerCase().includes('total') || unitNum.toLowerCase().includes('grand')) break;
+    const tenants = row[1] ? row[1].toString() : '';
+    const isVacant = tenants.trim().toUpperCase()==='VACANT' || !tenants.trim();
+    const bdba = row[4] ? row[4].toString().trim() : '';
+    const unitType = normalizeUnitType(bdba, 'buildium');
+    const marketRent = parseFloat(row[7]) || 0;
+    const actualRent = parseFloat(row[8]) || 0;
+    units.push({unitNum, unitType, tier:'unknown', isVacant, marketRent, actualRent, sqft:0, status: isVacant?'Vacant':'Current', tags:''});
+  }
+  return {units, system:'buildium'};
+}
+
+function normalizeUnitType(raw, system) {
+  if(!raw) return 'Unknown';
+  if(system==='appfolio') {
+    const parts = raw.split('/');
+    const beds = parseInt(parts[0]);
+    if(beds===0) return 'Studio';
+    if(beds===1) return '1 Bed';
+    if(beds===2) return '2 Bed';
+    if(beds===3) return '3 Bed';
+    return raw;
+  }
+  if(system==='buildium') {
+    const lc = raw.toLowerCase();
+    if(lc.includes('studio')) return 'Studio';
+    if(lc.includes('1 bed')) return '1 Bed';
+    if(lc.includes('2 bed')) return '2 Bed';
+    if(lc.includes('3 bed')) return '3 Bed';
+    return raw;
+  }
+  return raw;
+}
+
+function normalizeRenovTier(tags) {
+  if(!tags) return 'Classic';
+  const t = tags.toLowerCase();
+  if(!t.includes('remodel')) return 'Classic';
+  // Full remodel: new flooring/LVT/appliances with no "old" or "older" qualifier
+  const hasNew = t.includes('new lvt') || t.includes('new flooring') || t.includes('new appliance') || t.includes('new fridge');
+  const hasOld = t.includes('old carpet') || t.includes('older carpet') || t.includes('old vinyl') || t.includes('older vinyl') || t.includes('old mg');
+  if(hasNew && !hasOld) return 'Full remodel';
+  if(hasOld || (!hasNew && t.includes('remodel'))) return 'Partial remodel';
+  return 'Full remodel';
 }
 
 function getProformaYear(purchaseDate) {
@@ -796,6 +949,87 @@ function parseProforma(ws, purchaseDate) {
     }
   }
   return {rows, pfYear, system:'proforma', months: Array(12).fill(''), propertyName:''};
+}
+
+function parseProformaCsv(text, purchaseDate) {
+  // Parse CSV rows
+  const lines = text.split(/\r?\n/);
+  const data = lines.map(line => {
+    const cells = [];
+    let inQ = false, cur = '';
+    for(let i=0;i<line.length;i++){
+      const ch = line[i];
+      if(ch==='"'){ inQ=!inQ; }
+      else if(ch===','&&!inQ){ cells.push(cur.trim()); cur=''; }
+      else { cur+=ch; }
+    }
+    cells.push(cur.trim());
+    return cells;
+  });
+
+  // Find purchase date from row 4 (format: "Nov-21", "Aug-24" etc.)
+  let csvPurchaseDate = null;
+  for(let i=0;i<8;i++){
+    const cell = data[i]&&data[i][0] ? data[i][0].trim() : '';
+    const m = cell.match(/^([A-Za-z]{3})-(\d{2})$/);
+    if(m) {
+      const months = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+      const mo = months[m[1].toLowerCase()];
+      const yr = parseInt(m[2]) + (parseInt(m[2]) > 50 ? 1900 : 2000);
+      if(mo!==undefined) {
+        const d = new Date(yr, mo, 1);
+        csvPurchaseDate = d.toISOString().slice(0,10);
+      }
+    }
+  }
+
+  // Find year header row (contains YEAR 1, YEAR 2...)
+  let yearRow = -1;
+  for(let i=0;i<15;i++){
+    if(data[i] && data[i].some(c=>c&&c.toString().trim().toUpperCase()==='YEAR 1')) { yearRow=i; break; }
+  }
+  if(yearRow<0) throw new Error('Could not find YEAR 1 header row in CSV proforma.');
+
+  // Calculate which year we're in
+  const effectiveDate = purchaseDate || csvPurchaseDate;
+  const pfYear = effectiveDate ? getProformaYear(effectiveDate) : 1;
+  const targetCol = pfYear; // YEAR 1 = col index 1, YEAR 2 = col index 2, etc.
+
+  // Parse value helper — strip commas, parens for negatives
+  function parseVal(s) {
+    if(!s||!s.trim()||s.trim()==='') return 0;
+    const clean = s.replace(/,/g,'').replace(/\$/g,'').trim();
+    if(clean.startsWith('(')&&clean.endsWith(')')) return -parseFloat(clean.slice(1,-1))||0;
+    return parseFloat(clean)||0;
+  }
+
+  const rows = [];
+  const LABEL_MAP = {
+    'operating income':     {isTotalIncome:true, isNOI:false, isTotalExpense:false},
+    'operating expense':    {isTotalExpense:true, isNOI:false, isTotalIncome:false},
+    'net operating income': {isNOI:true, isTotalIncome:false, isTotalExpense:false},
+    'cash flow':            {isNetIncome:true, isNOI:false, isTotalIncome:false, isTotalExpense:false},
+  };
+
+  for(let i=yearRow+1;i<data.length;i++){
+    const row = data[i];
+    if(!row||!row[0]||!row[0].trim()) continue;
+    const label = row[0].trim();
+    const lc = label.toLowerCase().replace(/^(total\s)/,'');
+    const flags = LABEL_MAP[lc] || {};
+    if(!Object.keys(flags).length) continue;
+    const annual = parseVal(row[targetCol]);
+    rows.push({
+      label, level:0, isCategory:false, isSubtotal:false,
+      isTotal:!!flags.isTotalIncome||!!flags.isTotalExpense,
+      isNOI:!!flags.isNOI, isNetIncome:!!flags.isNetIncome,
+      isTotalIncome:!!flags.isTotalIncome, isTotalExpense:!!flags.isTotalExpense,
+      total: annual, values: Array(12).fill(annual/12)
+    });
+  }
+
+  if(!rows.find(r=>r.isNOI)) throw new Error('Could not find NET OPERATING INCOME row in CSV proforma.');
+  return {rows, pfYear, system:'proforma_csv', months:Array(12).fill(''), propertyName:'', _csvPurchaseDate:csvPurchaseDate};
 }
 
 function parseAppfolioBudget(ws) {
@@ -945,13 +1179,14 @@ function renderBenchmarkTab() {
 
   const p = properties.find(x=>x.id===currentPropId);
   const pfYear = pf ? (pf.pfYear || getProformaYear(p.purchaseDate) || 1) : null;
-  const pfYearLabel = pfYear ? `Proforma Year ${pfYear} (monthly avg)` : 'Proforma (monthly avg)';
+  const isSeeded = pf && pf.system === 'proforma_seed';
+  const pfYearLabel = pfYear ? `Proforma Year ${pfYear}${isSeeded?' (built-in)':' (monthly avg)'}` : 'Proforma (monthly avg)';
 
   // Determine columns
   let cols = ['Account', 'Actual ('+selMonth+')'];
   if(hasPF) cols.push(pfYearLabel, 'Var $', 'Var %');
   if(hasBG) cols.push('Budget (monthly avg)', 'Var $', 'Var %');
-  cols.push('Prior month');
+  cols.push('T12 avg', 'vs T12 $', 'Prior month');
 
   let html = `<div class="bench-section">
     <div class="bench-title">Month vs benchmarks — ${selMonth}</div>
@@ -966,6 +1201,9 @@ function renderBenchmarkTab() {
 
     const actual = r.values[monthIdx];
     const prevActual = monthIdx > 0 ? r.values[monthIdx-1] : null;
+    // Trailing 12-month average (all months in the file)
+    const t12Avg = r.values.length ? r.values.reduce((a,b)=>a+b,0)/r.values.length : null;
+    const t12Var = t12Avg!==null ? actual - t12Avg : null;
 
     // For proforma: match by isNOI, isTotalIncome, isTotalExpense flags since label names differ
     let pfAnnual = null;
@@ -1002,6 +1240,8 @@ function renderBenchmarkTab() {
       cells += `<td class="${varD!==null?(varD>=0?'val-pos':'val-neg'):''}">${varD!==null?fmtVar(varD):'—'}</td>`;
       cells += `<td class="${varP!==null?(varP>=0?'val-pos':'val-neg'):''}">${varP!==null?varP.toFixed(1)+'%':'—'}</td>`;
     }
+    cells += `<td class="${t12Var!==null?(t12Var>=0?'val-pos':'val-neg'):''}">${t12Avg!==null?fmt(t12Avg):'—'}</td>`;
+    cells += `<td class="${t12Var!==null?(t12Var>=0?'val-pos':'val-neg'):''}">${t12Var!==null?fmtVar(t12Var):'—'}</td>`;
     cells += `<td>${prevActual!==null?fmt(prevActual):'—'}</td>`;
     html += `<tr class="${cls}">${cells}</tr>`;
   });
@@ -1044,19 +1284,171 @@ function renderRentRollTab() {
   const d = propData[currentPropId]||{};
   const rr = d.rentroll;
   const container = document.getElementById('rr-container');
-  if(!rr) return;
-  const visHeaders = rr.headers.slice(0,12);
-  let html = `<div class="rr-wrap"><table class="rr-table">
-    <thead><tr>${visHeaders.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>`;
-  rr.rows.slice(0,200).forEach(row=>{
-    html+=`<tr>${visHeaders.map(h=>`<td>${row[h]!==null&&row[h]!==undefined?row[h]:''}</td>`).join('')}</tr>`;
+  if(!rr||!rr.units) return;
+  const occupied = rr.units.filter(u=>!u.isVacant).length;
+  const total = rr.units.length;
+  const occPct = total ? (occupied/total*100).toFixed(1) : 0;
+  const totalMarket = rr.units.reduce((a,u)=>a+u.marketRent,0);
+  const totalActual = rr.units.filter(u=>!u.isVacant).reduce((a,u)=>a+u.actualRent,0);
+  let html = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
+    <div class="kpi-card"><div class="kpi-label">Total units</div><div class="kpi-val">${total}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Occupancy</div><div class="kpi-val">${occPct}%</div></div>
+    <div class="kpi-card"><div class="kpi-label">Gross potential rent</div><div class="kpi-val">${fmt(totalMarket)}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Actual rent collected</div><div class="kpi-val">${fmt(totalActual)}</div></div>
+  </div>
+  <div class="rr-wrap"><table class="rr-table">
+  <thead><tr><th>Unit</th><th>Type</th>${rr.system==='appfolio'?'<th>Tier</th>':''}${rr.system==='appfolio'?'<th>Status</th>':'<th>Tenant</th>'}<th>Market rent</th><th>Actual rent</th><th>Variance</th></tr></thead><tbody>`;
+  rr.units.forEach(u=>{
+    const var_ = u.isVacant ? null : u.actualRent - u.marketRent;
+    const varCls = var_===null?'':(var_>=0?'val-pos':'val-neg');
+    const tierBadge = rr.system==='appfolio' ? `<td><span class="badge ${u.tier==='Full remodel'?'badge-ok':u.tier==='Partial remodel'?'badge-warn':'badge-neutral'}">${u.tier}</span></td>` : '';
+    html+=`<tr ${u.isVacant?'style="color:var(--text3)"':''}>
+      <td>${u.unitNum}</td><td>${u.unitType}</td>${tierBadge}
+      <td>${u.isVacant?'<span class="badge badge-flag">Vacant</span>':u.status||'Current'}</td>
+      <td>${fmt(u.marketRent)}</td>
+      <td>${u.isVacant?'—':fmt(u.actualRent)}</td>
+      <td class="${varCls}">${var_!==null?fmtVar(var_):'—'}</td>
+    </tr>`;
   });
   html+=`</tbody></table></div>`;
-  if(rr.rows.length>200) html+=`<div style="padding:8px;font-size:12px;color:var(--text3)">Showing first 200 of ${rr.rows.length} rows.</div>`;
   container.innerHTML=html;
 }
 
-// ─── NOTES ────────────────────────────────────────────────────────────────────
+// ─── RENT PROGRESSION TAB ─────────────────────────────────────────────────────
+function renderRentProgressionTab() {
+  if(!currentPropId) return;
+  const d = propData[currentPropId]||{};
+  const rr = d.rentroll;
+  const p = properties.find(x=>x.id===currentPropId);
+  const acq = d.acquisitionRents || {};
+  const container = document.getElementById('rp-container');
+  const editorEl = document.getElementById('acq-editor');
+
+  if(!rr||!rr.units||!rr.units.length) {
+    container.innerHTML=`<div class="upload-notice"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg><p>Upload a current rent roll on the Upload tab first, then set acquisition rents below.</p></div>`;
+    editorEl.style.display='none';
+    return;
+  }
+
+  // Group current units by type (and tier for Appfolio)
+  const groups = {};
+  rr.units.forEach(u=>{
+    const key = p.system==='appfolio' ? `${u.unitType}||${u.tier}` : u.unitType;
+    if(!groups[key]) groups[key]={unitType:u.unitType, tier:u.tier, units:[]};
+    groups[key].units.push(u);
+  });
+
+  // Build summary table
+  let html = `<div class="bench-section">
+    <div class="bench-title">Rent progression by unit type — acquisition vs. current${p.purchaseDate?' (purchased '+new Date(p.purchaseDate).toLocaleDateString('en-US',{month:'short',year:'numeric'})+')':''}</div>
+    <div class="bench-wrap"><table class="bench-table">
+    <thead><tr>
+      <th style="text-align:left">Unit type</th>
+      ${p.system==='appfolio'?'<th style="text-align:left">Tier</th>':''}
+      <th>Units</th>
+      <th>Acq. avg market rent</th>
+      <th>Current avg market rent</th>
+      <th>Market rent growth</th>
+      <th>Acq. avg actual rent</th>
+      <th>Current avg actual rent</th>
+      <th>Actual rent growth</th>
+      <th>Current occupancy</th>
+    </tr></thead><tbody>`;
+
+  const sortedKeys = Object.keys(groups).sort();
+  sortedKeys.forEach(key=>{
+    const g = groups[key];
+    const occupied = g.units.filter(u=>!u.isVacant);
+    const occPct = g.units.length ? (occupied.length/g.units.length*100).toFixed(0)+'%' : '—';
+    const currAvgMarket = g.units.length ? g.units.reduce((a,u)=>a+u.marketRent,0)/g.units.length : 0;
+    const currAvgActual = occupied.length ? occupied.reduce((a,u)=>a+u.actualRent,0)/occupied.length : 0;
+
+    // Acquisition rents — stored per group key
+    const acqData = acq[key] || {};
+    const acqMarket = parseFloat(acqData.market) || null;
+    const acqActual = parseFloat(acqData.actual) || null;
+
+    const mktGrowth = acqMarket ? ((currAvgMarket-acqMarket)/acqMarket*100) : null;
+    const actGrowth = acqActual ? ((currAvgActual-acqActual)/acqActual*100) : null;
+
+    const tierBadge = p.system==='appfolio'
+      ? `<td><span class="badge ${g.tier==='Full remodel'?'badge-ok':g.tier==='Partial remodel'?'badge-warn':'badge-neutral'}">${g.tier}</span></td>`
+      : '';
+
+    html+=`<tr>
+      <td style="font-weight:500">${g.unitType}</td>${tierBadge}
+      <td>${g.units.length}</td>
+      <td>${acqMarket!==null?fmt(acqMarket):'<span style="color:var(--text3);font-size:11px">not set</span>'}</td>
+      <td>${fmt(currAvgMarket)}</td>
+      <td class="${mktGrowth!==null?(mktGrowth>=0?'val-pos':'val-neg'):''}">${mktGrowth!==null?(mktGrowth>=0?'+':'')+mktGrowth.toFixed(1)+'%':'—'}</td>
+      <td>${acqActual!==null?fmt(acqActual):'<span style="color:var(--text3);font-size:11px">not set</span>'}</td>
+      <td>${occupied.length?fmt(currAvgActual):'—'}</td>
+      <td class="${actGrowth!==null?(actGrowth>=0?'val-pos':'val-neg'):''}">${actGrowth!==null?(actGrowth>=0?'+':'')+actGrowth.toFixed(1)+'%':'—'}</td>
+      <td>${occPct}</td>
+    </tr>`;
+  });
+
+  // Portfolio totals row
+  const allUnits = rr.units;
+  const allOcc = allUnits.filter(u=>!u.isVacant);
+  const totalCurrMarket = allUnits.length ? allUnits.reduce((a,u)=>a+u.marketRent,0)/allUnits.length : 0;
+  const totalCurrActual = allOcc.length ? allOcc.reduce((a,u)=>a+u.actualRent,0)/allOcc.length : 0;
+  html+=`<tr class="row-total">
+    <td style="font-weight:500">All units</td>
+    ${p.system==='appfolio'?'<td></td>':''}
+    <td>${allUnits.length}</td>
+    <td>—</td><td>${fmt(totalCurrMarket)}</td><td>—</td>
+    <td>—</td><td>${fmt(totalCurrActual)}</td><td>—</td>
+    <td>${allUnits.length?(allOcc.length/allUnits.length*100).toFixed(0)+'%':'—'}</td>
+  </tr>`;
+  html+=`</tbody></table></div></div>`;
+  container.innerHTML=html;
+
+  // Build acquisition rent editor
+  let edHtml = `<div style="margin-top:4px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
+    <div style="font-size:13px;font-weight:500;margin-bottom:4px">Set acquisition rents</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:14px">Enter the average market rent and average actual rent at the time of purchase for each unit type. These are saved permanently.</div>
+    <div style="display:grid;grid-template-columns:${p.system==='appfolio'?'1fr 1fr 120px 120px 100px':'1fr 120px 120px 100px'};gap:8px;align-items:center;margin-bottom:6px">
+      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Unit type${p.system==='appfolio'?' / tier':''}</div>
+      ${p.system==='appfolio'?'':''}
+      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Acq. market rent</div>
+      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Acq. actual rent</div>
+      <div></div>
+    </div>`;
+
+  sortedKeys.forEach((key,idx)=>{
+    const g = groups[key];
+    const acqData = acq[key] || {};
+    const label = p.system==='appfolio' ? `${g.unitType} — ${g.tier}` : g.unitType;
+    edHtml+=`<div style="display:grid;grid-template-columns:${p.system==='appfolio'?'1fr 120px 120px 100px':'1fr 120px 120px 100px'};gap:8px;align-items:center;margin-bottom:6px">
+      <div style="font-size:13px">${label}</div>
+      <input type="number" placeholder="e.g. 750" value="${acqData.market||''}"
+        style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;width:100%"
+        onchange="saveAcqRent('${currentPropId}','${key}','market',this.value)">
+      <input type="number" placeholder="e.g. 700" value="${acqData.actual||''}"
+        style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;width:100%"
+        onchange="saveAcqRent('${currentPropId}','${key}','actual',this.value)">
+      <button class="btn" style="font-size:12px;padding:5px 10px" onclick="saveAcqRentRow('${currentPropId}','${key}')">Save</button>
+    </div>`;
+  });
+  edHtml+=`</div>`;
+  editorEl.innerHTML=edHtml;
+  editorEl.style.display='block';
+}
+
+function saveAcqRent(propId, key, field, val) {
+  if(!propData[propId]) propData[propId]={};
+  if(!propData[propId].acquisitionRents) propData[propId].acquisitionRents={};
+  if(!propData[propId].acquisitionRents[key]) propData[propId].acquisitionRents[key]={};
+  propData[propId].acquisitionRents[key][field] = parseFloat(val)||0;
+}
+
+function saveAcqRentRow(propId, key) {
+  save();
+  renderRentProgressionTab();
+}
+
+
 function renderNotesTab() {
   const p = properties.find(x=>x.id===currentPropId);
   document.getElementById('notes-prop-label').textContent = `Notes for ${p?p.name:'this property'}`;
