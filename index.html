@@ -274,7 +274,8 @@
 
       <!-- UPLOAD TAB -->
       <div class="tab-content active" id="tab-upload">
-        <div id="proforma-summary-card" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:20px"></div>
+        <div id="proforma-summary-card" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:16px"></div>
+        <div id="mapping-editor" style="display:none;margin-bottom:16px"></div>
         <div class="upload-section">
           <div class="upload-section-title">Monthly files (re-upload each month)</div>
           <div class="upload-grid" id="monthly-upload-grid"></div>
@@ -417,7 +418,34 @@ const SEED_PROPERTIES = [
   {name:'Uptown Flats',system:'appfolio',units:19,purchaseDate:'2021-12-19',proforma:{income:182128,expense:85937,noi:96191,pfYear:5}},
 ];
 
-// ─── STATE ────────────────────────────────────────────────────────────────────
+// ─── BUILDIUM BUDGET SHEET MAPPING ───────────────────────────────────────────
+// Maps property id suffix to sheet name in the portfolio budget Excel file
+const BUILDIUM_BUDGET_SHEET_MAP = {
+  '321 Townhomes':                '321 Townhomes',
+  'Aksarben Villas':              'AksarbenLIV',
+  'Bancroft Place':               'Bancroft',
+  'Boulder Pointe':               'Boulder',
+  'Brent Village':                'Brent Village',
+  'Carter Place (1003-1005 Ave K)':'1003-1005 Ave K',
+  'Cedar Haven':                  'Cedar Haven',
+  'College Heights':              'College Heights',
+  'Copperleaf':                   'Copperleaf',
+  'Cordes':                       'Cordes',
+  'Eagle Creek':                  'Eagle Creek',
+  'Judee Estates':                'Judee Estates',
+  'Langston Apartments':          'Langston',
+  'Maple Park / The Enclave':     'Maple Park',
+  'Park Place':                   'Park Place',
+  "Patrick's Place":              "Patrick's Place",
+  'Sandra Ann':                   'Sandra Ann',
+  'Tall Oaks':                    'Tall Oaks',
+  'The Landmark on Dakota':       'Landmark on Dakota',
+  'The Preserve':                 'Preserve',
+  'The Todd':                     'The Todd',
+  'The Vincent':                  'Vincent',
+  'Venice':                       'Venice',
+  'Villa Blanca':                 'Villa Blanca',
+};
 let properties = JSON.parse(localStorage.getItem('sam_properties') || 'null');
 let propData = JSON.parse(localStorage.getItem('sam_propdata') || '{}');
 let notes = JSON.parse(localStorage.getItem('sam_notes') || '[]');
@@ -602,10 +630,15 @@ function renderUploadTab(p) {
     const isSeeded = pf.system === 'proforma_seed';
     const pfYear = pf.pfYear || '—';
     const source = isSeeded ? 'Built in' : (d.proforma_filename || 'Uploaded');
+    const lineItems = pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine);
+    const hasLineItems = lineItems.length > 0;
     pfEl.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
         <div style="font-size:13px;font-weight:500">Proforma — Year ${pfYear}</div>
-        <span class="badge badge-ok" style="font-size:11px">${source}</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          ${hasLineItems?`<span class="badge badge-neutral">${lineItems.length} line items</span>`:''}
+          <span class="badge badge-ok" style="font-size:11px">${source}</span>
+        </div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
         <div class="kpi-card">
@@ -626,6 +659,14 @@ function renderUploadTab(p) {
       </div>
       ${p.purchaseDate?`<div style="font-size:11px;color:var(--text3);margin-top:10px">Purchase date: ${new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</div>`:''}`;
     pfEl.style.display = 'block';
+
+    // Show mapping editor if proforma has line items and statement exists
+    if(hasLineItems && d.statement) {
+      renderMappingEditor(p.id);
+    } else {
+      const me = document.getElementById('mapping-editor');
+      if(me) me.style.display='none';
+    }
   } else {
     pfEl.innerHTML = `<div style="font-size:13px;color:var(--text3)">No proforma data available — upload a proforma file below.</div>`;
     pfEl.style.display = 'block';
@@ -704,8 +745,27 @@ function handleUpload(event, propId, fileKey) {
         if(!ws) throw new Error('Could not find "Traditional Financing" sheet in proforma file.');
         parsed = parseProforma(ws, p.purchaseDate);
       } else if(fileKey==='budget') {
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        parsed = p.system==='buildium' ? parseBuildium(ws) : parseAppfolioBudget(ws);
+        const ws0 = wb.Sheets[wb.SheetNames[0]];
+        if(p.system==='buildium') {
+          // Check if this is the multi-tab portfolio budget file
+          const propSheetName = BUILDIUM_BUDGET_SHEET_MAP[p.name];
+          const matchingSheet = propSheetName && wb.Sheets[propSheetName];
+          if(matchingSheet) {
+            // Multi-tab portfolio file — parse just this property's sheet
+            parsed = parseBuildiumBudget(matchingSheet);
+          } else {
+            // Single-sheet file or no mapping found — parse whatever sheet is first
+            // Try parseBuildiumBudget first (PGM format), fall back to parseBuildium
+            try {
+              parsed = parseBuildiumBudget(ws0);
+              if(!parsed.rows.find(r=>r.isNOI||r.isTotalIncome)) throw new Error('No key rows found');
+            } catch(e) {
+              parsed = parseBuildium(ws0);
+            }
+          }
+        } else {
+          parsed = parseAppfolioBudget(ws0);
+        }
       }
       if(!propData[propId]) propData[propId]={};
       propData[propId][fileKey] = parsed;
@@ -720,6 +780,15 @@ function handleUpload(event, propId, fileKey) {
       renderRentProgressionTab();
       renderPortfolio();
       renderSidebar(document.getElementById('prop-search').value);
+      // Re-run auto-match if we now have both proforma and statement
+      const pd2 = propData[propId]||{};
+      if(pd2.proforma && pd2.statement && !pd2.pfMapping) {
+        propData[propId].pfMapping = autoMatchProformaToStatement(pd2.proforma.rows, pd2.statement.rows);
+        save();
+        renderMappingEditor(propId);
+      } else if(pd2.proforma && pd2.statement) {
+        renderMappingEditor(propId);
+      }
     } catch(err) {
       alert('Error parsing file: '+err.message+'\n\nMake sure this is a valid export file.');
     }
@@ -818,7 +887,6 @@ function parseBuildium(ws) {
     }
     return s;
   });
-  const totalCol = headers.length-1;
 
   let propertyName = '';
   for(let i=0;i<headerRow;i++) {
@@ -946,6 +1014,63 @@ function normalizeRenovTier(tags) {
   return 'Full remodel';
 }
 
+// ─── PROFORMA LINE ITEM MATCHING ─────────────────────────────────────────────
+const MATCH_KEYWORDS = [
+  {keys:['water','sewer','water/sewer'],  group:'water'},
+  {keys:['garbage','trash','recycling'],  group:'garbage'},
+  {keys:['electricity','electric','elec'],group:'electric'},
+  {keys:['gas','natural gas'],            group:'gas'},
+  {keys:['internet','cable','telecom'],   group:'internet'},
+  {keys:['insurance'],                    group:'insurance'},
+  {keys:['tax','taxes'],                  group:'tax'},
+  {keys:['management','mgmt','mgmnt'],    group:'management'},
+  {keys:['landscap','lawn','grounds','snow','mowing'],group:'landscaping'},
+  {keys:['repair','maintenance','maint'], group:'repairs'},
+  {keys:['advertising','marketing','ad '],group:'advertising'},
+  {keys:['janitorial','cleaning','clean'],group:'cleaning'},
+  {keys:['pest','exterminating'],         group:'pest'},
+  {keys:['payroll','salary','wages'],     group:'payroll'},
+  {keys:['capital','capex','cap ex'],     group:'capex'},
+  {keys:['reserve','replacement'],        group:'reserve'},
+  {keys:['admin','office'],              group:'admin'},
+  {keys:['rent income','rental income'],  group:'rent_income'},
+  {keys:['vacancy','credit loss'],        group:'vacancy'},
+  {keys:['pet'],                          group:'pet'},
+  {keys:['laundry'],                      group:'laundry'},
+  {keys:['parking'],                      group:'parking'},
+  {keys:['late fee','late'],              group:'late_fee'},
+];
+
+function getMatchGroup(label) {
+  const lc = label.toLowerCase();
+  for(const {keys, group} of MATCH_KEYWORDS) {
+    if(keys.some(k=>lc.includes(k))) return group;
+  }
+  return null;
+}
+
+function autoMatchProformaToStatement(pfRows, stmtRows) {
+  // Returns map: pfLabel -> stmtLabel (best match)
+  const matches = {};
+  pfRows.forEach(pfRow => {
+    if(pfRow.isTotal||pfRow.isNOI||pfRow.isCategory) return;
+    const pfGroup = getMatchGroup(pfRow.label);
+    if(!pfGroup) return;
+    // Find best statement row match
+    let best = null;
+    stmtRows.forEach(stmtRow => {
+      if(stmtRow.isCategory) return;
+      const stmtGroup = getMatchGroup(stmtRow.label);
+      if(stmtGroup === pfGroup) {
+        // Prefer subtotals over line items for multi-line groups
+        if(!best || stmtRow.isSubtotal) best = stmtRow.label;
+      }
+    });
+    if(best) matches[pfRow.label] = best;
+  });
+  return matches;
+}
+
 function getProformaYear(purchaseDate) {
   if(!purchaseDate) return null;
   const purchased = new Date(purchaseDate);
@@ -958,31 +1083,50 @@ function parseProforma(ws, purchaseDate) {
   const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
   const pfYear = getProformaYear(purchaseDate) || 1;
 
-  // Row 2 has year numbers: col index 2=Year1, 4=Year2, 6=Year3 etc (every 2 cols)
-  // Find year row
   let yearRow = -1;
   for(let i=0;i<10;i++) {
     if(data[i] && data[i][2] && data[i][2].toString().trim()==='1') { yearRow=i; break; }
   }
   if(yearRow<0) throw new Error('Could not find year header row in proforma. Expected row with "1" in column C.');
 
-  // Column index for the target year: Year1=col2, Year2=col4, Year3=col6...
   const targetCol = 2 + (pfYear - 1) * 2;
 
+  // Section tracking — are we in income or expense?
+  let inExpenseSection = false;
   const rows = [];
+
   for(let i=yearRow+1;i<data.length;i++) {
     const row = data[i];
     if(!row || !row[1]) continue;
     const label = row[1].toString().trim();
+    if(!label) continue;
     const lc = label.toLowerCase();
     const val = parseFloat(row[targetCol]) || 0;
+    if(!val && !lc.includes('total') && !lc.includes('noi') && !lc.includes('net operating')) continue;
+
     const isNOI = lc.includes('annual net operating income') || lc.includes('net operating income (noi)');
     const isTotalIncome = lc.includes('total annual operating income');
     const isTotalExpense = lc.includes('total annual operating expense');
-    if(isNOI || isTotalIncome || isTotalExpense) {
-      rows.push({label, isNOI, isTotalIncome, isTotalExpense, total: val,
-                 values: Array(12).fill(val/12), isCategory:false, isSubtotal:false, isTotal: isTotalIncome||isTotalExpense, isNetIncome:false, level:0});
-    }
+    const isMonthlyExpenseTotal = lc === 'monthly operating expenses' && i > yearRow + 5;
+    const isMonthlyIncomeTotal = lc === 'gross monthly operating income';
+
+    if(isTotalIncome || isMonthlyIncomeTotal) inExpenseSection = false;
+    if(isTotalExpense || isMonthlyExpenseTotal) inExpenseSection = true;
+
+    // Detect expense section start
+    if(lc.includes('monthly operating expenses') || lc.includes('operating expense')) inExpenseSection = true;
+
+    const isTotal = isTotalIncome || isTotalExpense;
+    const isLineItem = !isNOI && !isTotal && !isMonthlyIncomeTotal && !isMonthlyExpenseTotal;
+
+    rows.push({
+      label, isNOI, isTotalIncome, isTotalExpense, isTotal,
+      isNetIncome: false, isCategory: false, isSubtotal: false, level: isTotal||isNOI ? 0 : 1,
+      isExpenseLine: inExpenseSection && isLineItem,
+      isIncomeLine: !inExpenseSection && isLineItem,
+      total: isNOI||isTotal ? val : val * 12,  // line items are monthly, totals are annual
+      values: Array(12).fill(isNOI||isTotal ? val/12 : val),
+    });
   }
   return {rows, pfYear, system:'proforma', months: Array(12).fill(''), propertyName:''};
 }
@@ -1066,6 +1210,64 @@ function parseProformaCsv(text, purchaseDate) {
 
   if(!rows.find(r=>r.isNOI)) throw new Error('Could not find NET OPERATING INCOME row in CSV proforma.');
   return {rows, pfYear, system:'proforma_csv', months:Array(12).fill(''), propertyName:'', _csvPurchaseDate:csvPurchaseDate};
+}
+
+function parseBuildiumBudget(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+
+  // Find header row (has 'Account' in col 0 and month columns)
+  let headerRow = -1;
+  for(let i=0;i<10;i++){
+    if(data[i] && data[i][0]==='Account') { headerRow=i; break; }
+  }
+  if(headerRow<0) throw new Error('Could not find Account header row in budget sheet.');
+
+  const headers = data[headerRow];
+  // Find month columns (Jan-Dec) and annual total column
+  const monthCols = [];
+  const months = [];
+  let annualCol = -1;
+  let priorYearCol = -1;
+  headers.forEach((h,ci)=>{
+    if(!h) return;
+    const hs = h.toString().trim();
+    if(hs === '2025 Actual' || hs.includes('Actual')) { priorYearCol = ci; return; }
+    if(hs.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/)) {
+      months.push(hs + ' 2026');
+      monthCols.push(ci);
+    }
+    if(hs.includes('Annual') || hs.includes('Total') || hs === '2026 Annual') annualCol = ci;
+  });
+  if(annualCol < 0) annualCol = headers.length - 1;
+
+  const rows = [];
+  const NOI_LABELS = ['net operating income'];
+  const TOTAL_INCOME_LABELS = ['total income'];
+  const TOTAL_EXPENSE_LABELS = ['total operating expense', 'total operating expe'];
+  const SECTION_MARKERS = ['▼', '▲'];
+
+  for(let i=headerRow+1;i<data.length;i++){
+    const row = data[i];
+    if(!row || !row[0]) continue;
+    const raw = row[0].toString().trim();
+    if(!raw) continue;
+    // Skip section headers (▼ INCOME etc)
+    if(SECTION_MARKERS.some(m=>raw.startsWith(m))) continue;
+    const lc = raw.toLowerCase();
+    const isNOI = NOI_LABELS.some(x=>lc.startsWith(x));
+    const isTotalIncome = TOTAL_INCOME_LABELS.some(x=>lc===x);
+    const isTotalExpense = TOTAL_EXPENSE_LABELS.some(x=>lc.startsWith(x));
+    const isTotal = isTotalIncome || isTotalExpense;
+    const isNetIncome = false;
+    const isCategory = !row.slice(1).some(v=>v!==null&&v!==''&&v!==0);
+    const isSubtotal = !isCategory && !isNOI && !isTotal && lc.startsWith('total');
+    const values = monthCols.map(ci=>parseFloat(row[ci])||0);
+    const total = annualCol>=0 ? (parseFloat(row[annualCol])||values.reduce((a,b)=>a+b,0)) : values.reduce((a,b)=>a+b,0);
+    const priorActual = priorYearCol>=0 ? (parseFloat(row[priorYearCol])||null) : null;
+    rows.push({label:raw, level:isTotal||isNOI?0:1, isCategory, isSubtotal, isTotal,
+               isNOI, isNetIncome, isTotalIncome, isTotalExpense, values, total, priorActual});
+  }
+  return {months, rows, system:'buildium_budget', propertyName:'', period:'2026'};
 }
 
 function parseAppfolioBudget(ws) {
@@ -1176,6 +1378,77 @@ function renderStatementTable(monthIdx) {
   tbl.innerHTML = `<thead>${thead}</thead><tbody>${rows_html}</tbody>`;
 }
 
+// ─── MAPPING EDITOR ───────────────────────────────────────────────────────────
+function renderMappingEditor(propId) {
+  const d = propData[propId]||{};
+  const pf = d.proforma;
+  const stmt = d.statement;
+  const el = document.getElementById('mapping-editor');
+  if(!pf||!stmt||!el) return;
+
+  const lineItems = pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine);
+  if(!lineItems.length) { el.style.display='none'; return; }
+
+  // Get or generate auto-matches
+  if(!d.pfMapping) {
+    propData[propId].pfMapping = autoMatchProformaToStatement(pf.rows, stmt.rows);
+    save();
+  }
+  const mapping = d.pfMapping || {};
+
+  // Build dropdown options from statement rows
+  const stmtOptions = stmt.rows
+    .filter(r=>!r.isCategory)
+    .map(r=>`<option value="${escHtml(r.label)}">${r.label}</option>`)
+    .join('');
+  const noneOption = `<option value="">— no match —</option>`;
+
+  let html = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="font-size:13px;font-weight:500">Proforma line item mapping</div>
+      <div style="font-size:12px;color:var(--text3)">Auto-matched — adjust any incorrect mappings below</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 24px 1fr;gap:8px;align-items:center;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
+      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Proforma line item</div>
+      <div></div>
+      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Matches to statement line</div>
+    </div>`;
+
+  lineItems.forEach(pfRow => {
+    const matched = mapping[pfRow.label] || '';
+    const autoMatched = !!autoMatchProformaToStatement([pfRow], stmt.rows)[pfRow.label];
+    const badge = autoMatched && matched ? `<span class="badge badge-ok" style="font-size:10px">auto</span>` :
+                  matched ? `<span class="badge badge-neutral" style="font-size:10px">manual</span>` :
+                  `<span class="badge badge-warn" style="font-size:10px">unmatched</span>`;
+    html += `<div style="display:grid;grid-template-columns:1fr 24px 1fr;gap:8px;align-items:center;margin-bottom:6px">
+      <div style="font-size:13px;display:flex;align-items:center;gap:6px">${escHtml(pfRow.label)} ${badge}</div>
+      <div style="text-align:center;color:var(--text3);font-size:14px">→</div>
+      <select style="font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit;width:100%"
+        onchange="savePfMapping('${propId}','${escHtml(pfRow.label).replace(/'/g,"\\'")}',this.value)">
+        ${noneOption}
+        ${stmt.rows.filter(r=>!r.isCategory).map(r=>`<option value="${escHtml(r.label)}" ${matched===r.label?'selected':''}>${r.label}</option>`).join('')}
+      </select>
+    </div>`;
+  });
+
+  html += `</div>`;
+  el.innerHTML = html;
+  el.style.display = 'block';
+}
+
+function savePfMapping(propId, pfLabel, stmtLabel) {
+  if(!propData[propId]) propData[propId]={};
+  if(!propData[propId].pfMapping) propData[propId].pfMapping={};
+  if(stmtLabel) propData[propId].pfMapping[pfLabel] = stmtLabel;
+  else delete propData[propId].pfMapping[pfLabel];
+  save();
+  renderBenchmarkTab();
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 // ─── BENCHMARK TAB ────────────────────────────────────────────────────────────
 function renderBenchmarkTab() {
   if(!currentPropId) return;
@@ -1207,7 +1480,8 @@ function renderBenchmarkTab() {
   // Key rows to highlight
   const KEY_LABELS = ['total operating income','total income','total budgeted operating income',
     'total operating expense','total expense','total budgeted operating expense',
-    'noi - net operating income','net operating income','net income','total budgeted income'];
+    'total operating expe','noi - net operating income','net operating income',
+    'net income','total budgeted income'];
 
   const p = properties.find(x=>x.id===currentPropId);
   const pfYear = pf ? (pf.pfYear || getProformaYear(p.purchaseDate) || 1) : null;
@@ -1292,12 +1566,99 @@ function renderBenchmarkTab() {
 
   html += `</tbody></table></div></div>`;
 
+  // ── LINE ITEM COMPARISON (if proforma has line items and mapping exists) ──
+  const lineItems = pf ? pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine) : [];
+  const mapping = d.pfMapping || {};
+  const mappedItems = lineItems.filter(r=>mapping[r.label]);
+
+  if(mappedItems.length > 0) {
+    const stmtByLabel = {};
+    stmt.rows.forEach(r=>{ stmtByLabel[r.label]=r; });
+    const incomeItems = mappedItems.filter(r=>r.isIncomeLine);
+    const expenseItems = mappedItems.filter(r=>r.isExpenseLine);
+
+    // Monthly line-item comparison
+    html += `<div class="bench-section">
+      <div class="bench-title">Line item detail — ${selMonth} vs proforma monthly avg</div>
+      <div class="bench-wrap"><table class="bench-table">
+      <thead><tr><th style="text-align:left">Line item</th><th style="text-align:left;color:var(--text3);font-size:11px">Proforma label</th><th>Actual</th><th>Proforma / mo</th><th>Var $</th><th>Var %</th></tr></thead><tbody>`;
+    if(incomeItems.length) {
+      html += `<tr class="row-category"><td colspan="6">Income</td></tr>`;
+      incomeItems.forEach(pfRow=>{
+        const stmtRow = stmtByLabel[mapping[pfRow.label]];
+        if(!stmtRow) return;
+        const actual = stmtRow.values[monthIdx];
+        const pfMo = pfRow.values[0];
+        const varD = actual - pfMo;
+        const varP = pfMo ? varD/Math.abs(pfMo)*100 : null;
+        const vCls = varD>=0?'val-pos':'val-neg';
+        html += `<tr><td style="padding-left:16px">${stmtRow.label}</td><td style="font-size:11px;color:var(--text3)">${pfRow.label}</td>
+          <td>${fmt(actual)}</td><td>${fmt(pfMo)}</td>
+          <td class="${vCls}">${fmtVar(varD)}</td><td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td></tr>`;
+      });
+    }
+    if(expenseItems.length) {
+      html += `<tr class="row-category"><td colspan="6">Expenses</td></tr>`;
+      expenseItems.forEach(pfRow=>{
+        const stmtRow = stmtByLabel[mapping[pfRow.label]];
+        if(!stmtRow) return;
+        const actual = stmtRow.values[monthIdx];
+        const pfMo = pfRow.values[0];
+        const varD = actual - pfMo;
+        const varP = pfMo ? varD/Math.abs(pfMo)*100 : null;
+        const vCls = varD<=0?'val-pos':'val-neg';
+        html += `<tr><td style="padding-left:16px">${stmtRow.label}</td><td style="font-size:11px;color:var(--text3)">${pfRow.label}</td>
+          <td>${fmt(actual)}</td><td>${fmt(pfMo)}</td>
+          <td class="${vCls}">${fmtVar(varD)}</td><td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td></tr>`;
+      });
+    }
+    html += `</tbody></table></div></div>`;
+
+    // YTD line-item comparison
+    html += `<div class="bench-section">
+      <div class="bench-title">Line item detail — YTD (${stmt.months[0]} – ${selMonth}) vs proforma annual</div>
+      <div class="bench-wrap"><table class="bench-table">
+      <thead><tr><th style="text-align:left">Line item</th><th style="text-align:left;color:var(--text3);font-size:11px">Proforma label</th><th>YTD Actual</th><th>Proforma annual</th><th>Var $</th><th>Var %</th></tr></thead><tbody>`;
+    if(incomeItems.length) {
+      html += `<tr class="row-category"><td colspan="6">Income</td></tr>`;
+      incomeItems.forEach(pfRow=>{
+        const stmtRow = stmtByLabel[mapping[pfRow.label]];
+        if(!stmtRow) return;
+        const ytd = stmtRow.values.slice(0,monthIdx+1).reduce((a,b)=>a+b,0);
+        const pfAnnual = pfRow.total;
+        const varD = ytd - pfAnnual;
+        const varP = pfAnnual ? varD/Math.abs(pfAnnual)*100 : null;
+        const vCls = varD>=0?'val-pos':'val-neg';
+        html += `<tr><td style="padding-left:16px">${stmtRow.label}</td><td style="font-size:11px;color:var(--text3)">${pfRow.label}</td>
+          <td>${fmt(ytd)}</td><td>${fmt(pfAnnual)}</td>
+          <td class="${vCls}">${fmtVar(varD)}</td><td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td></tr>`;
+      });
+    }
+    if(expenseItems.length) {
+      html += `<tr class="row-category"><td colspan="6">Expenses</td></tr>`;
+      expenseItems.forEach(pfRow=>{
+        const stmtRow = stmtByLabel[mapping[pfRow.label]];
+        if(!stmtRow) return;
+        const ytd = stmtRow.values.slice(0,monthIdx+1).reduce((a,b)=>a+b,0);
+        const pfAnnual = pfRow.total;
+        const varD = ytd - pfAnnual;
+        const varP = pfAnnual ? varD/Math.abs(pfAnnual)*100 : null;
+        const vCls = varD<=0?'val-pos':'val-neg';
+        html += `<tr><td style="padding-left:16px">${stmtRow.label}</td><td style="font-size:11px;color:var(--text3)">${pfRow.label}</td>
+          <td>${fmt(ytd)}</td><td>${fmt(pfAnnual)}</td>
+          <td class="${vCls}">${fmtVar(varD)}</td><td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td></tr>`;
+      });
+    }
+    html += `</tbody></table></div></div>`;
+  }
+
   // YTD vs annual budget
   if(hasBG) {
+    const hasPriorYear = bg.rows.some(r=>r.priorActual!==null&&r.priorActual!==undefined);
     html += `<div class="bench-section">
       <div class="bench-title">YTD actual vs annual budget (${stmt.months[0]} – ${selMonth})</div>
       <div class="bench-wrap"><table class="bench-table">
-      <thead><tr><th>Account</th><th>YTD Actual</th><th>Annual Budget</th><th>Budget used %</th><th>Remaining</th></tr></thead><tbody>`;
+      <thead><tr><th>Account</th><th>YTD Actual</th><th>Annual Budget</th><th>Budget used %</th><th>Remaining</th>${hasPriorYear?'<th>2025 Actual</th>':''}</tr></thead><tbody>`;
     stmt.rows.forEach(r=>{
       if(r.isCategory) return;
       const lc = r.label.toLowerCase();
@@ -1316,11 +1677,13 @@ function renderBenchmarkTab() {
       // For income/NOI: over budget is good, under is bad
       const pctCls = pct!==null ? (isExp ? (pct>100?'val-neg':'val-pos') : (pct>100?'val-pos':'val-neg')) : '';
       const remCls = rem!==null ? (isExp ? (rem>=0?'val-pos':'val-neg') : (rem>=0?'val-neg':'val-pos')) : '';
+      const priorActual = bgRow ? bgRow.priorActual : null;
       html += `<tr class="${cls}">
         <td>${r.label}</td><td>${fmt(ytd)}</td>
         <td>${bgAnnual!==null?fmt(bgAnnual):'—'}</td>
         <td class="${pctCls}">${pct!==null?pct.toFixed(1)+'%':'—'}</td>
         <td class="${remCls}">${rem!==null?fmtVar(rem):'—'}</td>
+        ${hasPriorYear?`<td>${priorActual!==null?fmt(priorActual):'—'}</td>`:''}
       </tr>`;
     });
     html += `</tbody></table></div></div>`;
