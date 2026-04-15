@@ -1,0 +1,1197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stabilized Asset Meeting</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#fff;--bg2:#f7f7f5;--bg3:#f0efeb;
+    --text:#1a1a18;--text2:#555551;--text3:#9b9994;
+    --border:#e5e4de;--border2:#cccac3;
+    --blue:#185fa5;--blue-bg:#e6f1fb;
+    --green:#3b6d11;--green-bg:#eaf3de;
+    --amber:#854f0b;--amber-bg:#faeeda;
+    --red:#a32d2d;--red-bg:#fcebeb;
+    --radius:8px;--radius-lg:12px;
+  }
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg3);color:var(--text);font-size:14px;min-height:100vh}
+  
+  /* TOP BAR */
+  .topbar{background:var(--bg);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+  .topbar-left{display:flex;align-items:center;gap:16px}
+  .topbar-title{font-size:15px;font-weight:500}
+  .topbar-month{font-size:13px;color:var(--text2);background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:4px 10px}
+  .topbar-right{display:flex;align-items:center;gap:10px}
+  .btn{font-size:13px;padding:6px 14px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg);color:var(--text);cursor:pointer;font-family:inherit}
+  .btn:hover{background:var(--bg2)}
+  .btn-primary{background:var(--blue);color:#fff;border-color:var(--blue)}
+  .btn-primary:hover{background:#0c447c}
+
+  /* LAYOUT */
+  .layout{display:grid;grid-template-columns:240px 1fr;min-height:calc(100vh - 49px)}
+
+  /* SIDEBAR */
+  .sidebar{background:var(--bg);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+  .sidebar-header{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+  .sidebar-header-label{font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em}
+  .sidebar-search{width:100%;padding:8px 14px;border-bottom:1px solid var(--border)}
+  .sidebar-search input{width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;background:var(--bg2);color:var(--text);outline:none}
+  .sidebar-search input:focus{border-color:var(--blue)}
+  .prop-list{overflow-y:auto;flex:1}
+  .prop-item{display:flex;align-items:center;gap:8px;padding:8px 14px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .1s}
+  .prop-item:hover{background:var(--bg2)}
+  .prop-item.active{background:var(--blue-bg)}
+  .prop-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+  .dot-none{background:var(--border2)}
+  .dot-ok{background:#639922}
+  .dot-warn{background:#ba7517}
+  .dot-flag{background:#e24b4a}
+  .prop-info{flex:1;min-width:0}
+  .prop-name{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+  .prop-meta{font-size:11px;color:var(--text3);margin-top:1px}
+  .prop-sys-badge{font-size:10px;padding:1px 5px;border-radius:3px;background:var(--bg3);color:var(--text2);border:1px solid var(--border);flex-shrink:0}
+  .sidebar-legend{padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:12px}
+  .legend-item{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text3)}
+  .legend-dot{width:7px;height:7px;border-radius:50%}
+
+  /* PORTFOLIO SUMMARY */
+  .portfolio-view{display:none}
+  .portfolio-view.active{display:block}
+  .portfolio-header{padding:20px 24px 0}
+  .portfolio-header h2{font-size:18px;font-weight:500;margin-bottom:4px}
+  .portfolio-sub{font-size:13px;color:var(--text2)}
+  .portfolio-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:16px 24px}
+  .kpi-card{background:var(--bg2);border-radius:var(--radius);padding:14px}
+  .kpi-label{font-size:11px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.04em}
+  .kpi-val{font-size:22px;font-weight:500}
+  .portfolio-table-wrap{margin:0 24px 24px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
+  .portfolio-table{width:100%;border-collapse:collapse;font-size:13px}
+  .portfolio-table th{background:var(--bg2);padding:9px 12px;text-align:left;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)}
+  .portfolio-table td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+  .portfolio-table tr:last-child td{border-bottom:none}
+  .portfolio-table tr:hover td{background:var(--bg2);cursor:pointer}
+
+  /* PROPERTY DETAIL */
+  .detail-view{display:none;flex-direction:column}
+  .detail-view.active{display:flex}
+  .detail-header{padding:16px 24px;border-bottom:1px solid var(--border);background:var(--bg);display:flex;align-items:center;justify-content:space-between}
+  .detail-header-left h2{font-size:16px;font-weight:500}
+  .detail-header-left .detail-meta{font-size:12px;color:var(--text3);margin-top:2px}
+  .tabs{display:flex;border-bottom:1px solid var(--border);background:var(--bg);padding:0 24px;gap:0}
+  .tab{font-size:13px;padding:10px 16px;cursor:pointer;color:var(--text2);border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
+  .tab.active{color:var(--text);border-bottom-color:var(--text);font-weight:500}
+  .tab:hover:not(.active){color:var(--text)}
+  .tab-content{display:none;padding:20px 24px;flex:1}
+  .tab-content.active{display:block}
+
+  /* UPLOAD ZONE */
+  .upload-section{margin-bottom:20px}
+  .upload-section-title{font-size:13px;font-weight:500;margin-bottom:10px;color:var(--text2)}
+  .upload-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+  .upload-slot{border:1px dashed var(--border2);border-radius:var(--radius);padding:14px;text-align:center;cursor:pointer;transition:all .15s;position:relative}
+  .upload-slot:hover{border-color:var(--blue);background:var(--blue-bg)}
+  .upload-slot.has-file{border-style:solid;border-color:var(--green);background:var(--green-bg)}
+  .upload-slot input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+  .upload-slot-icon{font-size:20px;margin-bottom:6px;color:var(--text3)}
+  .upload-slot-label{font-size:12px;font-weight:500;color:var(--text2);margin-bottom:3px}
+  .upload-slot-sub{font-size:11px;color:var(--text3)}
+  .upload-slot.has-file .upload-slot-label{color:var(--green)}
+
+  /* STATEMENT TABLE */
+  .stmt-controls{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+  .stmt-controls label{font-size:12px;color:var(--text2)}
+  .stmt-controls select{font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit}
+  .stmt-wrap{border:1px solid var(--border);border-radius:var(--radius-lg);overflow:auto;max-height:60vh}
+  .stmt-table{width:100%;border-collapse:collapse;font-size:12px;min-width:700px}
+  .stmt-table th{background:var(--bg2);padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0}
+  .stmt-table th:first-child{text-align:left;position:sticky;top:0;left:0;z-index:2;min-width:220px}
+  .stmt-table td{padding:6px 10px;border-bottom:1px solid var(--border);text-align:right}
+  .stmt-table td:first-child{text-align:left;position:sticky;left:0;background:var(--bg);z-index:1}
+  .stmt-table tr:last-child td{border-bottom:none}
+  .stmt-table .row-category td{background:var(--bg2);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--text2)}
+  .stmt-table .row-category td:first-child{background:var(--bg2)}
+  .stmt-table .row-subtotal td{font-weight:500;background:var(--bg3)}
+  .stmt-table .row-subtotal td:first-child{background:var(--bg3)}
+  .stmt-table .row-total td{font-weight:500;background:var(--bg2);border-top:2px solid var(--border2)}
+  .stmt-table .row-total td:first-child{background:var(--bg2)}
+  .stmt-table .row-noi td{font-weight:500;color:var(--blue);background:var(--blue-bg)}
+  .stmt-table .row-noi td:first-child{background:var(--blue-bg)}
+  .val-pos{color:var(--green)}
+  .val-neg{color:var(--red)}
+  .indent-1{padding-left:24px!important}
+  .indent-2{padding-left:40px!important}
+
+  /* KPI CARDS IN DETAIL */
+  .kpi-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+  .kpi-delta{font-size:11px;margin-top:3px}
+
+  /* BENCHMARK COMPARISON */
+  .bench-section{margin-bottom:20px}
+  .bench-title{font-size:13px;font-weight:500;margin-bottom:10px;color:var(--text2)}
+  .bench-wrap{border:1px solid var(--border);border-radius:var(--radius-lg);overflow:auto}
+  .bench-table{width:100%;border-collapse:collapse;font-size:12px}
+  .bench-table th{background:var(--bg2);padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)}
+  .bench-table th:first-child{text-align:left;min-width:180px}
+  .bench-table td{padding:7px 10px;border-bottom:1px solid var(--border);text-align:right}
+  .bench-table td:first-child{text-align:left}
+  .bench-table tr:last-child td{border-bottom:none}
+  .bench-table .row-total td{font-weight:500;background:var(--bg2)}
+  .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:500}
+  .badge-ok{background:var(--green-bg);color:var(--green)}
+  .badge-warn{background:var(--amber-bg);color:var(--amber)}
+  .badge-flag{background:var(--red-bg);color:var(--red)}
+  .badge-neutral{background:var(--bg3);color:var(--text2)}
+
+  /* RENT ROLL */
+  .rr-wrap{border:1px solid var(--border);border-radius:var(--radius-lg);overflow:auto;max-height:60vh}
+  .rr-table{width:100%;border-collapse:collapse;font-size:12px;min-width:800px}
+  .rr-table th{background:var(--bg2);padding:8px 10px;text-align:left;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0}
+  .rr-table td{padding:6px 10px;border-bottom:1px solid var(--border)}
+  .rr-table tr:last-child td{border-bottom:none}
+
+  /* NOTES */
+  .notes-prop-header{font-size:13px;font-weight:500;margin-bottom:8px}
+  .notes-textarea{width:100%;min-height:80px;padding:10px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;font-family:inherit;resize:vertical;color:var(--text);background:var(--bg);line-height:1.5;outline:none}
+  .notes-textarea:focus{border-color:var(--blue)}
+  .notes-flags{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+  .flag-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;cursor:pointer;border:1px solid transparent}
+  .flag-action{background:var(--amber-bg);color:var(--amber);border-color:#fac775}
+  .flag-concern{background:var(--red-bg);color:var(--red);border-color:#f7c1c1}
+  .flag-ok{background:var(--green-bg);color:var(--green);border-color:#c0dd97}
+  .notes-list{margin-top:16px}
+  .note-item{padding:10px;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px;display:flex;gap:10px;align-items:flex-start}
+  .note-item .flag-chip{flex-shrink:0;cursor:default}
+  .note-item .note-text{font-size:13px;flex:1}
+  .note-item .note-prop{font-size:11px;color:var(--text3)}
+  .note-delete{font-size:11px;color:var(--text3);cursor:pointer;padding:2px 6px;border-radius:4px}
+  .note-delete:hover{background:var(--red-bg);color:var(--red)}
+  .notes-export-bar{margin-top:16px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px}
+
+  /* UPLOAD NOTICE */
+  .upload-notice{text-align:center;padding:40px 20px;color:var(--text3)}
+  .upload-notice svg{margin-bottom:12px;opacity:0.4}
+  .upload-notice p{font-size:14px}
+
+  /* PROFORMA/BUDGET SETUP */
+  .setup-section{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:16px}
+  .setup-title{font-size:13px;font-weight:500;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .setup-saved-badge{font-size:11px;padding:2px 8px;border-radius:4px;background:var(--green-bg);color:var(--green)}
+  .setup-row{display:flex;align-items:center;gap:10px}
+  .setup-file-label{font-size:12px;color:var(--text2);min-width:100px}
+
+  /* MODAL */
+  .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:200;align-items:center;justify-content:center}
+  .modal-overlay.open{display:flex}
+  .modal{background:var(--bg);border-radius:var(--radius-lg);padding:24px;max-width:480px;width:90%;border:1px solid var(--border)}
+  .modal h3{font-size:16px;font-weight:500;margin-bottom:16px}
+  .modal-field{margin-bottom:12px}
+  .modal-field label{display:block;font-size:12px;color:var(--text2);margin-bottom:4px}
+  .modal-field input,.modal-field select{width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;font-family:inherit;color:var(--text);background:var(--bg)}
+  .modal-field input:focus,.modal-field select:focus{outline:none;border-color:var(--blue)}
+  .modal-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+
+  /* SCROLLBAR */
+  ::-webkit-scrollbar{width:6px;height:6px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="topbar-title">Stabilized Asset Meeting</span>
+    <span class="topbar-month" id="meeting-month">—</span>
+  </div>
+  <div class="topbar-right">
+    <button class="btn" onclick="showView('portfolio')">Portfolio view</button>
+    <button class="btn" onclick="openAddProperty()">+ Add property</button>
+    <button class="btn btn-primary" onclick="exportNotes()">Export notes</button>
+  </div>
+</div>
+
+<div class="layout">
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-header-label">Properties (<span id="prop-count">0</span>)</span>
+    </div>
+    <div class="sidebar-search">
+      <input type="text" placeholder="Search properties..." oninput="filterProps(this.value)" id="prop-search">
+    </div>
+    <div class="prop-list" id="prop-list"></div>
+    <div class="sidebar-legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#639922"></div>On track</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#ba7517"></div>Watch</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#e24b4a"></div>Flag</div>
+    </div>
+  </div>
+
+  <!-- MAIN CONTENT -->
+  <div style="overflow:auto">
+
+    <!-- PORTFOLIO VIEW -->
+    <div class="portfolio-view active" id="portfolio-view">
+      <div class="portfolio-header">
+        <h2>Portfolio overview</h2>
+        <div class="portfolio-sub" id="portfolio-sub">Upload files for each property to see performance summary.</div>
+      </div>
+      <div class="portfolio-kpis" id="portfolio-kpis">
+        <div class="kpi-card"><div class="kpi-label">Properties loaded</div><div class="kpi-val" id="pk-loaded">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">On track</div><div class="kpi-val" style="color:#639922" id="pk-ok">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Watch</div><div class="kpi-val" style="color:#ba7517" id="pk-warn">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Flagged</div><div class="kpi-val" style="color:#e24b4a" id="pk-flag">0</div></div>
+      </div>
+      <div class="portfolio-table-wrap">
+        <table class="portfolio-table">
+          <thead>
+            <tr>
+              <th>Property</th><th>System</th><th>Status</th>
+              <th>Total income</th><th>Total expense</th><th>NOI</th>
+              <th>vs Proforma NOI</th><th>Notes</th>
+            </tr>
+          </thead>
+          <tbody id="portfolio-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- DETAIL VIEW -->
+    <div class="detail-view" id="detail-view">
+      <div class="detail-header">
+        <div class="detail-header-left">
+          <h2 id="detail-prop-name">—</h2>
+          <div class="detail-meta" id="detail-prop-meta">—</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span id="detail-status-badge" class="badge badge-neutral">No data</span>
+          <button class="btn" onclick="deleteProperty()" style="color:#a32d2d;border-color:#f7c1c1">Remove</button>
+        </div>
+      </div>
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('upload')">Upload files</div>
+        <div class="tab" onclick="switchTab('statement')">Income / Cash flow</div>
+        <div class="tab" onclick="switchTab('benchmarks')">Benchmarks</div>
+        <div class="tab" onclick="switchTab('rentroll')">Rent roll</div>
+        <div class="tab" onclick="switchTab('notes')">Notes</div>
+      </div>
+
+      <!-- UPLOAD TAB -->
+      <div class="tab-content active" id="tab-upload">
+        <div class="upload-section">
+          <div class="upload-section-title">Monthly files (re-upload each month)</div>
+          <div class="upload-grid" id="monthly-upload-grid"></div>
+        </div>
+        <div class="upload-section">
+          <div class="upload-section-title">Benchmarks (saved — only re-upload when changed)</div>
+          <div class="upload-grid" id="benchmark-upload-grid"></div>
+        </div>
+      </div>
+
+      <!-- STATEMENT TAB -->
+      <div class="tab-content" id="tab-statement">
+        <div id="stmt-container">
+          <div class="upload-notice">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12h6M9 16h6M5 20h14a2 2 0 0 0 2-2V8l-5-5H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg>
+            <p>Upload an income statement or cash flow file on the Upload tab to view the statement here.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- BENCHMARKS TAB -->
+      <div class="tab-content" id="tab-benchmarks">
+        <div id="bench-container">
+          <div class="upload-notice">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            <p>Upload a proforma and/or budget file, plus a monthly statement, to see benchmark comparisons.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- RENT ROLL TAB -->
+      <div class="tab-content" id="tab-rentroll">
+        <div id="rr-container">
+          <div class="upload-notice">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            <p>Upload a rent roll file on the Upload tab to view unit-level data here.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- NOTES TAB -->
+      <div class="tab-content" id="tab-notes">
+        <div class="notes-prop-header" id="notes-prop-label">Notes for this property</div>
+        <textarea class="notes-textarea" id="note-input" placeholder="Type a note, observation, or action item..."></textarea>
+        <div class="notes-flags">
+          <div class="flag-chip flag-action" onclick="addNote('action')">+ Action item</div>
+          <div class="flag-chip flag-concern" onclick="addNote('concern')">+ Flag concern</div>
+          <div class="flag-chip flag-ok" onclick="addNote('note')">+ General note</div>
+        </div>
+        <div class="notes-list" id="notes-list"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ADD PROPERTY MODAL -->
+<div class="modal-overlay" id="modal-add">
+  <div class="modal">
+    <h3>Add property</h3>
+    <div class="modal-field">
+      <label>Property name</label>
+      <input type="text" id="modal-name" placeholder="e.g. Riverside Commons">
+    </div>
+    <div class="modal-field">
+      <label>System</label>
+      <select id="modal-system">
+        <option value="buildium">Buildium (income statement)</option>
+        <option value="appfolio">Appfolio (cash flow statement)</option>
+      </select>
+    </div>
+    <div class="modal-field">
+      <label>Units (optional)</label>
+      <input type="number" id="modal-units" placeholder="e.g. 24">
+    </div>
+    <div class="modal-field">
+      <label>Purchase date (for proforma year calculation)</label>
+      <input type="date" id="modal-purchase-date">
+    </div>
+    <div class="modal-btns">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="addProperty()">Add property</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── SEED DATA ────────────────────────────────────────────────────────────────
+const SEED_PROPERTIES = [
+  {name:'321 Townhomes',system:'buildium',units:18,purchaseDate:'2021-11-12'},
+  {name:'9447 J Street',system:'buildium',units:2,purchaseDate:'2022-07-15'},
+  {name:'Aksarben Villas',system:'buildium',units:24,purchaseDate:'2024-06-28'},
+  {name:'Bancroft Place',system:'buildium',units:52,purchaseDate:'2023-12-15'},
+  {name:'Boulder Pointe',system:'buildium',units:52,purchaseDate:'2023-12-15'},
+  {name:'Brent Village',system:'buildium',units:180,purchaseDate:'2025-06-17'},
+  {name:'Carter Place (1003-1005 Ave K)',system:'buildium',units:20,purchaseDate:'2022-08-11'},
+  {name:'Cedar Haven',system:'buildium',units:34,purchaseDate:'2025-02-12'},
+  {name:'College Heights',system:'buildium',units:22,purchaseDate:'2023-05-26'},
+  {name:'Copperleaf',system:'buildium',units:88,purchaseDate:'2019-05-07'},
+  {name:'Cordes',system:'buildium',units:24,purchaseDate:'2020-02-21'},
+  {name:'Eagle Creek',system:'buildium',units:65,purchaseDate:'2021-08-11'},
+  {name:'Judee Estates',system:'buildium',units:56,purchaseDate:'2023-04-28'},
+  {name:'Langston Apartments',system:'buildium',units:80,purchaseDate:'2021-08-01'},
+  {name:'Maple Park / The Enclave',system:'buildium',units:77,purchaseDate:'2020-09-02'},
+  {name:'Park Place',system:'buildium',units:262,purchaseDate:'2021-12-29'},
+  {name:"Patrick's Place",system:'buildium',units:48,purchaseDate:'2021-04-16'},
+  {name:'Sandra Ann',system:'buildium',units:26,purchaseDate:'2020-11-05'},
+  {name:'Tall Oaks',system:'buildium',units:52,purchaseDate:'2020-03-10'},
+  {name:'The Landmark on Dakota',system:'buildium',units:22,purchaseDate:'2022-03-28'},
+  {name:'The Preserve',system:'buildium',units:72,purchaseDate:'2020-12-15'},
+  {name:'The Todd',system:'buildium',units:22,purchaseDate:'2022-07-15'},
+  {name:'The Vincent',system:'buildium',units:48,purchaseDate:'2019-09-05'},
+  {name:'Venice',system:'buildium',units:11,purchaseDate:'2022-05-31'},
+  {name:'Villa Blanca',system:'buildium',units:24,purchaseDate:'2022-08-12'},
+  {name:'60th Street Duplexes',system:'buildium',units:10,purchaseDate:'2024-06-08'},
+  {name:'15th Street 9 Plex',system:'appfolio',units:9,purchaseDate:'2021-10-08'},
+  {name:'Adventureland',system:'appfolio',units:72,purchaseDate:'2024-08-30'},
+  {name:'Altoona Terrace',system:'appfolio',units:83,purchaseDate:'2024-08-30'},
+  {name:'BG Flats',system:'appfolio',units:42,purchaseDate:'2022-08-10'},
+  {name:'Boulder Ridge',system:'appfolio',units:46,purchaseDate:'2021-11-18'},
+  {name:'Capitol City Villas',system:'appfolio',units:67,purchaseDate:'2022-03-15'},
+  {name:'Champion Villas',system:'appfolio',units:81,purchaseDate:'2022-09-21'},
+  {name:'Dakota Bend',system:'appfolio',units:56,purchaseDate:'2022-04-21'},
+  {name:'Dundee Village',system:'appfolio',units:20,purchaseDate:'2017-12-01'},
+  {name:'Franklin Court',system:'appfolio',units:172,purchaseDate:'2024-08-30'},
+  {name:'Grandview',system:'appfolio',units:15,purchaseDate:'2022-07-15'},
+  {name:'Lions Gate',system:'appfolio',units:38,purchaseDate:'2022-11-10'},
+  {name:'The Whitney',system:'appfolio',units:28,purchaseDate:'2021-12-19'},
+  {name:'Uptown Flats',system:'appfolio',units:19,purchaseDate:'2021-12-19'},
+];
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+let properties = JSON.parse(localStorage.getItem('sam_properties') || 'null');
+let propData = JSON.parse(localStorage.getItem('sam_propdata') || '{}');
+let notes = JSON.parse(localStorage.getItem('sam_notes') || '[]');
+let currentPropId = null;
+let currentView = 'portfolio';
+
+const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function save() {
+  localStorage.setItem('sam_properties', JSON.stringify(properties));
+  localStorage.setItem('sam_propdata', JSON.stringify(propData));
+  localStorage.setItem('sam_notes', JSON.stringify(notes));
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+function init() {
+  if(!properties) {
+    properties = SEED_PROPERTIES.map((p,i)=>({
+      id: 'prop_seed_'+i,
+      name: p.name,
+      system: p.system,
+      units: p.units||null
+    }));
+    save();
+  }
+  const now = new Date();
+  document.getElementById('meeting-month').textContent = now.toLocaleDateString('en-US',{month:'long',year:'numeric'});
+  renderSidebar();
+  renderPortfolio();
+}
+
+// ─── SIDEBAR ──────────────────────────────────────────────────────────────────
+function renderSidebar(filter='') {
+  const list = document.getElementById('prop-list');
+  document.getElementById('prop-count').textContent = properties.length;
+  const filtered = filter ? properties.filter(p=>p.name.toLowerCase().includes(filter.toLowerCase())) : properties;
+  list.innerHTML = filtered.map(p => {
+    const d = propData[p.id] || {};
+    const dot = getStatusDot(p.id);
+    const active = p.id === currentPropId ? 'active' : '';
+    return `<div class="prop-item ${active}" onclick="selectProp('${p.id}')">
+      <div class="prop-dot ${dot}"></div>
+      <div class="prop-info">
+        <div class="prop-name">${p.name}</div>
+        <div class="prop-meta">${p.units ? p.units+' units · ' : ''}${p.system==='buildium'?'Buildium':'Appfolio'}</div>
+      </div>
+      <div class="prop-sys-badge">${p.system==='buildium'?'BLD':'AFP'}</div>
+    </div>`;
+  }).join('');
+  if(!filtered.length) list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);font-size:13px">No properties found</div>';
+}
+
+function filterProps(val) { renderSidebar(val); }
+
+function getStatusDot(id) {
+  const d = propData[id] || {};
+  if(!d.statement) return 'dot-none';
+  const noi = getKeyMetric(id, 'noi_total');
+  const proformaNoi = getKeyMetric(id, 'proforma_noi');
+  if(proformaNoi && noi !== null) {
+    const pct = (noi - proformaNoi) / Math.abs(proformaNoi);
+    if(pct >= -0.03) return 'dot-ok';
+    if(pct >= -0.10) return 'dot-warn';
+    return 'dot-flag';
+  }
+  return 'dot-none';
+}
+
+// ─── PROPERTY SELECTION ───────────────────────────────────────────────────────
+function selectProp(id) {
+  currentPropId = id;
+  const p = properties.find(x=>x.id===id);
+  showView('detail');
+  document.getElementById('detail-prop-name').textContent = p.name;
+  const pfYear = p.purchaseDate ? getProformaYear(p.purchaseDate) : null;
+  const pfYearStr = pfYear ? ` · Proforma Year ${pfYear}` : ' · No purchase date set';
+  document.getElementById('detail-prop-meta').textContent = `${p.system==='buildium'?'Buildium':'Appfolio'} · ${p.units||'?'} units${pfYearStr}`;
+  renderSidebar(document.getElementById('prop-search').value);
+  renderUploadTab(p);
+  updateDetailBadge();
+  renderNotesTab();
+  renderStatementTab();
+  renderBenchmarkTab();
+}
+
+function showView(view) {
+  currentView = view;
+  document.getElementById('portfolio-view').classList.toggle('active', view==='portfolio');
+  document.getElementById('detail-view').classList.toggle('active', view==='detail');
+  if(view==='portfolio') { currentPropId=null; renderSidebar(); renderPortfolio(); }
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i)=>{
+    const names=['upload','statement','benchmarks','rentroll','notes'];
+    t.classList.toggle('active', names[i]===name);
+  });
+  document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+}
+
+// ─── ADD / DELETE PROPERTY ────────────────────────────────────────────────────
+function openAddProperty() { document.getElementById('modal-add').classList.add('open'); document.getElementById('modal-name').focus(); }
+function closeModal() { document.getElementById('modal-add').classList.remove('open'); }
+
+function addProperty() {
+  const name = document.getElementById('modal-name').value.trim();
+  if(!name) return alert('Please enter a property name.');
+  const system = document.getElementById('modal-system').value;
+  const units = parseInt(document.getElementById('modal-units').value)||null;
+  const purchaseDate = document.getElementById('modal-purchase-date').value || null;
+  const id = 'prop_'+Date.now();
+  properties.push({id,name,system,units,purchaseDate});
+  save();
+  closeModal();
+  document.getElementById('modal-name').value='';
+  document.getElementById('modal-units').value='';
+  document.getElementById('modal-purchase-date').value='';
+  renderSidebar();
+  renderPortfolio();
+  selectProp(id);
+}
+
+function deleteProperty() {
+  const p = properties.find(x=>x.id===currentPropId);
+  if(!confirm(`Remove "${p.name}"? This will delete all uploaded data for this property.`)) return;
+  properties = properties.filter(x=>x.id!==currentPropId);
+  delete propData[currentPropId];
+  notes = notes.filter(n=>n.propId!==currentPropId);
+  save();
+  currentPropId=null;
+  showView('portfolio');
+  renderSidebar();
+}
+
+// ─── UPLOAD TAB ───────────────────────────────────────────────────────────────
+function renderUploadTab(p) {
+  const d = propData[p.id] || {};
+  const stmtLabel = p.system==='buildium' ? 'Income statement' : 'Cash flow statement';
+  const monthly = [
+    {key:'statement', label:stmtLabel, sub:'Monthly .xlsx export'},
+    {key:'rentroll', label:'Rent roll', sub:'Monthly .xlsx export'},
+  ];
+  const benchmarks = [
+    {key:'budget', label:'Budget', sub:'Annual — re-upload each year'},
+    {key:'proforma', label:'Proforma', sub:'Set once — loaded from saved data'},
+  ];
+  document.getElementById('monthly-upload-grid').innerHTML = monthly.map(f=>uploadSlot(f,d,p.id,'monthly')).join('');
+  document.getElementById('benchmark-upload-grid').innerHTML = benchmarks.map(f=>uploadSlot(f,d,p.id,'benchmark')).join('');
+}
+
+function uploadSlot(f, d, propId, type) {
+  const hasFile = d[f.key] ? true : false;
+  const savedLabel = hasFile ? (d[f.key+'_filename']||'File loaded') : f.sub;
+  return `<label class="upload-slot ${hasFile?'has-file':''}">
+    <input type="file" accept=".xlsx,.xls" onchange="handleUpload(event,'${propId}','${f.key}','${type}')">
+    <div class="upload-slot-icon">${hasFile?'✓':'↑'}</div>
+    <div class="upload-slot-label">${f.label}</div>
+    <div class="upload-slot-sub">${savedLabel}</div>
+  </label>`;
+}
+
+function handleUpload(event, propId, fileKey, type) {
+  const file = event.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const wb = XLSX.read(e.target.result, {type:'array'});
+      const p = properties.find(x=>x.id===propId);
+      let parsed;
+      if(fileKey==='statement') {
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        parsed = p.system==='buildium' ? parseBuildium(ws) : parseAppfolio(ws);
+      } else if(fileKey==='rentroll') {
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        parsed = parseRentRoll(ws);
+      } else if(fileKey==='proforma') {
+        // Proforma uses 'Traditional Financing' sheet
+        const sheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('traditional financing')) || wb.SheetNames[0];
+        const ws = wb.Sheets[sheetName];
+        if(!ws) throw new Error('Could not find "Traditional Financing" sheet in proforma file.');
+        parsed = parseProforma(ws, p.purchaseDate);
+      } else if(fileKey==='budget') {
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        parsed = p.system==='buildium' ? parseBuildium(ws) : parseAppfolioBudget(ws);
+      }
+      if(!propData[propId]) propData[propId]={};
+      propData[propId][fileKey] = parsed;
+      propData[propId][fileKey+'_filename'] = file.name;
+      save();
+      const prop = properties.find(x=>x.id===propId);
+      renderUploadTab(prop);
+      updateDetailBadge();
+      renderStatementTab();
+      renderBenchmarkTab();
+      renderRentRollTab();
+      renderPortfolio();
+      renderSidebar(document.getElementById('prop-search').value);
+    } catch(err) {
+      alert('Error parsing file: '+err.message+'\n\nMake sure this is a valid export file.');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// ─── PARSERS ──────────────────────────────────────────────────────────────────
+// Returns: { months:['Apr 2025',...], rows:[{label, level, isCategory, isSubtotal, isTotal, isNOI, values:[...12 nums], total}], propertyName, period }
+
+function parseAppfolio(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  let headerRow = -1;
+  for(let i=0;i<data.length;i++) {
+    if(data[i][0]==='Account Name') { headerRow=i; break; }
+  }
+  if(headerRow<0) throw new Error('Could not find "Account Name" header row in Appfolio file.');
+  
+  const headers = data[headerRow];
+  const months = headers.slice(1, headers.length-1).filter(Boolean);
+  const totalCol = headers.length-1;
+  
+  let propertyName='', period='';
+  for(let i=0;i<headerRow;i++) {
+    const cell = data[i][0];
+    if(!cell) continue;
+    if(cell.startsWith('Properties:')) propertyName = cell.replace('Properties:','').trim();
+    if(cell.startsWith('Period Range:')) period = cell.replace('Period Range:','').trim();
+  }
+
+  const rows = [];
+  const NOI_LABELS = ['noi - net operating income','net operating income'];
+  const TOTAL_INCOME_LABELS = ['total operating income','total income'];
+  const TOTAL_EXPENSE_LABELS = ['total operating expense','total expense'];
+  const NET_INCOME_LABELS = ['net income'];
+
+  for(let i=headerRow+1;i<data.length;i++) {
+    const row = data[i];
+    const raw = row[0];
+    if(!raw) continue;
+    const label = raw.toString().trim();
+    if(!label) continue;
+    const indent = raw.toString().match(/^(\s*)/)[1].length;
+    const level = Math.min(Math.floor(indent/4), 2);
+    const lc = label.toLowerCase();
+    const isCategory = !row.slice(1).some(v=>v!==null && v!=='');
+    const isNOI = NOI_LABELS.some(x=>lc.includes(x));
+    const isTotalIncome = TOTAL_INCOME_LABELS.some(x=>lc===x);
+    const isTotalExpense = TOTAL_EXPENSE_LABELS.some(x=>lc===x);
+    const isNetIncome = NET_INCOME_LABELS.some(x=>lc===x);
+    const isSubtotal = !isCategory && lc.startsWith('total') && !isNOI && !isTotalIncome && !isTotalExpense;
+    const isTotal = isTotalIncome || isTotalExpense || isNetIncome;
+    const values = headers.slice(1, headers.length-1).map((_,ci)=>parseFloat(row[ci+1])||0);
+    const total = parseFloat(row[totalCol])||values.reduce((a,b)=>a+b,0);
+    rows.push({label:label.trim(), level, isCategory, isSubtotal, isTotal, isNOI, values, total,
+               isTotalIncome, isTotalExpense, isNetIncome});
+  }
+  return {months, rows, propertyName, period, system:'appfolio'};
+}
+
+function parseBuildium(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  let headerRow = -1;
+  for(let i=0;i<data.length;i++) {
+    const row = data[i];
+    if(row[1] && row[1].toString().match(/^\d{2}-\d{4}$/)) { headerRow=i; break; }
+    if(row[1] && row[1].toString().match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s/)) { headerRow=i; break; }
+  }
+  if(headerRow<0) throw new Error('Could not find header row in Buildium file (expected date columns like "04-2025").');
+
+  const headers = data[headerRow];
+  const months = headers.slice(1, headers.length-1).filter(Boolean).map(h=>{
+    if(!h) return '';
+    const s = h.toString();
+    if(s.match(/^\d{2}-\d{4}$/)) {
+      const [mm,yyyy] = s.split('-');
+      return MONTH_NAMES[parseInt(mm)-1]+' '+yyyy;
+    }
+    return s;
+  });
+  const totalCol = headers.length-1;
+
+  let propertyName = '';
+  for(let i=0;i<headerRow;i++) {
+    if(data[i][0]) { propertyName=data[i][0].toString().trim(); break; }
+  }
+
+  const rows = [];
+  const NOI_LABELS = ['net operating income'];
+  const TOTAL_INCOME_LABELS = ['total income'];
+  const TOTAL_EXPENSE_LABELS = ['total expense'];
+  const NET_INCOME_LABELS = ['net income'];
+  const SUBTOTAL_PREFIX = ['total for '];
+
+  for(let i=headerRow+1;i<data.length;i++) {
+    const row = data[i];
+    const raw = row[0];
+    if(raw===null||raw===undefined) continue;
+    const label = raw.toString().trim();
+    if(!label) continue;
+    const lc = label.toLowerCase();
+    const isCategory = !row.slice(1,totalCol).some(v=>v!==null && v!=='' && v!==0 && v!=='0');
+    const isNOI = NOI_LABELS.some(x=>lc===x);
+    const isTotalIncome = TOTAL_INCOME_LABELS.some(x=>lc===x);
+    const isTotalExpense = TOTAL_EXPENSE_LABELS.some(x=>lc===x);
+    const isNetIncome = NET_INCOME_LABELS.some(x=>lc===x);
+    const isSubtotal = SUBTOTAL_PREFIX.some(x=>lc.startsWith(x));
+    const isTotal = isTotalIncome || isTotalExpense || isNetIncome;
+    const values = headers.slice(1, headers.length-1).map((_,ci)=>parseFloat(row[ci+1])||0);
+    const total = parseFloat(row[totalCol])||values.reduce((a,b)=>a+b,0);
+    const cleanLabel = isSubtotal ? label.replace(/^total for /i,'').trim() : label;
+    rows.push({label:cleanLabel, level: isSubtotal||isTotal||isNOI ? 0 : 1,
+               isCategory, isSubtotal, isTotal, isNOI, values, total,
+               isTotalIncome, isTotalExpense, isNetIncome});
+  }
+  return {months, rows, propertyName, period:'', system:'buildium'};
+}
+
+function parseRentRoll(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  let headerRow = 0;
+  for(let i=0;i<Math.min(10,data.length);i++) {
+    if(data[i].filter(Boolean).length > 3) { headerRow=i; break; }
+  }
+  const headers = data[headerRow].map(h=>h?h.toString().trim():'');
+  const rows = [];
+  for(let i=headerRow+1;i<data.length;i++) {
+    const row = data[i];
+    if(!row.some(Boolean)) continue;
+    const obj = {};
+    headers.forEach((h,ci)=>{ if(h) obj[h]=row[ci]; });
+    rows.push(obj);
+  }
+  return {headers: headers.filter(Boolean), rows};
+}
+
+function getProformaYear(purchaseDate) {
+  if(!purchaseDate) return null;
+  const purchased = new Date(purchaseDate);
+  const now = new Date();
+  const monthsDiff = (now.getFullYear() - purchased.getFullYear()) * 12 + (now.getMonth() - purchased.getMonth());
+  return Math.max(1, Math.ceil(monthsDiff / 12) || 1);
+}
+
+function parseProforma(ws, purchaseDate) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  const pfYear = getProformaYear(purchaseDate) || 1;
+
+  // Row 2 has year numbers: col index 2=Year1, 4=Year2, 6=Year3 etc (every 2 cols)
+  // Find year row
+  let yearRow = -1;
+  for(let i=0;i<10;i++) {
+    if(data[i] && data[i][2] && data[i][2].toString().trim()==='1') { yearRow=i; break; }
+  }
+  if(yearRow<0) throw new Error('Could not find year header row in proforma. Expected row with "1" in column C.');
+
+  // Column index for the target year: Year1=col2, Year2=col4, Year3=col6...
+  const targetCol = 2 + (pfYear - 1) * 2;
+
+  // Key rows to extract
+  const KEY_ROWS = {
+    'Total Annual Operating Income': 'isTotalIncome',
+    'Total Annual Operating Expense': 'isTotalExpense',
+    'Annual Net Operating Income': 'isNOI',
+    'Gross Monthly Operating Income': null,
+    'Monthly Operating Expenses': null,
+  };
+
+  const rows = [];
+  for(let i=yearRow+1;i<data.length;i++) {
+    const row = data[i];
+    if(!row || !row[1]) continue;
+    const label = row[1].toString().trim();
+    const lc = label.toLowerCase();
+    const val = parseFloat(row[targetCol]) || 0;
+    const isNOI = lc.includes('annual net operating income') || lc.includes('net operating income (noi)');
+    const isTotalIncome = lc.includes('total annual operating income');
+    const isTotalExpense = lc.includes('total annual operating expense');
+    if(isNOI || isTotalIncome || isTotalExpense) {
+      rows.push({label, isNOI, isTotalIncome, isTotalExpense, total: val,
+                 values: Array(12).fill(val/12), isCategory:false, isSubtotal:false, isTotal: isTotalIncome||isTotalExpense, isNetIncome:false, level:0});
+    }
+  }
+  return {rows, pfYear, system:'proforma', months: Array(12).fill(''), propertyName:''};
+}
+
+function parseAppfolioBudget(ws) {
+  // Same structure as Appfolio cash flow — reuse that parser
+  // But key label for NOI is 'Net Operating Income' and totals differ slightly
+  const result = parseAppfolio(ws);
+  // Remap NOI label — budget uses 'Net Operating Income' not 'NOI - Net Operating Income'
+  result.rows.forEach(r => {
+    const lc = r.label.toLowerCase();
+    if(lc === 'net operating income' || lc.includes('net operating income')) r.isNOI = true;
+    if(lc === 'total budgeted operating income' || lc === 'total budgeted income') r.isTotalIncome = true;
+    if(lc === 'total budgeted operating expense' || lc === 'total budgeted expense') r.isTotalExpense = true;
+  });
+  result.system = 'appfolio_budget';
+  return result;
+}
+
+// ─── KEY METRICS ──────────────────────────────────────────────────────────────
+function getKeyMetric(propId, metric) {
+  const d = propData[propId]||{};
+  const stmt = d.statement;
+  if(metric==='noi_total') {
+    if(!stmt) return null;
+    const row = stmt.rows.find(r=>r.isNOI);
+    return row ? row.total : null;
+  }
+  if(metric==='income_total') {
+    if(!stmt) return null;
+    const row = stmt.rows.find(r=>r.isTotalIncome);
+    return row ? row.total : null;
+  }
+  if(metric==='expense_total') {
+    if(!stmt) return null;
+    const row = stmt.rows.find(r=>r.isTotalExpense);
+    return row ? row.total : null;
+  }
+  if(metric==='proforma_noi') {
+    const pf = d.proforma;
+    if(!pf) return null;
+    const row = pf.rows.find(r=>r.isNOI);
+    return row ? row.total : null;
+  }
+  if(metric==='budget_noi') {
+    const bg = d.budget;
+    if(!bg) return null;
+    const row = bg.rows.find(r=>r.isNOI);
+    return row ? row.total : null;
+  }
+  return null;
+}
+
+// ─── STATEMENT TAB ────────────────────────────────────────────────────────────
+function renderStatementTab() {
+  if(!currentPropId) return;
+  const d = propData[currentPropId]||{};
+  const stmt = d.statement;
+  const container = document.getElementById('stmt-container');
+  if(!stmt) {
+    container.innerHTML = `<div class="upload-notice"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12h6M9 16h6M5 20h14a2 2 0 0 0 2-2V8l-5-5H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg><p>Upload an income statement or cash flow file on the Upload tab.</p></div>`;
+    return;
+  }
+  const monthOpts = stmt.months.map((m,i)=>`<option value="${i}" ${i===stmt.months.length-1?'selected':''}>${m}</option>`).join('');
+  container.innerHTML = `
+    <div class="stmt-controls">
+      <label>Show month:</label>
+      <select onchange="renderStatementTable(this.value)" id="stmt-month-sel">${monthOpts}</select>
+      <label style="margin-left:12px">View:</label>
+      <select onchange="renderStatementTable(document.getElementById('stmt-month-sel').value)" id="stmt-view-sel">
+        <option value="month">Single month</option>
+        <option value="ytd">YTD total</option>
+        <option value="all">All months</option>
+      </select>
+    </div>
+    <div class="stmt-wrap"><table class="stmt-table" id="stmt-table"></table></div>`;
+  renderStatementTable(stmt.months.length-1);
+}
+
+function renderStatementTable(monthIdx) {
+  const d = propData[currentPropId]||{};
+  const stmt = d.statement;
+  if(!stmt) return;
+  const view = document.getElementById('stmt-view-sel').value;
+  const tbl = document.getElementById('stmt-table');
+  const mi = parseInt(monthIdx);
+
+  let thead, rows_html='';
+  if(view==='month') {
+    thead = `<tr><th style="text-align:left">Account</th><th>${stmt.months[mi]}</th></tr>`;
+    stmt.rows.forEach(r=>{
+      if(r.isCategory) { rows_html+=`<tr class="row-category"><td class="indent-${r.level}">${r.label}</td><td></td></tr>`; return; }
+      const cls = r.isNOI?'row-noi':r.isTotal?'row-total':r.isSubtotal?'row-subtotal':'';
+      const val = r.values[mi];
+      rows_html+=`<tr class="${cls}"><td class="indent-${r.level}">${r.label}</td><td>${fmt(val)}</td></tr>`;
+    });
+  } else if(view==='ytd') {
+    thead = `<tr><th style="text-align:left">Account</th><th>YTD Total</th></tr>`;
+    stmt.rows.forEach(r=>{
+      if(r.isCategory) { rows_html+=`<tr class="row-category"><td class="indent-${r.level}">${r.label}</td><td></td></tr>`; return; }
+      const cls = r.isNOI?'row-noi':r.isTotal?'row-total':r.isSubtotal?'row-subtotal':'';
+      rows_html+=`<tr class="${cls}"><td class="indent-${r.level}">${r.label}</td><td>${fmt(r.total)}</td></tr>`;
+    });
+  } else {
+    const monthCols = stmt.months.map(m=>`<th>${m}</th>`).join('')+'<th>Total</th>';
+    thead = `<tr><th style="text-align:left">Account</th>${monthCols}</tr>`;
+    stmt.rows.forEach(r=>{
+      if(r.isCategory) { rows_html+=`<tr class="row-category"><td>${r.label}</td>${stmt.months.map(()=>'<td></td>').join('')}<td></td></tr>`; return; }
+      const cls = r.isNOI?'row-noi':r.isTotal?'row-total':r.isSubtotal?'row-subtotal':'';
+      const vals = r.values.map(v=>`<td>${fmt(v)}</td>`).join('');
+      rows_html+=`<tr class="${cls}"><td class="indent-${r.level}">${r.label}</td>${vals}<td>${fmt(r.total)}</td></tr>`;
+    });
+  }
+  tbl.innerHTML = `<thead>${thead}</thead><tbody>${rows_html}</tbody>`;
+}
+
+// ─── BENCHMARK TAB ────────────────────────────────────────────────────────────
+function renderBenchmarkTab() {
+  if(!currentPropId) return;
+  const d = propData[currentPropId]||{};
+  const stmt = d.statement;
+  const container = document.getElementById('bench-container');
+  if(!stmt) {
+    container.innerHTML = `<div class="upload-notice"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg><p>Upload your monthly statement first, then upload proforma and/or budget files to see comparisons.</p></div>`;
+    return;
+  }
+
+  const pf = d.proforma;
+  const bg = d.budget;
+  const hasPF = !!pf, hasBG = !!bg;
+
+  const monthIdx = stmt.months.length - 1;
+  const selMonth = stmt.months[monthIdx];
+
+  // Build lookup for proforma and budget by label
+  function buildLookup(parsed) {
+    if(!parsed) return {};
+    const map = {};
+    parsed.rows.forEach(r=>{ map[r.label.toLowerCase()]=r; });
+    return map;
+  }
+  const pfMap = buildLookup(pf);
+  const bgMap = buildLookup(bg);
+
+  // Key rows to highlight
+  const KEY_LABELS = ['total operating income','total income','total budgeted operating income',
+    'total operating expense','total expense','total budgeted operating expense',
+    'noi - net operating income','net operating income','net income','total budgeted income'];
+
+  const p = properties.find(x=>x.id===currentPropId);
+  const pfYear = pf ? (pf.pfYear || getProformaYear(p.purchaseDate) || 1) : null;
+  const pfYearLabel = pfYear ? `Proforma Year ${pfYear} (monthly avg)` : 'Proforma (monthly avg)';
+
+  // Determine columns
+  let cols = ['Account', 'Actual ('+selMonth+')'];
+  if(hasPF) cols.push(pfYearLabel, 'Var $', 'Var %');
+  if(hasBG) cols.push('Budget (monthly avg)', 'Var $', 'Var %');
+  cols.push('Prior month');
+
+  let html = `<div class="bench-section">
+    <div class="bench-title">Month vs benchmarks — ${selMonth}</div>
+    <div class="bench-wrap"><table class="bench-table">
+    <thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody>`;
+
+  stmt.rows.forEach(r=>{
+    if(r.isCategory) return;
+    const lc = r.label.toLowerCase();
+    const isKey = KEY_LABELS.some(k=>lc===k||lc.includes(k));
+    if(!isKey && !r.isSubtotal && !r.isNOI && !r.isTotal) return;
+
+    const actual = r.values[monthIdx];
+    const prevActual = monthIdx > 0 ? r.values[monthIdx-1] : null;
+
+    // For proforma: match by isNOI, isTotalIncome, isTotalExpense flags since label names differ
+    let pfAnnual = null;
+    if(hasPF) {
+      let pfRow = null;
+      if(r.isNOI) pfRow = pf.rows.find(x=>x.isNOI);
+      else if(r.isTotalIncome) pfRow = pf.rows.find(x=>x.isTotalIncome);
+      else if(r.isTotalExpense) pfRow = pf.rows.find(x=>x.isTotalExpense);
+      else pfRow = pfMap[lc];
+      pfAnnual = pfRow ? pfRow.total : null;
+    }
+
+    const bgRow = bgMap[lc] || (hasBG && r.isNOI ? bg.rows.find(x=>x.isNOI) : null)
+                             || (hasBG && r.isTotalIncome ? bg.rows.find(x=>x.isTotalIncome) : null)
+                             || (hasBG && r.isTotalExpense ? bg.rows.find(x=>x.isTotalExpense) : null);
+    const bgAnnual = bgRow ? bgRow.total : null;
+
+    const cls = r.isNOI?'row-noi':r.isTotal?'row-total':'row-subtotal';
+
+    let cells = `<td>${r.label}</td><td>${fmt(actual)}</td>`;
+    if(hasPF) {
+      const pfMonth = pfAnnual !== null ? pfAnnual/12 : null;
+      const varD = pfMonth!==null ? actual - pfMonth : null;
+      const varP = pfMonth ? varD/Math.abs(pfMonth)*100 : null;
+      cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td>`;
+      cells += `<td class="${varD!==null?(varD>=0?'val-pos':'val-neg'):''}">${varD!==null?fmtVar(varD):'—'}</td>`;
+      cells += `<td class="${varP!==null?(varP>=0?'val-pos':'val-neg'):''}">${varP!==null?varP.toFixed(1)+'%':'—'}</td>`;
+    }
+    if(hasBG) {
+      const bgMonth = bgAnnual !== null ? bgAnnual/12 : null;
+      const varD = bgMonth!==null ? actual - bgMonth : null;
+      const varP = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
+      cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td>`;
+      cells += `<td class="${varD!==null?(varD>=0?'val-pos':'val-neg'):''}">${varD!==null?fmtVar(varD):'—'}</td>`;
+      cells += `<td class="${varP!==null?(varP>=0?'val-pos':'val-neg'):''}">${varP!==null?varP.toFixed(1)+'%':'—'}</td>`;
+    }
+    cells += `<td>${prevActual!==null?fmt(prevActual):'—'}</td>`;
+    html += `<tr class="${cls}">${cells}</tr>`;
+  });
+
+  html += `</tbody></table></div></div>`;
+
+  // YTD vs annual budget
+  if(hasBG) {
+    html += `<div class="bench-section">
+      <div class="bench-title">YTD actual vs annual budget (${stmt.months[0]} – ${selMonth})</div>
+      <div class="bench-wrap"><table class="bench-table">
+      <thead><tr><th>Account</th><th>YTD Actual</th><th>Annual Budget</th><th>Budget used %</th><th>Remaining</th></tr></thead><tbody>`;
+    stmt.rows.forEach(r=>{
+      if(r.isCategory) return;
+      const lc = r.label.toLowerCase();
+      const isKey = KEY_LABELS.some(k=>lc===k||lc.includes(k));
+      if(!isKey && !r.isSubtotal && !r.isNOI && !r.isTotal) return;
+      const ytd = r.values.slice(0, monthIdx+1).reduce((a,b)=>a+b,0);
+      const bgRow = bgMap[lc];
+      const bgAnnual = bgRow ? bgRow.total : null;
+      const pct = bgAnnual ? ytd/bgAnnual*100 : null;
+      const rem = bgAnnual !== null ? bgAnnual - ytd : null;
+      const cls = r.isNOI?'row-noi':r.isTotal?'row-total':'row-subtotal';
+      html += `<tr class="${cls}">
+        <td>${r.label}</td><td>${fmt(ytd)}</td>
+        <td>${bgAnnual!==null?fmt(bgAnnual):'—'}</td>
+        <td class="${pct!==null?(pct>100?'val-neg':pct>80?'val-pos':''):''}">${pct!==null?pct.toFixed(1)+'%':'—'}</td>
+        <td class="${rem!==null?(rem>=0?'val-pos':'val-neg'):''}">${rem!==null?fmtVar(rem):'—'}</td>
+      </tr>`;
+    });
+    html += `</tbody></table></div></div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+// ─── RENT ROLL TAB ────────────────────────────────────────────────────────────
+function renderRentRollTab() {
+  if(!currentPropId) return;
+  const d = propData[currentPropId]||{};
+  const rr = d.rentroll;
+  const container = document.getElementById('rr-container');
+  if(!rr) return;
+  const visHeaders = rr.headers.slice(0,12);
+  let html = `<div class="rr-wrap"><table class="rr-table">
+    <thead><tr>${visHeaders.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>`;
+  rr.rows.slice(0,200).forEach(row=>{
+    html+=`<tr>${visHeaders.map(h=>`<td>${row[h]!==null&&row[h]!==undefined?row[h]:''}</td>`).join('')}</tr>`;
+  });
+  html+=`</tbody></table></div>`;
+  if(rr.rows.length>200) html+=`<div style="padding:8px;font-size:12px;color:var(--text3)">Showing first 200 of ${rr.rows.length} rows.</div>`;
+  container.innerHTML=html;
+}
+
+// ─── NOTES ────────────────────────────────────────────────────────────────────
+function renderNotesTab() {
+  const p = properties.find(x=>x.id===currentPropId);
+  document.getElementById('notes-prop-label').textContent = `Notes for ${p?p.name:'this property'}`;
+  const list = document.getElementById('notes-list');
+  const propNotes = notes.filter(n=>n.propId===currentPropId);
+  list.innerHTML = propNotes.length ? propNotes.map((n,i)=>`
+    <div class="note-item">
+      <span class="flag-chip ${n.type==='action'?'flag-action':n.type==='concern'?'flag-concern':'flag-ok'}">${n.type==='action'?'Action':n.type==='concern'?'Concern':'Note'}</span>
+      <div class="note-text">${n.text}</div>
+      <span class="note-delete" onclick="deleteNote(${notes.indexOf(n)})">✕</span>
+    </div>`).join('') : '<div style="color:var(--text3);font-size:13px;padding:12px 0">No notes yet for this property.</div>';
+}
+
+function addNote(type) {
+  const text = document.getElementById('note-input').value.trim();
+  if(!text) { alert('Please type a note first.'); return; }
+  notes.push({propId:currentPropId, type, text, ts:Date.now()});
+  document.getElementById('note-input').value='';
+  save();
+  renderNotesTab();
+}
+
+function deleteNote(idx) {
+  notes.splice(idx,1);
+  save();
+  renderNotesTab();
+}
+
+// ─── DETAIL BADGE ─────────────────────────────────────────────────────────────
+function updateDetailBadge() {
+  const badge = document.getElementById('detail-status-badge');
+  const dot = getStatusDot(currentPropId);
+  if(dot==='dot-none') { badge.className='badge badge-neutral'; badge.textContent='No data'; }
+  else if(dot==='dot-ok') { badge.className='badge badge-ok'; badge.textContent='On track'; }
+  else if(dot==='dot-warn') { badge.className='badge badge-warn'; badge.textContent='Watch'; }
+  else { badge.className='badge badge-flag'; badge.textContent='Flagged'; }
+}
+
+// ─── PORTFOLIO VIEW ───────────────────────────────────────────────────────────
+function renderPortfolio() {
+  let loaded=0, ok=0, warn=0, flag=0;
+  let tbody = '';
+  properties.forEach(p=>{
+    const d = propData[p.id]||{};
+    const hasStmt = !!d.statement;
+    if(hasStmt) loaded++;
+    const dot = getStatusDot(p.id);
+    if(dot==='dot-ok') ok++;
+    else if(dot==='dot-warn') warn++;
+    else if(dot==='dot-flag') flag++;
+    const noi = getKeyMetric(p.id,'noi_total');
+    const income = getKeyMetric(p.id,'income_total');
+    const expense = getKeyMetric(p.id,'expense_total');
+    const pfNoi = getKeyMetric(p.id,'proforma_noi');
+    const propNoteCount = notes.filter(n=>n.propId===p.id).length;
+    const varHTML = pfNoi&&noi!==null ? (() => {
+      const pct = (noi-pfNoi/12)/Math.abs(pfNoi/12)*100;
+      const cls = pct>=0?'val-pos':'val-neg';
+      return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}% vs monthly avg</span>`;
+    })() : '—';
+    const statusBadge = dot==='dot-none'?'<span class="badge badge-neutral">No data</span>':
+      dot==='dot-ok'?'<span class="badge badge-ok">On track</span>':
+      dot==='dot-warn'?'<span class="badge badge-warn">Watch</span>':
+      '<span class="badge badge-flag">Flagged</span>';
+    tbody+=`<tr onclick="selectProp('${p.id}')">
+      <td><strong>${p.name}</strong>${p.units?` <span style="color:var(--text3);font-weight:400;font-size:11px">${p.units} units</span>`:''}</td>
+      <td>${p.system==='buildium'?'Buildium':'Appfolio'}</td>
+      <td>${statusBadge}</td>
+      <td>${income!==null?fmt(income):'—'}</td>
+      <td>${expense!==null?fmt(expense):'—'}</td>
+      <td>${noi!==null?fmt(noi):'—'}</td>
+      <td>${varHTML}</td>
+      <td>${propNoteCount?`<span class="badge badge-neutral">${propNoteCount} note${propNoteCount>1?'s':''}</span>`:'—'}</td>
+    </tr>`;
+  });
+  if(!properties.length) tbody=`<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
+  document.getElementById('portfolio-tbody').innerHTML=tbody;
+  document.getElementById('pk-loaded').textContent=loaded;
+  document.getElementById('pk-ok').textContent=ok;
+  document.getElementById('pk-warn').textContent=warn;
+  document.getElementById('pk-flag').textContent=flag;
+  const bld = properties.filter(p=>p.system==='buildium').length;
+  const afp = properties.filter(p=>p.system==='appfolio').length;
+  document.getElementById('portfolio-sub').textContent=`${properties.length} properties · ${bld} Buildium · ${afp} Appfolio · ${loaded} with data loaded`;
+}
+
+// ─── EXPORT NOTES ─────────────────────────────────────────────────────────────
+function exportNotes() {
+  if(!notes.length) { alert('No notes to export.'); return; }
+  const lines = ['STABILIZED ASSET MEETING — NOTES EXPORT'];
+  lines.push(new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}));
+  lines.push('');
+  const byProp = {};
+  notes.forEach(n=>{
+    if(!byProp[n.propId]) byProp[n.propId]=[];
+    byProp[n.propId].push(n);
+  });
+  Object.keys(byProp).forEach(pid=>{
+    const p = properties.find(x=>x.id===pid);
+    lines.push((p?p.name:'Unknown property').toUpperCase());
+    lines.push('─'.repeat(40));
+    byProp[pid].forEach(n=>{
+      const label = n.type==='action'?'[ACTION]':n.type==='concern'?'[CONCERN]':'[NOTE]';
+      lines.push(`${label} ${n.text}`);
+    });
+    lines.push('');
+  });
+  const blob = new Blob([lines.join('\n')],{type:'text/plain'});
+  const a = document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='meeting-notes-'+new Date().toISOString().slice(0,10)+'.txt';
+  a.click();
+}
+
+// ─── FORMATTING ───────────────────────────────────────────────────────────────
+function fmt(v) {
+  if(v===null||v===undefined||isNaN(v)) return '—';
+  const n = Math.round(v);
+  if(n<0) return '($'+Math.abs(n).toLocaleString()+')';
+  return '$'+n.toLocaleString();
+}
+function fmtVar(v) {
+  if(v===null||v===undefined||isNaN(v)) return '—';
+  const n = Math.round(v);
+  if(n<0) return '-$'+Math.abs(n).toLocaleString();
+  return '+$'+n.toLocaleString();
+}
+
+// ─── KEYBOARD ─────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e=>{
+  if(e.key==='Escape') { closeModal(); }
+  if(e.key==='Enter' && document.getElementById('modal-add').classList.contains('open')) { addProperty(); }
+});
+
+init();
+</script>
+</body>
+</html>
