@@ -752,8 +752,21 @@ function parseAppfolio(ws) {
   if(headerRow<0) throw new Error('Could not find "Account Name" header row in Appfolio file.');
   
   const headers = data[headerRow];
-  const months = headers.slice(1, headers.length-1).filter(Boolean);
-  const totalCol = headers.length-1;
+  const months = [];
+  const monthCols = [];
+  // Find Total column by name — don't assume it's last
+  let totalCol = -1;
+  headers.forEach((h, ci) => {
+    if(!h) return;
+    const hs = h.toString().trim();
+    if(hs === 'Total') { totalCol = ci; return; }
+    if(ci > 0 && hs !== 'Account Name' && hs !== 'Percent' && hs !== 'Total') {
+      months.push(hs);
+      monthCols.push(ci);
+    }
+  });
+  // Fallback: if no explicit Total column, use last column
+  if(totalCol < 0) totalCol = headers.length - 1;
   
   let propertyName='', period='';
   for(let i=0;i<headerRow;i++) {
@@ -765,8 +778,8 @@ function parseAppfolio(ws) {
 
   const rows = [];
   const NOI_LABELS = ['noi - net operating income','net operating income'];
-  const TOTAL_INCOME_LABELS = ['total operating income','total income'];
-  const TOTAL_EXPENSE_LABELS = ['total operating expense','total expense'];
+  const TOTAL_INCOME_LABELS = ['total operating income','total income','total budgeted operating income','total budgeted income'];
+  const TOTAL_EXPENSE_LABELS = ['total operating expense','total expense','total budgeted operating expense','total budgeted expense'];
   const NET_INCOME_LABELS = ['net income'];
 
   for(let i=headerRow+1;i<data.length;i++) {
@@ -785,8 +798,8 @@ function parseAppfolio(ws) {
     const isNetIncome = NET_INCOME_LABELS.some(x=>lc===x);
     const isSubtotal = !isCategory && lc.startsWith('total') && !isNOI && !isTotalIncome && !isTotalExpense;
     const isTotal = isTotalIncome || isTotalExpense || isNetIncome;
-    const values = headers.slice(1, headers.length-1).map((_,ci)=>parseFloat(row[ci+1])||0);
-    const total = parseFloat(row[totalCol])||values.reduce((a,b)=>a+b,0);
+    const values = monthCols.map(ci=>parseFloat(row[ci])||0);
+    const total = totalCol>=0 ? (parseFloat(row[totalCol])||values.reduce((a,b)=>a+b,0)) : values.reduce((a,b)=>a+b,0);
     rows.push({label:label.trim(), level, isCategory, isSubtotal, isTotal, isNOI, values, total,
                isTotalIncome, isTotalExpense, isNetIncome});
   }
