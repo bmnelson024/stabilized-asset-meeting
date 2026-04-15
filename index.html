@@ -69,7 +69,7 @@
   .kpi-val{font-size:22px;font-weight:500}
   .portfolio-table-wrap{margin:0 24px 24px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
   .portfolio-table{width:100%;border-collapse:collapse;font-size:13px}
-  .portfolio-table th{background:var(--bg2);padding:9px 12px;text-align:left;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)}
+  .portfolio-table th{background:var(--bg2);padding:9px 12px;text-align:left;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1}
   .portfolio-table td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
   .portfolio-table tr:last-child td{border-bottom:none}
   .portfolio-table tr:hover td{background:var(--bg2);cursor:pointer}
@@ -124,10 +124,6 @@
   .indent-1{padding-left:24px!important}
   .indent-2{padding-left:40px!important}
 
-  /* KPI CARDS IN DETAIL */
-  .kpi-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px}
-  .kpi-delta{font-size:11px;margin-top:3px}
-
   /* BENCHMARK COMPARISON */
   .bench-section{margin-bottom:20px}
   .bench-title{font-size:13px;font-weight:500;margin-bottom:10px;color:var(--text2)}
@@ -168,19 +164,10 @@
   .note-item .note-prop{font-size:11px;color:var(--text3)}
   .note-delete{font-size:11px;color:var(--text3);cursor:pointer;padding:2px 6px;border-radius:4px}
   .note-delete:hover{background:var(--red-bg);color:var(--red)}
-  .notes-export-bar{margin-top:16px;padding-top:16px;border-top:1px solid var(--border);display:flex;gap:8px}
-
   /* UPLOAD NOTICE */
   .upload-notice{text-align:center;padding:40px 20px;color:var(--text3)}
   .upload-notice svg{margin-bottom:12px;opacity:0.4}
   .upload-notice p{font-size:14px}
-
-  /* PROFORMA/BUDGET SETUP */
-  .setup-section{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:16px}
-  .setup-title{font-size:13px;font-weight:500;margin-bottom:12px;display:flex;align-items:center;gap:8px}
-  .setup-saved-badge{font-size:11px;padding:2px 8px;border-radius:4px;background:var(--green-bg);color:var(--green)}
-  .setup-row{display:flex;align-items:center;gap:10px}
-  .setup-file-label{font-size:12px;color:var(--text2);min-width:100px}
 
   /* MODAL */
   .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:200;align-items:center;justify-content:center}
@@ -631,7 +618,7 @@ function renderUploadTab(p) {
           <div style="font-size:16px;font-weight:500">${expRow?fmt(expRow.total):'—'}</div>
           <div style="font-size:11px;color:var(--text3);margin-top:2px">${expRow?fmt(expRow.total/12)+' / mo':'—'}</div>
         </div>
-        <div class="kpi-card" style="border:1px solid var(--color-border-success,#c0dd97)">
+        <div class="kpi-card" style="border:1px solid #c0dd97">
           <div class="kpi-label">Annual NOI</div>
           <div style="font-size:16px;font-weight:500;color:var(--green)">${noiRow?fmt(noiRow.total):'—'}</div>
           <div style="font-size:11px;color:var(--text3);margin-top:2px">${noiRow?fmt(noiRow.total/12)+' / mo':'—'}</div>
@@ -653,14 +640,14 @@ function uploadSlot(f, d, propId, type) {
     : f.sub;
   const accept = f.key==='proforma' ? '.xlsx,.xls,.csv' : '.xlsx,.xls';
   return `<label class="upload-slot ${hasFile?'has-file':''}">
-    <input type="file" accept="${accept}" onchange="handleUpload(event,'${propId}','${f.key}','${type}')">
+    <input type="file" accept="${accept}" onchange="handleUpload(event,'${propId}','${f.key}')">
     <div class="upload-slot-icon">${hasFile?'✓':'↑'}</div>
     <div class="upload-slot-label">${f.label}</div>
     <div class="upload-slot-sub">${savedLabel}</div>
   </label>`;
 }
 
-function handleUpload(event, propId, fileKey, type) {
+function handleUpload(event, propId, fileKey) {
   const file = event.target.files[0];
   if(!file) return;
   const isCsvProforma = fileKey==='proforma' && file.name.toLowerCase().endsWith('.csv');
@@ -817,7 +804,12 @@ function parseBuildium(ws) {
   if(headerRow<0) throw new Error('Could not find header row in Buildium file (expected date columns like "04-2025").');
 
   const headers = data[headerRow];
-  const months = headers.slice(1, headers.length-1).filter(Boolean).map(h=>{
+  // Find Total column by name to handle any trailing columns
+  let totalCol = headers.length - 1;
+  headers.forEach((h, ci) => {
+    if(h && h.toString().trim() === 'Total') totalCol = ci;
+  });
+  const months = headers.slice(1, totalCol).filter(Boolean).map(h=>{
     if(!h) return '';
     const s = h.toString();
     if(s.match(/^\d{2}-\d{4}$/)) {
@@ -854,7 +846,7 @@ function parseBuildium(ws) {
     const isNetIncome = NET_INCOME_LABELS.some(x=>lc===x);
     const isSubtotal = SUBTOTAL_PREFIX.some(x=>lc.startsWith(x));
     const isTotal = isTotalIncome || isTotalExpense || isNetIncome;
-    const values = headers.slice(1, headers.length-1).map((_,ci)=>parseFloat(row[ci+1])||0);
+    const values = headers.slice(1, totalCol).map((_,ci)=>parseFloat(row[ci+1])||0);
     const total = parseFloat(row[totalCol])||values.reduce((a,b)=>a+b,0);
     const cleanLabel = isSubtotal ? label.replace(/^total for /i,'').trim() : label;
     rows.push({label:cleanLabel, level: isSubtotal||isTotal||isNOI ? 0 : 1,
@@ -977,15 +969,6 @@ function parseProforma(ws, purchaseDate) {
   // Column index for the target year: Year1=col2, Year2=col4, Year3=col6...
   const targetCol = 2 + (pfYear - 1) * 2;
 
-  // Key rows to extract
-  const KEY_ROWS = {
-    'Total Annual Operating Income': 'isTotalIncome',
-    'Total Annual Operating Expense': 'isTotalExpense',
-    'Annual Net Operating Income': 'isNOI',
-    'Gross Monthly Operating Income': null,
-    'Monthly Operating Expenses': null,
-  };
-
   const rows = [];
   for(let i=yearRow+1;i<data.length;i++) {
     const row = data[i];
@@ -1086,15 +1069,11 @@ function parseProformaCsv(text, purchaseDate) {
 }
 
 function parseAppfolioBudget(ws) {
-  // Same structure as Appfolio cash flow — reuse that parser
-  // But key label for NOI is 'Net Operating Income' and totals differ slightly
   const result = parseAppfolio(ws);
-  // Remap NOI label — budget uses 'Net Operating Income' not 'NOI - Net Operating Income'
+  // Ensure NOI row is flagged — budget uses 'Net Operating Income' without the 'NOI -' prefix
   result.rows.forEach(r => {
     const lc = r.label.toLowerCase();
-    if(lc === 'net operating income' || lc.includes('net operating income')) r.isNOI = true;
-    if(lc === 'total budgeted operating income' || lc === 'total budgeted income') r.isTotalIncome = true;
-    if(lc === 'total budgeted operating expense' || lc === 'total budgeted expense') r.isTotalExpense = true;
+    if(lc === 'net operating income') r.isNOI = true;
   });
   result.system = 'appfolio_budget';
   return result;
@@ -1276,10 +1255,14 @@ function renderBenchmarkTab() {
 
     const cls = r.isNOI?'row-noi':r.isTotal?'row-total':'row-subtotal';
 
-    // For expense rows, favorable variance is NEGATIVE (spent less than benchmark)
-    // For income/NOI rows, favorable variance is POSITIVE (earned more than benchmark)
-    const isExpense = r.isTotalExpense || (!r.isTotalIncome && !r.isNOI && !r.isNetIncome &&
-      (r.label.toLowerCase().includes('expense') || r.label.toLowerCase().includes('cost')));
+    // Track whether we're in the expense section by watching for total income row
+    // isExpense: row is a total expense row, OR we haven't hit income total yet and it's a subtotal
+    const isExpense = r.isTotalExpense ||
+      (!r.isTotalIncome && !r.isNOI && !r.isNetIncome &&
+       (lc.includes('expense') || lc.includes('cost') || lc.includes('repair') ||
+        lc.includes('management') || lc.includes('insurance') || lc.includes('utilit') ||
+        lc.includes('tax') || lc.includes('maintenance') || lc.includes('advertising') ||
+        lc.includes('landscaping') || lc.includes('cleaning') || lc.includes('supplies')));
     const varGood = (varD) => isExpense ? varD <= 0 : varD >= 0;
 
     let cells = `<td>${r.label}</td><td>${fmt(actual)}</td>`;
@@ -1352,7 +1335,10 @@ function renderRentRollTab() {
   const d = propData[currentPropId]||{};
   const rr = d.rentroll;
   const container = document.getElementById('rr-container');
-  if(!rr||!rr.units) return;
+  if(!rr||!rr.units||!rr.units.length) {
+    container.innerHTML = `<div class="upload-notice"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg><p>Upload a rent roll file on the Upload tab to view unit-level data here.</p></div>`;
+    return;
+  }
   const occupied = rr.units.filter(u=>!u.isVacant).length;
   const total = rr.units.length;
   const occPct = total ? (occupied/total*100).toFixed(1) : 0;
@@ -1509,6 +1495,7 @@ function saveAcqRent(propId, key, field, val) {
   if(!propData[propId].acquisitionRents) propData[propId].acquisitionRents={};
   if(!propData[propId].acquisitionRents[key]) propData[propId].acquisitionRents[key]={};
   propData[propId].acquisitionRents[key][field] = parseFloat(val)||0;
+  save();
 }
 
 function saveAcqRentRow(propId, key) {
@@ -1522,12 +1509,15 @@ function renderNotesTab() {
   document.getElementById('notes-prop-label').textContent = `Notes for ${p?p.name:'this property'}`;
   const list = document.getElementById('notes-list');
   const propNotes = notes.filter(n=>n.propId===currentPropId);
-  list.innerHTML = propNotes.length ? propNotes.map((n,i)=>`
+  list.innerHTML = propNotes.length ? propNotes.map((n)=>{
+    const globalIdx = notes.indexOf(n);
+    return `
     <div class="note-item">
       <span class="flag-chip ${n.type==='action'?'flag-action':n.type==='concern'?'flag-concern':'flag-ok'}">${n.type==='action'?'Action':n.type==='concern'?'Concern':'Note'}</span>
       <div class="note-text">${n.text}</div>
-      <span class="note-delete" onclick="deleteNote(${notes.indexOf(n)})">✕</span>
-    </div>`).join('') : '<div style="color:var(--text3);font-size:13px;padding:12px 0">No notes yet for this property.</div>';
+      <span class="note-delete" onclick="deleteNote(${globalIdx})">✕</span>
+    </div>`;
+  }).join('') : '<div style="color:var(--text3);font-size:13px;padding:12px 0">No notes yet for this property.</div>';
 }
 
 function addNote(type) {
@@ -1573,9 +1563,9 @@ function renderPortfolio() {
     const pfNoi = getKeyMetric(p.id,'proforma_noi');
     const propNoteCount = notes.filter(n=>n.propId===p.id).length;
     const varHTML = pfNoi&&noi!==null ? (() => {
-      const pct = (noi-pfNoi/12)/Math.abs(pfNoi/12)*100;
+      const pct = (noi - pfNoi) / Math.abs(pfNoi) * 100;
       const cls = pct>=0?'val-pos':'val-neg';
-      return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}% vs monthly avg</span>`;
+      return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}% vs proforma</span>`;
     })() : '—';
     const statusBadge = dot==='dot-none'?'<span class="badge badge-neutral">No data</span>':
       dot==='dot-ok'?'<span class="badge badge-ok">On track</span>':
