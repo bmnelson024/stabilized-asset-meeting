@@ -1276,25 +1276,33 @@ function renderBenchmarkTab() {
 
     const cls = r.isNOI?'row-noi':r.isTotal?'row-total':'row-subtotal';
 
+    // For expense rows, favorable variance is NEGATIVE (spent less than benchmark)
+    // For income/NOI rows, favorable variance is POSITIVE (earned more than benchmark)
+    const isExpense = r.isTotalExpense || (!r.isTotalIncome && !r.isNOI && !r.isNetIncome &&
+      (r.label.toLowerCase().includes('expense') || r.label.toLowerCase().includes('cost')));
+    const varGood = (varD) => isExpense ? varD <= 0 : varD >= 0;
+
     let cells = `<td>${r.label}</td><td>${fmt(actual)}</td>`;
     if(hasPF) {
       const pfMonth = pfAnnual !== null ? pfAnnual/12 : null;
       const varD = pfMonth!==null ? actual - pfMonth : null;
       const varP = pfMonth ? varD/Math.abs(pfMonth)*100 : null;
+      const vCls = varD!==null ? (varGood(varD)?'val-pos':'val-neg') : '';
       cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td>`;
-      cells += `<td class="${varD!==null?(varD>=0?'val-pos':'val-neg'):''}">${varD!==null?fmtVar(varD):'—'}</td>`;
-      cells += `<td class="${varP!==null?(varP>=0?'val-pos':'val-neg'):''}">${varP!==null?varP.toFixed(1)+'%':'—'}</td>`;
+      cells += `<td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td>`;
+      cells += `<td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td>`;
     }
     if(hasBG) {
       const bgMonth = bgAnnual !== null ? bgAnnual/12 : null;
       const varD = bgMonth!==null ? actual - bgMonth : null;
       const varP = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
+      const vCls = varD!==null ? (varGood(varD)?'val-pos':'val-neg') : '';
       cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td>`;
-      cells += `<td class="${varD!==null?(varD>=0?'val-pos':'val-neg'):''}">${varD!==null?fmtVar(varD):'—'}</td>`;
-      cells += `<td class="${varP!==null?(varP>=0?'val-pos':'val-neg'):''}">${varP!==null?varP.toFixed(1)+'%':'—'}</td>`;
+      cells += `<td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td>`;
+      cells += `<td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td>`;
     }
-    cells += `<td class="${t12Var!==null?(t12Var>=0?'val-pos':'val-neg'):''}">${t12Avg!==null?fmt(t12Avg):'—'}</td>`;
-    cells += `<td class="${t12Var!==null?(t12Var>=0?'val-pos':'val-neg'):''}">${t12Var!==null?fmtVar(t12Var):'—'}</td>`;
+    cells += `<td class="${t12Var!==null?(varGood(t12Var)?'val-pos':'val-neg'):''}">${t12Avg!==null?fmt(t12Avg):'—'}</td>`;
+    cells += `<td class="${t12Var!==null?(varGood(t12Var)?'val-pos':'val-neg'):''}">${t12Var!==null?fmtVar(t12Var):'—'}</td>`;
     cells += `<td>${prevActual!==null?fmt(prevActual):'—'}</td>`;
     html += `<tr class="${cls}">${cells}</tr>`;
   });
@@ -1313,16 +1321,23 @@ function renderBenchmarkTab() {
       const isKey = KEY_LABELS.some(k=>lc===k||lc.includes(k));
       if(!isKey && !r.isSubtotal && !r.isNOI && !r.isTotal) return;
       const ytd = r.values.slice(0, monthIdx+1).reduce((a,b)=>a+b,0);
-      const bgRow = bgMap[lc];
+      const bgRow = bgMap[lc] || (r.isNOI ? bg.rows.find(x=>x.isNOI) : null)
+                               || (r.isTotalIncome ? bg.rows.find(x=>x.isTotalIncome) : null)
+                               || (r.isTotalExpense ? bg.rows.find(x=>x.isTotalExpense) : null);
       const bgAnnual = bgRow ? bgRow.total : null;
       const pct = bgAnnual ? ytd/bgAnnual*100 : null;
       const rem = bgAnnual !== null ? bgAnnual - ytd : null;
       const cls = r.isNOI?'row-noi':r.isTotal?'row-total':'row-subtotal';
+      const isExp = r.isTotalExpense || (!r.isTotalIncome && !r.isNOI && lc.includes('expense'));
+      // For expenses: over budget (pct>100) is bad, under budget is good
+      // For income/NOI: over budget is good, under is bad
+      const pctCls = pct!==null ? (isExp ? (pct>100?'val-neg':'val-pos') : (pct>100?'val-pos':'val-neg')) : '';
+      const remCls = rem!==null ? (isExp ? (rem>=0?'val-pos':'val-neg') : (rem>=0?'val-neg':'val-pos')) : '';
       html += `<tr class="${cls}">
         <td>${r.label}</td><td>${fmt(ytd)}</td>
         <td>${bgAnnual!==null?fmt(bgAnnual):'—'}</td>
-        <td class="${pct!==null?(pct>100?'val-neg':pct>80?'val-pos':''):''}">${pct!==null?pct.toFixed(1)+'%':'—'}</td>
-        <td class="${rem!==null?(rem>=0?'val-pos':'val-neg'):''}">${rem!==null?fmtVar(rem):'—'}</td>
+        <td class="${pctCls}">${pct!==null?pct.toFixed(1)+'%':'—'}</td>
+        <td class="${remCls}">${rem!==null?fmtVar(rem):'—'}</td>
       </tr>`;
     });
     html += `</tbody></table></div></div>`;
