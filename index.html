@@ -726,8 +726,14 @@ function renderUploadTab(p) {
     const incRow = pf.rows.find(r=>r.isTotalIncome);
     const expRow = pf.rows.find(r=>r.isTotalExpense);
     // Fallback: derive NOI from income - expense if NOI row is missing or zero
-    const derivedNOI = (incRow && expRow && (!noiRow || !noiRow.total))
-      ? {total: incRow.total - expRow.total, values: Array(12).fill((incRow.total - expRow.total)/12)}
+    // Derive missing/zero values from whatever we do have
+    const effectiveExpRow = (expRow && expRow.total)
+      ? expRow
+      : (incRow && noiRow && noiRow.total)
+        ? {total: incRow.total - noiRow.total, values: Array(12).fill((incRow.total - noiRow.total)/12)}
+        : expRow;
+    const derivedNOI = (incRow && effectiveExpRow && (!noiRow || !noiRow.total))
+      ? {total: incRow.total - effectiveExpRow.total, values: Array(12).fill((incRow.total - effectiveExpRow.total)/12)}
       : noiRow;
     const effectiveNOIRow = (noiRow && noiRow.total) ? noiRow : derivedNOI;
     const isSeeded = pf.system === 'proforma_seed';
@@ -757,8 +763,8 @@ function renderUploadTab(p) {
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Annual expense</div>
-          <div style="font-size:16px;font-weight:500">${expRow?fmt(expRow.total):'—'}</div>
-          <div style="font-size:11px;color:var(--text3);margin-top:2px">${expRow?fmt(expRow.total/12)+' / mo':'—'}</div>
+          <div style="font-size:16px;font-weight:500">${effectiveExpRow?fmt(effectiveExpRow.total):'—'}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${effectiveExpRow?fmt(effectiveExpRow.total/12)+' / mo':'—'}</div>
         </div>
         <div class="kpi-card" style="border:1px solid #1f5a35">
           <div class="kpi-label">Annual NOI</div>
@@ -1423,7 +1429,7 @@ function parseProforma(ws, purchaseDate) {
     'total annual operating income', 'total annual operating expense',
     'annual net operating income', 'net operating income (noi)',
     'net operating income', 'gross monthly operating income',
-    'monthly operating expenses', 'total operating income', 'total operating expense',
+    'monthly operating expense', 'total operating income', 'total operating expense',
     'annual interest', 'annual principal', 'total annual debt service',
     'total monthly cash flow', 'total annual cash flow',
     'net income', 'cash flow',
@@ -1437,7 +1443,9 @@ function parseProforma(ws, purchaseDate) {
     // Skip rows where label is itself a formula reference (starts with =)
     if(rawLabel.startsWith('=')) continue;
     const lc = rawLabel.toLowerCase();
-    const val = parseFloat(row[targetCol]) || 0;
+    // Parse value — expenses in some proformas are stored negative; take absolute value
+    const rawVal = parseFloat(row[targetCol]) || 0;
+    const val = Math.abs(rawVal);
     const isKeyLabel = KEY_LABEL_PATTERNS.some(k => lc.includes(k));
     if(!val && !isKeyLabel) continue;
 
@@ -1446,9 +1454,9 @@ function parseProforma(ws, purchaseDate) {
                        || (lc.includes('net operating income') && !lc.includes('total'));
     const isTotalIncome = lc.includes('total annual operating income') || lc === 'total operating income'
                        || lc === 'total annual income' || lc.includes('gross monthly operating income');
-    const isTotalExpense= lc.includes('total annual operating expense') || lc === 'total operating expense'
-                       || lc === 'total annual expense' || lc === 'monthly operating expenses';
-    const isMonthlyExpenseTotal = (lc === 'monthly operating expenses' || lc === 'total operating expense' || lc === 'total annual expense') && i > yearRow + 5;
+    const isTotalExpense= lc.includes('total annual operating expense') || lc.includes('total operating expense')
+                       || lc.includes('total annual expense') || lc.includes('monthly operating expense');
+    const isMonthlyExpenseTotal = lc.includes('monthly operating expense') && i > yearRow + 5;
     const isMonthlyIncomeTotal  = lc === 'gross monthly operating income' || lc === 'total operating income' || lc === 'total annual income';
     const isDebtService = lc.includes('annual interest') || lc.includes('annual principal') || lc.includes('total annual debt service');
     const isNetIncome   = !isNOI && !isDebtService && (
@@ -2669,12 +2677,14 @@ function renderAcqUnitEditor(propId) {
     const tierCell = p.system==='appfolio'
       ? `<td style="padding:6px 10px;border-bottom:1px solid var(--border)"><span class="badge ${u.tier==='Full remodel'?'badge-ok':u.tier==='Partial remodel'?'badge-warn':'badge-neutral'}">${u.tier}</span></td>`
       : '';
-    html += `<tr ${u.isVacant?'style="opacity:0.5"':''}>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-weight:500">${u.unitNum}${u.isVacant?' <span style="color:var(--text3);font-weight:400">(vacant)</span>':''}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border)">${u.unitType}</td>
+    // Dim only the read-only cells for vacant units — keep inputs fully visible
+    const vacantCellStyle = u.isVacant ? 'opacity:0.45;' : '';
+    html += `<tr>
+      <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-weight:500;${vacantCellStyle}">${u.unitNum}${u.isVacant?' <span style="color:var(--text3);font-weight:400">(vacant)</span>':''}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid var(--border);${vacantCellStyle}">${u.unitType}</td>
       ${tierCell}
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">${fmt(u.marketRent)}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">${u.isVacant?'—':fmt(u.actualRent)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;${vacantCellStyle}">${fmt(u.marketRent)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;${vacantCellStyle}">${u.isVacant?'<span style="color:var(--text3)">vacant</span>':fmt(u.actualRent)}</td>
       <td style="padding:4px 6px;border-bottom:1px solid var(--border)">
         <input type="number" value="${acq.marketRent||''}" placeholder="e.g. 750"
           style="width:100%;padding:4px 6px;border:1px solid ${hasAcq?'var(--green)':'var(--border)'};border-radius:4px;font-size:12px;font-family:inherit;text-align:right;background:${hasAcq?'var(--green-bg)':'var(--bg)'};color:var(--text)"
