@@ -743,7 +743,8 @@ function renderUploadTab(p) {
     const effectiveNOIRow = noiRow && noiRow.total ? noiRow
       : (incRow && expRow ? {total: incRow.total - expRow.total, values: Array(12).fill((incRow.total - expRow.total)/12)} : null);
     const isSeeded = pf.system === 'proforma_seed';
-    const pfYear = pf.pfYear || '—';
+    // For seeded proformas recalculate pfYear dynamically from purchase date
+    const pfYear = (pf.system==='proforma_seed' && p.purchaseDate) ? (getProformaYear(p.purchaseDate)||pf.pfYear||'—') : (pf.pfYear||'—');
     const source = isSeeded ? 'Built in' : (d.proforma_filename || 'Uploaded');
     const lineItems = pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine);
     const hasLineItems = lineItems.length > 0;
@@ -2012,8 +2013,10 @@ function renderBenchmarkTab() {
   const bgMap = buildLookup(bg);
 
   const p = properties.find(x=>x.id===currentPropId);
-  const pfYear = pf ? (pf.pfYear || getProformaYear(p.purchaseDate) || 1) : null;
   const isSeeded = pf && pf.system === 'proforma_seed';
+  // For seeded proformas always recalculate from purchase date — stored pfYear can be stale
+  const pfYear = pf ? (isSeeded ? (getProformaYear(p.purchaseDate) || pf.pfYear || 1)
+                                : (pf.pfYear || getProformaYear(p.purchaseDate) || 1)) : null;
   const pfYearLabel = pfYear ? `Proforma Year ${pfYear}${isSeeded?' (built-in)':' (monthly avg)'}` : 'Proforma (monthly avg)';
 
   // ── Classify statement rows into four buckets ──────────────────────────────
