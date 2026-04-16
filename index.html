@@ -523,6 +523,18 @@ function init() {
     }));
   }
 
+  // Always sync seeded property metadata (purchaseDate, units) — self-heals stale localStorage
+  SEED_PROPERTIES.forEach((p,i)=>{
+    const id = 'prop_seed_'+i;
+    const existing = properties.find(x=>x.id===id);
+    if(existing) {
+      // Patch any missing/stale fields from seed data
+      if(!existing.purchaseDate && p.purchaseDate) existing.purchaseDate = p.purchaseDate;
+      if(!existing.units && p.units) existing.units = p.units;
+      if(existing.name !== p.name) existing.name = p.name; // in case name ever changes in seed
+    }
+  });
+
   // Always re-seed seeded proformas — runs every init to self-heal stale localStorage data
   SEED_PROPERTIES.forEach((p,i)=>{
     if(!p.proforma) return;
