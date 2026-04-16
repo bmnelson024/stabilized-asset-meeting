@@ -533,8 +533,9 @@ function init() {
     if(!existingPf || existingPf.system === 'proforma_seed') {
       const noiTotal = p.proforma.noi;
       const noiCheck = existingPf && existingPf.rows && existingPf.rows.find(r=>r.isNOI);
-      // Re-seed if NOI total is missing or wrong
-      if(!noiCheck || !noiCheck.total || noiCheck.total !== noiTotal) {
+      // Re-seed if NOI total is missing/wrong OR pfYear is wrong
+      const pfYearCheck = existingPf && existingPf.pfYear;
+      if(!noiCheck || !noiCheck.total || noiCheck.total !== noiTotal || pfYearCheck !== p.proforma.pfYear) {
         propData[id].proforma = {
           system:'proforma_seed', pfYear:p.proforma.pfYear,
           months:Array(12).fill(''), propertyName:p.name,
