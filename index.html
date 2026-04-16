@@ -744,7 +744,7 @@ function renderUploadTab(p) {
       : (incRow && expRow ? {total: incRow.total - expRow.total, values: Array(12).fill((incRow.total - expRow.total)/12)} : null);
     const isSeeded = pf.system === 'proforma_seed' || pf.system === 'proforma_infosheet';
     // For seeded proformas recalculate pfYear dynamically from purchase date
-    const pfYear = (pf.system==='proforma_seed' && p.purchaseDate) ? (getProformaYear(p.purchaseDate)||pf.pfYear||'—') : (pf.pfYear||'—');
+    const pfYear = (isSeeded && p.purchaseDate) ? (getProformaYear(p.purchaseDate)||pf.pfYear||'—') : (pf.pfYear||'—');
     const source = pf.system === 'proforma_infosheet' ? 'Info sheet (formulas)' : isSeeded ? 'Built in' : (d.proforma_filename || 'Uploaded');
     const lineItems = pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine);
     const hasLineItems = lineItems.length > 0;
@@ -1101,7 +1101,9 @@ function parseBuildium(ws) {
     const label = raw.toString().trim();
     if(!label) continue;
     const lc = label.toLowerCase();
-    const isCategory = !row.slice(1,totalCol).some(v=>v!==null && v!=='' && v!==0 && v!=='0');
+    // Formula strings (starting with =) count as non-empty — they have values even if SheetJS can't evaluate them
+    const isCategory = !row.slice(1,totalCol).some(v=>v!==null && v!=='' && v!==0 && v!=='0'
+      && !(typeof v === 'string' && v.startsWith('=')));
     const isNOI = NOI_LABELS.some(x=>lc===x);
     const isTotalIncome = TOTAL_INCOME_LABELS.some(x=>lc===x);
     const isTotalExpense = TOTAL_EXPENSE_LABELS.some(x=>lc===x);
@@ -1119,6 +1121,42 @@ function parseBuildium(ws) {
                isCategory, isSubtotal, isTotal, isNOI, values, total,
                isTotalIncome, isTotalExpense, isNetIncome});
   }
+  // Post-process: fill in total/NOI rows whose values are all zero (formula-only files)
+  // by summing the line item rows between section boundaries
+  const hasAnyValues = rows.some(r => !r.isTotal && !r.isNOI && !r.isCategory && r.values.some(v=>v!==0));
+  if(hasAnyValues) {
+    const nMonths = rows[0] ? rows[0].values.length : 0;
+    // Find income total and expense total rows
+    const incomeTotal  = rows.find(r=>r.isTotalIncome);
+    const expenseTotal = rows.find(r=>r.isTotalExpense);
+    const noiRow       = rows.find(r=>r.isNOI);
+
+    if(incomeTotal && incomeTotal.values.every(v=>v===0)) {
+      // Sum all non-category, non-total, non-NOI rows before the expense section
+      const expIdx = expenseTotal ? rows.indexOf(expenseTotal) : rows.length;
+      const incIdx = rows.indexOf(incomeTotal);
+      const incLines = rows.filter((r,i) => i < incIdx && !r.isCategory && !r.isTotal && !r.isNOI && !r.isSubtotal);
+      if(incLines.length) {
+        incomeTotal.values = Array(nMonths).fill(0).map((_,mi) => incLines.reduce((s,r)=>s+r.values[mi],0));
+        incomeTotal.total  = incomeTotal.values.reduce((a,b)=>a+b,0);
+      }
+    }
+    if(expenseTotal && expenseTotal.values.every(v=>v===0)) {
+      const expIdx = rows.indexOf(expenseTotal);
+      const noiIdx = noiRow ? rows.indexOf(noiRow) : rows.length;
+      const expLines = rows.filter((r,i) => i < expIdx && i > rows.indexOf(incomeTotal||rows[0])
+        && !r.isCategory && !r.isTotal && !r.isNOI && !r.isSubtotal);
+      if(expLines.length) {
+        expenseTotal.values = Array(nMonths).fill(0).map((_,mi) => expLines.reduce((s,r)=>s+r.values[mi],0));
+        expenseTotal.total  = expenseTotal.values.reduce((a,b)=>a+b,0);
+      }
+    }
+    if(noiRow && noiRow.values.every(v=>v===0) && incomeTotal && expenseTotal) {
+      noiRow.values = Array(nMonths).fill(0).map((_,mi) => incomeTotal.values[mi] - expenseTotal.values[mi]);
+      noiRow.total  = noiRow.values.reduce((a,b)=>a+b,0);
+    }
+  }
+
   return {months, rows, propertyName, period:'', system:'buildium'};
 }
 
@@ -1632,7 +1670,9 @@ function parseProformaInfoSheet(ws, purchaseDate) {
      total:annualElec, values:Array(12).fill(annualElec/12)},
   ];
 
-  return {rows, pfYear, system:'proforma_infosheet',
+  // Always recalculate pfYear from purchase date — don't trust stored value
+  const correctPfYear = getProformaYear(purchaseDate) || pfYear;
+  return {rows, pfYear: correctPfYear, system:'proforma_infosheet',
           months:Array(12).fill(''), propertyName:'', _fromInfoSheet: true};
 }
 
@@ -1772,7 +1812,8 @@ function parseBuildiumBudget(ws) {
     const isNetIncome   = !isNOI && !isTotalIncome && !isTotalExpense
                        && NET_INCOME_LABELS_BG.some(x=>lc.includes(x));
     const isTotal       = isTotalIncome || isTotalExpense;
-    const isCategory    = !row.slice(1).some(v=>v!==null&&v!==''&&v!==0);
+    const isCategory    = !row.slice(1).some(v=>v!==null&&v!==''&&v!==0
+      && !(typeof v === 'string' && v.startsWith('=')));
     const isSubtotal    = !isCategory && !isNOI && !isTotal && lc.startsWith('total');
     const values = monthCols.map(ci=>parseFloat(row[ci])||0);
     // Annual col may contain a formula string — fall back to summing months
