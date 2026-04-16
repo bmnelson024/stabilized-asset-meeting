@@ -261,16 +261,16 @@
         </div>
       </div>
       <div class="tabs">
-        <div class="tab active" onclick="switchTab('upload')">Upload files</div>
+        <div class="tab active" onclick="switchTab('benchmarks')">Benchmarks</div>
         <div class="tab" onclick="switchTab('statement')">Income / Cash flow</div>
-        <div class="tab" onclick="switchTab('benchmarks')">Benchmarks</div>
         <div class="tab" onclick="switchTab('rentroll')">Rent roll</div>
         <div class="tab" onclick="switchTab('rentprog')">Rent progression</div>
         <div class="tab" onclick="switchTab('notes')">Notes</div>
+        <div class="tab" onclick="switchTab('upload')">Upload files</div>
       </div>
 
       <!-- UPLOAD TAB -->
-      <div class="tab-content active" id="tab-upload">
+      <div class="tab-content" id="tab-upload">
         <div id="proforma-summary-card" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:16px"></div>
         <div id="mapping-editor" style="display:none;margin-bottom:16px"></div>
         <div class="upload-section">
@@ -299,7 +299,7 @@
       </div>
 
       <!-- BENCHMARKS TAB -->
-      <div class="tab-content" id="tab-benchmarks">
+      <div class="tab-content active" id="tab-benchmarks">
         <div id="bench-container">
           <div class="upload-notice">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
@@ -609,8 +609,8 @@ function selectProp(id) {
   currentPropId = id;
   const p = properties.find(x=>x.id===id);
   showView('detail');
-  // Always reset to the Upload tab when switching properties
-  switchTab('upload');
+  // Default to Benchmarks tab when switching properties
+  switchTab('benchmarks');
   document.getElementById('detail-prop-name').textContent = p.name;
   document.getElementById('breadcrumb-prop-name').textContent = p.name;
   const pfYear = p.purchaseDate ? getProformaYear(p.purchaseDate) : null;
@@ -635,7 +635,7 @@ function showView(view) {
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t,i)=>{
-    const names=['upload','statement','benchmarks','rentroll','rentprog','notes'];
+    const names=['benchmarks','statement','rentroll','rentprog','notes','upload'];
     t.classList.toggle('active', names[i]===name);
   });
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
@@ -722,14 +722,21 @@ function renderUploadTab(p) {
   const pfEl = document.getElementById('proforma-summary-card');
   const pf = d.proforma;
   if(pf && pf.rows) {
-    // Use last non-zero matching row — proformas often have a zero header row
-    // followed by the real subtotal/annual row with the same flag
+    // Pick best row from multiple candidates with the same flag:
+    // Prefer rows whose label contains "annual" (larger totals = annual figures),
+    // then fall back to first non-zero, then last.
+    function bestPfAnchor(rows) {
+      if(!rows.length) return null;
+      const annual = rows.filter(r=>r.label.toLowerCase().includes('annual') && r.total);
+      if(annual.length) return annual[annual.length-1];
+      return rows.find(r=>r.total) || rows[rows.length-1];
+    }
     const allNOI  = pf.rows.filter(r=>r.isNOI);
     const allInc  = pf.rows.filter(r=>r.isTotalIncome);
     const allExp  = pf.rows.filter(r=>r.isTotalExpense);
-    const noiRow  = allNOI.find(r=>r.total)  || allNOI[allNOI.length-1]   || null;
-    const incRow  = allInc.find(r=>r.total)  || allInc[allInc.length-1]   || null;
-    const expRow  = allExp.find(r=>r.total)  || allExp[allExp.length-1]   || null;
+    const noiRow  = bestPfAnchor(allNOI);
+    const incRow  = bestPfAnchor(allInc);
+    const expRow  = bestPfAnchor(allExp);
     // Fallback: derive NOI from income - expense if NOI row is missing or zero
     // effectiveExpRow/NOIRow already resolved to best non-zero rows above
     const effectiveExpRow = expRow;
@@ -1664,7 +1671,11 @@ function getKeyMetric(propId, metric) {
     const pf = d.proforma;
     if(!pf) return null;
     const rows = pf.rows.filter(r=>r.isNOI);
-    const row = rows.find(r=>r.total) || rows[rows.length-1] || null;
+    const annual = rows.filter(r=>r.label.toLowerCase().includes('annual') && r.total);
+    const row = (annual.length ? annual[annual.length-1] : null)
+             || rows.find(r=>r.total)
+             || rows[rows.length-1]
+             || null;
     return row ? row.total : null;
   }
   if(metric==='budget_noi') {
@@ -2047,10 +2058,14 @@ function renderBenchmarkTab() {
     let pfAnnual = r._pfAnnual !== undefined ? r._pfAnnual : null;
     if(pfAnnual === null && hasPF) {
       let pfRow = null;
-      // Helper: pick best matching proforma row — prefer non-zero, take last if all zero
+      // Helper: pick best matching proforma row —
+      // prefer annual-labeled rows, then first non-zero, then last
       function bestPfRow(pred) {
         const matches = pf.rows.filter(pred);
-        return matches.find(r=>r.total) || matches[matches.length-1] || null;
+        if(!matches.length) return null;
+        const annual = matches.filter(r=>r.label.toLowerCase().includes('annual') && r.total);
+        if(annual.length) return annual[annual.length-1];
+        return matches.find(r=>r.total) || matches[matches.length-1];
       }
       if(r.isNOI) {
         pfRow = bestPfRow(x=>x.isNOI);
