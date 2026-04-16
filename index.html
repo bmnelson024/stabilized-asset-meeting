@@ -521,36 +521,37 @@ function init() {
       units: p.units||null,
       purchaseDate: p.purchaseDate||null,
     }));
-    // Pre-seed proforma data for properties that have it hard-coded
-    SEED_PROPERTIES.forEach((p,i)=>{
-      if(!p.proforma) return;
-      const id = 'prop_seed_'+i;
-      if(!propData[id]) propData[id]={};
-      // Always re-seed proforma if it's a seeded one — ensures correct totals after code updates
-      const existingPf = propData[id].proforma;
-      if(!existingPf || existingPf.system === 'proforma_seed') {
-        const noiTotal = p.proforma.noi;
-        const noiCheck = existingPf && existingPf.rows && existingPf.rows.find(r=>r.isNOI);
-        // Skip if already seeded correctly (non-zero NOI total matches)
-        if(!noiCheck || noiCheck.total !== noiTotal) {
-          propData[id].proforma = {
-            system:'proforma_seed', pfYear:p.proforma.pfYear,
-            months:Array(12).fill(''), propertyName:p.name,
-            rows:[
-              {label:'Operating Income',isNOI:false,isTotalIncome:true,isTotalExpense:false,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
-               total:p.proforma.income, values:Array(12).fill(p.proforma.income/12)},
-              {label:'Operating Expense',isNOI:false,isTotalIncome:false,isTotalExpense:true,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
-               total:p.proforma.expense, values:Array(12).fill(p.proforma.expense/12)},
-              {label:'Net Operating Income',isNOI:true,isTotalIncome:false,isTotalExpense:false,isTotal:false,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
-               total:noiTotal, values:Array(12).fill(noiTotal/12)},
-            ]
-          };
-          propData[id].proforma_filename = `Seeded — Year ${p.proforma.pfYear}`;
-        }
-      }
-    });
-    save();
   }
+
+  // Always re-seed seeded proformas — runs every init to self-heal stale localStorage data
+  SEED_PROPERTIES.forEach((p,i)=>{
+    if(!p.proforma) return;
+    const id = 'prop_seed_'+i;
+    if(!propData[id]) propData[id]={};
+    const existingPf = propData[id].proforma;
+    // Only touch seeded proformas — never overwrite a user-uploaded proforma
+    if(!existingPf || existingPf.system === 'proforma_seed') {
+      const noiTotal = p.proforma.noi;
+      const noiCheck = existingPf && existingPf.rows && existingPf.rows.find(r=>r.isNOI);
+      // Re-seed if NOI total is missing or wrong
+      if(!noiCheck || !noiCheck.total || noiCheck.total !== noiTotal) {
+        propData[id].proforma = {
+          system:'proforma_seed', pfYear:p.proforma.pfYear,
+          months:Array(12).fill(''), propertyName:p.name,
+          rows:[
+            {label:'Operating Income',isNOI:false,isTotalIncome:true,isTotalExpense:false,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
+             total:p.proforma.income, values:Array(12).fill(p.proforma.income/12)},
+            {label:'Operating Expense',isNOI:false,isTotalIncome:false,isTotalExpense:true,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
+             total:p.proforma.expense, values:Array(12).fill(p.proforma.expense/12)},
+            {label:'Net Operating Income',isNOI:true,isTotalIncome:false,isTotalExpense:false,isTotal:false,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
+             total:noiTotal, values:Array(12).fill(noiTotal/12)},
+          ]
+        };
+        propData[id].proforma_filename = `Seeded — Year ${p.proforma.pfYear}`;
+      }
+    }
+  });
+  save();
   const now = new Date();
   document.getElementById('meeting-month').textContent = now.toLocaleDateString('en-US',{month:'long',year:'numeric'});
   renderPortfolio();
