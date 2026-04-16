@@ -530,7 +530,7 @@ function init() {
     if(!propData[id]) propData[id]={};
     const existingPf = propData[id].proforma;
     // Only touch seeded proformas — never overwrite a user-uploaded proforma
-    if(!existingPf || existingPf.system === 'proforma_seed') {
+    if(!existingPf || existingPf.system === 'proforma_seed' || existingPf.system === 'proforma_infosheet') {
       const noiTotal = p.proforma.noi;
       const noiCheck = existingPf && existingPf.rows && existingPf.rows.find(r=>r.isNOI);
       // Re-seed if NOI total is missing/wrong OR pfYear is wrong
@@ -742,10 +742,10 @@ function renderUploadTab(p) {
     const effectiveExpRow = expRow;
     const effectiveNOIRow = noiRow && noiRow.total ? noiRow
       : (incRow && expRow ? {total: incRow.total - expRow.total, values: Array(12).fill((incRow.total - expRow.total)/12)} : null);
-    const isSeeded = pf.system === 'proforma_seed';
+    const isSeeded = pf.system === 'proforma_seed' || pf.system === 'proforma_infosheet';
     // For seeded proformas recalculate pfYear dynamically from purchase date
     const pfYear = (pf.system==='proforma_seed' && p.purchaseDate) ? (getProformaYear(p.purchaseDate)||pf.pfYear||'—') : (pf.pfYear||'—');
-    const source = isSeeded ? 'Built in' : (d.proforma_filename || 'Uploaded');
+    const source = pf.system === 'proforma_infosheet' ? 'Info sheet (formulas)' : isSeeded ? 'Built in' : (d.proforma_filename || 'Uploaded');
     const lineItems = pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine);
     const hasLineItems = lineItems.length > 0;
 
@@ -831,7 +831,7 @@ function renderUploadTab(p) {
 
 function uploadSlot(f, d, propId, type) {
   const hasFile = d[f.key] ? true : false;
-  const isSeeded = hasFile && d[f.key] && d[f.key].system === 'proforma_seed';
+  const isSeeded = hasFile && d[f.key] && (d[f.key].system === 'proforma_seed' || d[f.key].system === 'proforma_infosheet');
   const savedLabel = hasFile
     ? (isSeeded ? `Year ${d[f.key].pfYear} — built in (upload to override)` : (d[f.key+'_filename']||'File loaded'))
     : f.sub;
@@ -927,6 +927,17 @@ function handleUpload(event, propId, fileKey) {
         const ws = wb.Sheets[sheetName];
         if(!ws) throw new Error('Could not find "Traditional Financing" sheet in proforma file.');
         parsed = parseProforma(ws, p.purchaseDate);
+        // If all key values are zero (cross-sheet formula refs SheetJS can't evaluate),
+        // fall back to parsing the Information Sheet directly
+        const hasValues = parsed.rows.some(r => r.total !== 0);
+        if(!hasValues) {
+          const infoSheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('information'));
+          if(infoSheetName) {
+            const infoWs = wb.Sheets[infoSheetName];
+            const infoParsed = parseProformaInfoSheet(infoWs, p.purchaseDate);
+            if(infoParsed) parsed = infoParsed;
+          }
+        }
       } else if(fileKey==='budget') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
         if(p.system==='buildium') {
@@ -1078,10 +1089,10 @@ function parseBuildium(ws) {
 
   const rows = [];
   const NOI_LABELS = ['net operating income'];
-  const TOTAL_INCOME_LABELS = ['total income'];
-  const TOTAL_EXPENSE_LABELS = ['total expense'];
-  const NET_INCOME_LABELS = ['net income'];
-  const SUBTOTAL_PREFIX = ['total for '];
+  const TOTAL_INCOME_LABELS = ['total income','total  income'];  // handle double-space variants
+  const TOTAL_EXPENSE_LABELS = ['total expense','total  expense'];
+  const NET_INCOME_LABELS = ['net income','net operating income'];
+  const SUBTOTAL_PREFIX = ['total for ','total  for '];  // handle double-space Buildium subtotals
 
   for(let i=headerRow+1;i<data.length;i++) {
     const row = data[i];
@@ -1098,7 +1109,11 @@ function parseBuildium(ws) {
     const isSubtotal = SUBTOTAL_PREFIX.some(x=>lc.startsWith(x));
     const isTotal = isTotalIncome || isTotalExpense || isNetIncome;
     const values = headers.slice(1, totalCol).map((_,ci)=>parseFloat(row[ci+1])||0);
-    const total = parseFloat(row[totalCol])||values.reduce((a,b)=>a+b,0);
+    // Total col may contain a formula string SheetJS can't evaluate — fall back to summing months
+    const totalRaw = row[totalCol];
+    const total = (totalRaw !== null && typeof totalRaw === 'number')
+      ? totalRaw
+      : values.reduce((a,b)=>a+b,0);
     const cleanLabel = isSubtotal ? label.replace(/^total for /i,'').trim() : label;
     rows.push({label:cleanLabel, level: isSubtotal||isTotal||isNOI ? 0 : 1,
                isCategory, isSubtotal, isTotal, isNOI, values, total,
@@ -1506,6 +1521,119 @@ function parseProforma(ws, purchaseDate) {
     });
   }
   return {rows, pfYear, system:'proforma', months: Array(12).fill(''), propertyName:''};
+}
+
+function parseProformaInfoSheet(ws, purchaseDate) {
+  // Fallback parser for proformas where Traditional Financing uses cross-sheet formulas.
+  // Reads hard-coded values directly from the Information Sheet.
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  const pfYear = getProformaYear(purchaseDate) || 1;
+
+  // Build a label->value map from col A (label) and col B (value)
+  const vals = {};
+  data.forEach(row => {
+    if(!row || !row[0] || row[1] === null || row[1] === undefined) return;
+    const lbl = row[0].toString().trim().toLowerCase();
+    const v = parseFloat(row[1]);
+    if(!isNaN(v)) vals[lbl] = v;
+  });
+
+  // Extract key figures
+  const units          = vals['# of units'] || 0;
+  const grossMonthly   = vals['gross monthly income'] || vals['gross monthly rent'] || 0;
+  const vacancyRate    = vals['vacancy rate'] || 0.07;
+  const mgmtRate       = vals['property management fee'] || vals['property management'] || 0.09;
+  const repairsRate    = vals['repairs & maint.'] || vals['repairs & maintenance'] || vals['repairs and maintenance'] || 0.08;
+  const capexRate      = vals['replacement reserve'] || vals['cap ex'] || vals['capex'] || 0.03;
+  const petIncome      = vals['pet income'] || 0;
+  const laundryIncome  = vals['laundry income'] || 0;
+  const utilityPerUnit = vals['utility reimbursement'] || 0;
+  const insurance      = vals['insurance annual'] || vals['insurance'] || 0;
+  const taxes          = vals['real estate taxes'] || vals['property taxes'] || 0;
+  const landscaping    = vals['landscaping and security'] || vals['landscaping'] || 0;
+  const water          = vals['water/sewer'] || vals['water'] || 0;
+  const garbage        = vals['garbage'] || vals['trash'] || 0;
+  const electricity    = vals['electricity'] || vals['electricity '] || 0;
+  const gas            = vals['gas'] || 0;
+  const pest           = vals['pest control'] || 0;
+
+  if(!grossMonthly) return null; // can't build without income
+
+  // Apply year escalation (simple 3% annual growth for years > 1)
+  const escalate = (v, years) => v * Math.pow(1.03, years - 1);
+  const yr = pfYear;
+
+  const occupied = units * (1 - vacancyRate);
+  const monthlyIncome = escalate(grossMonthly, yr) * (1 - vacancyRate)
+    + escalate(petIncome/12, yr)
+    + escalate(laundryIncome/12, yr)
+    + (utilityPerUnit * occupied);
+  const annualIncome = monthlyIncome * 12;
+
+  const annualMgmt      = annualIncome * mgmtRate;
+  const annualRepairs   = annualIncome * repairsRate;
+  const annualCapex     = annualIncome * capexRate;
+  const annualInsurance = escalate(insurance, yr);
+  const annualTaxes     = escalate(taxes, yr);
+  const annualLandscape = escalate(landscaping, yr);
+  const annualWater     = escalate(water, yr);
+  const annualGarbage   = escalate(garbage, yr);
+  const annualElec      = escalate(electricity, yr);
+  const annualGas       = escalate(gas, yr);
+  const annualPest      = escalate(pest, yr);
+
+  const annualExpense = annualMgmt + annualRepairs + annualCapex + annualInsurance
+    + annualTaxes + annualLandscape + annualWater + annualGarbage
+    + annualElec + annualGas + annualPest;
+  const annualNOI = annualIncome - annualExpense;
+
+  const rows = [
+    {label:'Total Annual Operating Income', isNOI:false, isTotalIncome:true, isTotalExpense:false,
+     isTotal:true, isNetIncome:false, isCategory:false, isSubtotal:false, isDebtService:false, level:0,
+     total:annualIncome, values:Array(12).fill(annualIncome/12)},
+    {label:'Total Annual Operating Expense', isNOI:false, isTotalIncome:false, isTotalExpense:true,
+     isTotal:true, isNetIncome:false, isCategory:false, isSubtotal:false, isDebtService:false, level:0,
+     total:annualExpense, values:Array(12).fill(annualExpense/12)},
+    {label:'Annual Net Operating Income', isNOI:true, isTotalIncome:false, isTotalExpense:false,
+     isTotal:false, isNetIncome:false, isCategory:false, isSubtotal:false, isDebtService:false, level:0,
+     total:annualNOI, values:Array(12).fill(annualNOI/12)},
+    // Line items for benchmark matching
+    {label:'Property Management Fees', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
+     total:annualMgmt, values:Array(12).fill(annualMgmt/12)},
+    {label:'Repairs & Maintenance', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
+     total:annualRepairs, values:Array(12).fill(annualRepairs/12)},
+    {label:'Real Estate Taxes', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
+     total:annualTaxes, values:Array(12).fill(annualTaxes/12)},
+    {label:'Rental Property Insurance', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
+     total:annualInsurance, values:Array(12).fill(annualInsurance/12)},
+    {label:'Landscaping and Snow removal', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
+     total:annualLandscape, values:Array(12).fill(annualLandscape/12)},
+    {label:'Water', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
+     total:annualWater, values:Array(12).fill(annualWater/12)},
+    {label:'Garbage', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
+     total:annualGarbage, values:Array(12).fill(annualGarbage/12)},
+    {label:'Electricity', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
+     total:annualElec, values:Array(12).fill(annualElec/12)},
+  ];
+
+  return {rows, pfYear, system:'proforma_infosheet',
+          months:Array(12).fill(''), propertyName:'', _fromInfoSheet: true};
 }
 
 function parseProformaCsv(text, purchaseDate) {
@@ -2013,7 +2141,7 @@ function renderBenchmarkTab() {
   const bgMap = buildLookup(bg);
 
   const p = properties.find(x=>x.id===currentPropId);
-  const isSeeded = pf && pf.system === 'proforma_seed';
+  const isSeeded = pf && (pf.system === 'proforma_seed' || pf.system === 'proforma_infosheet');
   // For seeded proformas always recalculate from purchase date — stored pfYear can be stale
   const pfYear = pf ? (isSeeded ? (getProformaYear(p.purchaseDate) || pf.pfYear || 1)
                                 : (pf.pfYear || getProformaYear(p.purchaseDate) || 1)) : null;
@@ -2984,8 +3112,16 @@ function portfolioPropRow(p) {
     dot==='dot-ok'?'<span class="badge badge-ok">On track</span>':
     dot==='dot-warn'?'<span class="badge badge-warn">Watch</span>':
     '<span class="badge badge-flag">Flagged</span>';
+  const purchaseDateStr = p.purchaseDate
+    ? new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',year:'numeric'})
+    : null;
+  const pfYearStr = p.purchaseDate ? getProformaYear(p.purchaseDate) : null;
+  const subLine = [
+    p.units ? `${p.units} units` : null,
+    purchaseDateStr && pfYearStr ? `${purchaseDateStr} · Year ${pfYearStr}` : purchaseDateStr
+  ].filter(Boolean).join(' · ');
   return `<tr class="ptbl-prop-row" onclick="selectProp('${p.id}')">
-    <td><strong>${p.name}</strong>${p.units?` <span style="color:var(--text3);font-weight:400;font-size:11px">${p.units} units</span>`:''}</td>
+    <td><strong>${p.name}</strong>${subLine?` <span style="color:var(--text3);font-weight:400;font-size:11px">${subLine}</span>`:''}</td>
     <td>${p.system==='buildium'?'Buildium':'Appfolio'}</td>
     <td>${statusBadge}</td>
     <td>${income!==null?fmt(income):'—'}</td>
