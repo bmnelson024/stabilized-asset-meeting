@@ -1260,7 +1260,8 @@ function parseProforma(ws, purchaseDate) {
   const KEY_LABEL_PATTERNS = [
     'total annual operating income', 'total annual operating expense',
     'annual net operating income', 'net operating income (noi)',
-    'gross monthly operating income', 'monthly operating expenses',
+    'net operating income', 'gross monthly operating income',
+    'monthly operating expenses', 'total operating income', 'total operating expense',
     'annual interest', 'annual principal', 'total annual debt service',
     'total monthly cash flow', 'total annual cash flow',
     'net income', 'cash flow',
@@ -1278,11 +1279,15 @@ function parseProforma(ws, purchaseDate) {
     const isKeyLabel = KEY_LABEL_PATTERNS.some(k => lc.includes(k));
     if(!val && !isKeyLabel) continue;
 
-    const isNOI         = lc.includes('annual net operating income') || lc.includes('net operating income (noi)');
-    const isTotalIncome = lc.includes('total annual operating income');
-    const isTotalExpense= lc.includes('total annual operating expense');
-    const isMonthlyExpenseTotal = lc === 'monthly operating expenses' && i > yearRow + 5;
-    const isMonthlyIncomeTotal  = lc === 'gross monthly operating income';
+    const isNOI         = lc.includes('annual net operating income') || lc.includes('net operating income (noi)')
+                       || lc === 'net operating income' || lc === 'noi'
+                       || (lc.includes('net operating income') && !lc.includes('total'));
+    const isTotalIncome = lc.includes('total annual operating income') || lc === 'total operating income'
+                       || lc === 'total annual income' || lc.includes('gross monthly operating income');
+    const isTotalExpense= lc.includes('total annual operating expense') || lc === 'total operating expense'
+                       || lc === 'total annual expense' || lc === 'monthly operating expenses';
+    const isMonthlyExpenseTotal = (lc === 'monthly operating expenses' || lc === 'total operating expense' || lc === 'total annual expense') && i > yearRow + 5;
+    const isMonthlyIncomeTotal  = lc === 'gross monthly operating income' || lc === 'total operating income' || lc === 'total annual income';
     const isDebtService = lc.includes('annual interest') || lc.includes('annual principal') || lc.includes('total annual debt service');
     const isNetIncome   = !isNOI && !isDebtService && (
       lc.includes('total annual cash flow') || lc.includes('total monthly cash flow') ||
