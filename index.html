@@ -856,7 +856,7 @@ function handleUpload(event, propId, fileKey) {
         // Auto-match proforma to statement if both now present
         const pd0 = propData[propId];
         if(pd0.proforma && pd0.statement && !pd0.pfMapping) {
-          propData[propId].pfMapping = autoMatchProformaToStatement(pd0.proforma.rows, pd0.statement.rows);
+          propData[propId].pfMapping = autoMatchProformaToStatement(pd0.proforma.rows, pd0.statement.rows, properties.find(x=>x.id===propId)?.system);
           save();
         }
         const prop = properties.find(x=>x.id===propId);
@@ -944,7 +944,7 @@ function handleUpload(event, propId, fileKey) {
       // Re-run auto-match if we now have both proforma and statement
       const pd2 = propData[propId]||{};
       if(pd2.proforma && pd2.statement && !pd2.pfMapping) {
-        propData[propId].pfMapping = autoMatchProformaToStatement(pd2.proforma.rows, pd2.statement.rows);
+        propData[propId].pfMapping = autoMatchProformaToStatement(pd2.proforma.rows, pd2.statement.rows, properties.find(x=>x.id===propId)?.system);
         save();
         renderMappingEditor(propId);
       } else if(pd2.proforma && pd2.statement) {
@@ -1294,6 +1294,26 @@ const PF_LINE_ITEMS = [
   },
 ];
 
+// ─── BUILDIUM DEFAULT MAPPING ─────────────────────────────────────────────────
+// Hard-coded from 321 Townhomes — applies to all Buildium properties automatically.
+// Values are arrays of statement row labels that get summed for each canonical item.
+const BUILDIUM_DEFAULT_MAPPING = {
+  avg_rent:      ['Rent Income'],
+  rental_income: ['Rent Income'],
+  utility_reimb: ['Utility Income'],
+  mgmt_fee:      ['Management Fees'],
+  repairs:       ['Repairs'],
+  tax:           ['Mortgage Escrow Expense'],
+  insurance:     ['Insurance'],
+  landscaping:   ['Landscaping'],
+  water:         ['Water/Sewer'],
+  garbage:       ['Trash'],
+  electric:      ['Electricity'],
+  admin:         ['Advertising and Promotions'],
+  asset_mgmt:    ['Asset Management Fee'],
+  mortgage:      ['Mortgage Interest', 'Mortgage Principal'],
+};
+
 // Legacy keyword list kept for getMatchGroup (used elsewhere)
 const MATCH_KEYWORDS = [
   {keys:['water','sewer'],                group:'water'},
@@ -1341,19 +1361,27 @@ function getStmtMatchGroup(label) {
   return null;
 }
 
-function autoMatchProformaToStatement(pfRows, stmtRows) {
-  // Returns map: group -> stmtLabel (best match)
+function autoMatchProformaToStatement(pfRows, stmtRows, system) {
+  // For Buildium properties use the hard-coded default mapping
+  if(system === 'buildium') {
+    // Verify each default label actually exists in this statement; drop any that don't
+    const stmtLabels = new Set(stmtRows.map(r=>r.label));
+    const matches = {};
+    Object.entries(BUILDIUM_DEFAULT_MAPPING).forEach(([group, labels]) => {
+      const valid = labels.filter(l => stmtLabels.has(l));
+      if(valid.length) matches[group] = valid;
+    });
+    return matches;
+  }
+  // Appfolio: keyword-based auto-match
   const matches = {};
   PF_LINE_ITEMS.filter(item => !item.isComputed).forEach(item => {
-    // Find the statement row that best matches this canonical item
-    // Exclude category headers (no values) — prefer subtotals over line items
     let best = null;
     let bestIsSubtotal = false;
     stmtRows.forEach(stmtRow => {
-      if(stmtRow.isCategory) return; // skip headers — they have no values
+      if(stmtRow.isCategory) return;
       const stmtGroup = getStmtMatchGroup(stmtRow.label);
       if(stmtGroup === item.group) {
-        // Prefer subtotal > line item; among equals take first found
         if(!best || (!bestIsSubtotal && stmtRow.isSubtotal)) {
           best = stmtRow.label;
           bestIsSubtotal = stmtRow.isSubtotal;
@@ -1725,14 +1753,65 @@ function renderMappingEditor(propId) {
   const el = document.getElementById('mapping-editor');
   if(!pf||!stmt||!el) return;
 
+  const p = properties.find(x=>x.id===propId);
+
+  // Auto-match if no mapping saved yet
   if(!d.pfMapping) {
-    propData[propId].pfMapping = autoMatchProformaToStatement(pf.rows, stmt.rows);
+    propData[propId].pfMapping = autoMatchProformaToStatement(pf.rows, stmt.rows, p?.system);
     save();
   }
   const mapping = d.pfMapping || {};
 
-  const stmtNonCat = stmt.rows.filter(r=>!r.isCategory);
+  function getSelected(group) {
+    const v = mapping[group];
+    if(!v) return [];
+    return Array.isArray(v) ? v : [v];
+  }
+
   const itemsToShow = PF_LINE_ITEMS.filter(item => !item.isComputed);
+  const matchedCount = itemsToShow.filter(item => getSelected(item.group).length > 0).length;
+
+  if(p?.system === 'buildium') {
+    // ── Buildium: read-only summary — mapping is hard-coded ─────────────────
+    const stmtLabels = new Set(stmt.rows.map(r=>r.label));
+    let rows = '';
+    itemsToShow.forEach(item => {
+      const selected = getSelected(item.group);
+      const allFound = selected.length > 0 && selected.every(l => stmtLabels.has(l));
+      const statusDot = allFound
+        ? `<span style="color:var(--green)">✓</span>`
+        : `<span style="color:var(--amber)">—</span>`;
+      const labelText = selected.length
+        ? selected.join(' + ')
+        : '<span style="color:var(--text3)">not found in statement</span>';
+      rows += `<div style="display:grid;grid-template-columns:200px 16px 1fr;gap:6px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--text2)">${item.label}</div>
+        <div style="font-size:11px;text-align:center">${statusDot}</div>
+        <div style="font-size:12px;color:${selected.length?'var(--text)':'var(--text3)'}">${labelText}</div>
+      </div>`;
+    });
+
+    el.innerHTML = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div>
+          <div style="font-size:13px;font-weight:500">Proforma line item mapping</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">Buildium — using standard mapping · ${matchedCount} of ${itemsToShow.length} matched</div>
+        </div>
+        <button class="btn" style="font-size:11px;padding:3px 8px" onclick="resetPfMapping('${propId}')">Re-apply defaults</button>
+      </div>
+      <div style="display:grid;grid-template-columns:200px 16px 1fr;gap:6px;align-items:baseline;padding:4px 0;margin-bottom:4px">
+        <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Line item</div>
+        <div></div>
+        <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Statement row(s)</div>
+      </div>
+      ${rows}
+    </div>`;
+    el.style.display = 'block';
+    return;
+  }
+
+  // ── Appfolio / other: simple single-select dropdown per item ────────────
+  const stmtNonCat = stmt.rows.filter(r=>!r.isCategory);
 
   function stmtRowDisplayLabel(r) {
     if(r.isNOI)          return r.label + ' [NOI]';
@@ -1747,65 +1826,43 @@ function renderMappingEditor(propId) {
     return pf.rows.find(r => item.pfKeys.some(k => r.label.toLowerCase().includes(k)));
   }
 
-  // mapping[group] is now always an array of statement labels
-  function getSelected(group) {
-    const v = mapping[group];
-    if(!v) return [];
-    return Array.isArray(v) ? v : [v]; // back-compat with old single-string values
-  }
-
-  let matchedCount = itemsToShow.filter(item => getSelected(item.group).length > 0).length;
-
   let html = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div style="font-size:13px;font-weight:500">Proforma line item mapping</div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="font-size:12px;color:var(--text3)">${matchedCount} of ${itemsToShow.length} matched</span>
-        <button class="btn" style="font-size:11px;padding:3px 8px" onclick="resetPfMapping('${propId}')">Re-auto-match</button>
+      <div>
+        <div style="font-size:13px;font-weight:500">Proforma line item mapping</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${matchedCount} of ${itemsToShow.length} matched</div>
       </div>
+      <button class="btn" style="font-size:11px;padding:3px 8px" onclick="resetPfMapping('${propId}')">Re-auto-match</button>
     </div>
     <div style="display:grid;grid-template-columns:200px 20px 1fr;gap:8px;align-items:center;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
       <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Line item</div>
       <div></div>
-      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Statement rows (check all that apply — values are summed)</div>
+      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Statement row</div>
     </div>`;
 
   itemsToShow.forEach(item => {
     const selected = getSelected(item.group);
+    const matched = selected[0] || '';
     const pfRow = findPfRow(item);
     const pfFoundLabel = pfRow ? pfRow.label : null;
-    const isMatched = selected.length > 0;
-    const badge = isMatched
-      ? `<span class="badge badge-ok" style="font-size:10px">${selected.length > 1 ? selected.length+' rows' : 'matched'}</span>`
+    const badge = matched
+      ? `<span class="badge badge-ok" style="font-size:10px">matched</span>`
       : `<span class="badge badge-warn" style="font-size:10px">unmatched</span>`;
     const pfHint = pfFoundLabel
       ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">Proforma: "${pfFoundLabel.slice(0,40)}"</div>`
       : `<div style="font-size:10px;color:var(--text3);margin-top:2px">Not in proforma file</div>`;
 
-    // Checkbox list — only show rows with non-zero values to keep it manageable
-    const checkboxes = stmtNonCat
-      .filter(r => !r.isNOI && !r.isTotalIncome && !r.isTotalExpense && !r.isNetIncome)
-      .filter(r => r.total !== 0 || selected.includes(r.label))
-      .map(r => {
-        const chk = selected.includes(r.label) ? 'checked' : '';
-        const safeGroup = item.group.replace(/'/g,"\'");
-        const safeLabel = escHtml(r.label).replace(/'/g,"\'");
-        return `<label style="display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;cursor:pointer;font-size:12px;${chk?'background:var(--green-bg);color:var(--green)':'color:var(--text2)'}">
-          <input type="checkbox" ${chk} style="width:13px;height:13px;cursor:pointer;accent-color:var(--green)"
-            onchange="togglePfMappingRow('${propId}','${safeGroup}','${safeLabel}',this.checked)">
-          ${stmtRowDisplayLabel(r)}
-        </label>`;
-      }).join('');
-
-    html += `<div style="display:grid;grid-template-columns:200px 20px 1fr;gap:8px;align-items:start;margin-bottom:12px">
+    html += `<div style="display:grid;grid-template-columns:200px 20px 1fr;gap:8px;align-items:start;margin-bottom:10px">
       <div>
         <div style="font-size:12px;font-weight:500;display:flex;align-items:center;gap:5px">${item.label} ${badge}</div>
         ${pfHint}
       </div>
-      <div style="text-align:center;color:var(--text3);font-size:14px;padding-top:4px">→</div>
-      <div style="border:1px solid ${isMatched?'var(--green)':'var(--border)'};border-radius:6px;padding:4px;max-height:110px;overflow-y:auto;background:var(--bg2)">
-        ${checkboxes || '<div style="font-size:11px;color:var(--text3);padding:4px 6px">No non-zero rows found in statement</div>'}
-      </div>
+      <div style="text-align:center;color:var(--text3);font-size:14px;padding-top:2px">→</div>
+      <select style="font-size:12px;padding:5px 8px;border:1px solid ${matched?'var(--green)':'var(--border)'};border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit;width:100%"
+        onchange="savePfMappingByGroup('${propId}','${item.group}',this.value)">
+        <option value="">— no match —</option>
+        ${stmtNonCat.map(r=>`<option value="${escHtml(r.label)}" ${matched===r.label?'selected':''}>${stmtRowDisplayLabel(r)}</option>`).join('')}
+      </select>
     </div>`;
   });
 
@@ -1831,29 +1888,14 @@ function savePfMappingByGroup(propId, group, stmtLabel) {
   renderBenchmarkTab();
 }
 
-function togglePfMappingRow(propId, group, stmtLabel, checked) {
-  if(!propData[propId]) propData[propId]={};
-  if(!propData[propId].pfMapping) propData[propId].pfMapping={};
-  const current = propData[propId].pfMapping[group];
-  let arr = Array.isArray(current) ? [...current] : (current ? [current] : []);
-  if(checked) {
-    if(!arr.includes(stmtLabel)) arr.push(stmtLabel);
-  } else {
-    arr = arr.filter(l => l !== stmtLabel);
-  }
-  if(arr.length) propData[propId].pfMapping[group] = arr;
-  else delete propData[propId].pfMapping[group];
-  save();
-  renderMappingEditor(propId);
-  renderBenchmarkTab();
-}
 
 function resetPfMapping(propId) {
   if(!propData[propId]) return;
   const d = propData[propId];
   if(!d.proforma || !d.statement) return;
   // Re-run auto-match and rebuild group-keyed mapping
-  const rawMatches = autoMatchProformaToStatement(d.proforma.rows, d.statement.rows);
+  const _prop = properties.find(x=>x.id===propId);
+  const rawMatches = autoMatchProformaToStatement(d.proforma.rows, d.statement.rows, _prop?.system);
   propData[propId].pfMapping = rawMatches;
   save();
   renderMappingEditor(propId);
