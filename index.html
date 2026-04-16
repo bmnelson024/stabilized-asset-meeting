@@ -2078,6 +2078,19 @@ function renderBenchmarkTab() {
       }
       else if(r.isTotalIncome)  pfRow = bestPfRow(x=>x.isTotalIncome);
       else if(r.isTotalExpense) pfRow = bestPfRow(x=>x.isTotalExpense);
+      else if(r.isNetIncome) {
+        // Net income = NOI minus debt service — prefer annual cash flow rows
+        pfRow = bestPfRow(x=>x.isNetIncome);
+        if(!pfRow || !pfRow.total) {
+          // Derive: annual NOI minus total annual debt service
+          const pfNOIRow = bestPfRow(x=>x.isNOI);
+          const pfDSRows = pf.rows.filter(x=>x.isDebtService);
+          const pfDS = pfDSRows.reduce((s,x)=>s+x.total, 0)
+                    || (dsOverride.interest||0) + (dsOverride.principal||0);
+          if(pfNOIRow && pfDS) pfAnnual = pfNOIRow.total - pfDS;
+          else if(pfNOIRow) pfAnnual = pfNOIRow.total; // fallback to NOI if no DS
+        }
+      }
       else {
         // For debt service rows, also match against override
         pfRow = pfMap[r.label.toLowerCase()];
@@ -2091,10 +2104,20 @@ function renderBenchmarkTab() {
       }
       if(pfRow && pfAnnual === null) pfAnnual = pfRow.total || null;
     }
-    const bgRow = bgMap[r.label.toLowerCase()]
-      || (hasBG && r.isNOI ? bg.rows.find(x=>x.isNOI) : null)
-      || (hasBG && r.isTotalIncome ? bg.rows.find(x=>x.isTotalIncome) : null)
-      || (hasBG && r.isTotalExpense ? bg.rows.find(x=>x.isTotalExpense) : null);
+    // Budget row lookup — handle all anchor types including net income
+    function bestBgRow(pred) {
+      if(!hasBG) return null;
+      const matches = bg.rows.filter(pred);
+      if(!matches.length) return null;
+      const annual = matches.filter(r=>r.label.toLowerCase().includes('annual') && r.total);
+      return (annual.length ? annual[annual.length-1] : null) || matches.find(r=>r.total) || matches[matches.length-1];
+    }
+    const bgRow = (hasBG && r.isNOI        ? bestBgRow(x=>x.isNOI)        : null)
+               || (hasBG && r.isTotalIncome ? bestBgRow(x=>x.isTotalIncome) : null)
+               || (hasBG && r.isTotalExpense? bestBgRow(x=>x.isTotalExpense): null)
+               || (hasBG && r.isNetIncome   ? bestBgRow(x=>x.isNetIncome)   : null)
+               || bgMap[r.label.toLowerCase()]
+               || null;
     const bgAnnual = bgRow ? bgRow.total : null;
 
     let cells = `<td>${r._synthetic ? fmt(actual)+' <span style="font-size:10px;color:var(--text3)">(est)</span>' : fmt(actual)}</td>`;
