@@ -1618,10 +1618,13 @@ function parseBuildiumBudget(ws) {
   if(annualCol < 0) annualCol = headers.length - 1;
 
   const rows = [];
-  const NOI_LABELS = ['net operating income'];
-  const TOTAL_INCOME_LABELS = ['total income'];
-  const TOTAL_EXPENSE_LABELS = ['total operating expense', 'total operating expe'];
-  const SECTION_MARKERS = ['▼', '▲'];
+  // Match case-insensitively and handle all-caps variants + plural forms
+  const NOI_LABELS        = ['net operating income'];
+  const TOTAL_INCOME_LABELS  = ['total income'];
+  const TOTAL_EXPENSE_LABELS = ['total operating expense'];  // covers plural via includes
+  const NET_INCOME_LABELS_BG = ['net income','cash flow','total non-operating'];
+  const SECTION_MARKERS   = ['▼', '▲'];
+  const SKIP_LABELS       = ['capital expenditure','capex','non-operating','fixed'];
 
   for(let i=headerRow+1;i<data.length;i++){
     const row = data[i];
@@ -1631,21 +1634,27 @@ function parseBuildiumBudget(ws) {
     // Skip section headers (▼ INCOME etc)
     if(SECTION_MARKERS.some(m=>raw.startsWith(m))) continue;
     const lc = raw.toLowerCase();
-    const isNOI = NOI_LABELS.some(x=>lc.startsWith(x));
-    const isTotalIncome = TOTAL_INCOME_LABELS.some(x=>lc===x);
-    const isTotalExpense = TOTAL_EXPENSE_LABELS.some(x=>lc.startsWith(x));
-    const NET_INCOME_LABELS_BG = ['net income','cash flow'];
-    const isNetIncome = !isNOI && !isTotal && NET_INCOME_LABELS_BG.some(x=>lc.includes(x));
-    const isTotal = isTotalIncome || isTotalExpense;
-    const isCategory = !row.slice(1).some(v=>v!==null&&v!==''&&v!==0);
-    const isSubtotal = !isCategory && !isNOI && !isTotal && lc.startsWith('total');
+    // Skip CapEx and non-operating section headers and totals
+    if(SKIP_LABELS.some(x=>lc.includes(x))) continue;
+    const isNOI         = NOI_LABELS.some(x=>lc.includes(x));
+    const isTotalIncome = TOTAL_INCOME_LABELS.some(x=>lc.includes(x));
+    const isTotalExpense= TOTAL_EXPENSE_LABELS.some(x=>lc.includes(x));
+    const isNetIncome   = !isNOI && !isTotalIncome && !isTotalExpense
+                       && NET_INCOME_LABELS_BG.some(x=>lc.includes(x));
+    const isTotal       = isTotalIncome || isTotalExpense;
+    const isCategory    = !row.slice(1).some(v=>v!==null&&v!==''&&v!==0);
+    const isSubtotal    = !isCategory && !isNOI && !isTotal && lc.startsWith('total');
     const values = monthCols.map(ci=>parseFloat(row[ci])||0);
-    const total = annualCol>=0 ? (parseFloat(row[annualCol])||values.reduce((a,b)=>a+b,0)) : values.reduce((a,b)=>a+b,0);
+    // Annual col may contain a formula string — fall back to summing months
+    const annualRaw = annualCol>=0 ? row[annualCol] : null;
+    const total = (annualRaw!==null && typeof annualRaw==='number')
+      ? annualRaw
+      : values.reduce((a,b)=>a+b,0);
     const priorActual = priorYearCol>=0 ? (parseFloat(row[priorYearCol])||null) : null;
     rows.push({label:raw, level:isTotal||isNOI?0:1, isCategory, isSubtotal, isTotal,
                isNOI, isNetIncome, isTotalIncome, isTotalExpense, values, total, priorActual});
   }
-  return {months, rows, system:'buildium_budget', propertyName:'', period:'2026'};
+  return {months, rows, system:'buildium_budget', propertyName:'', period:String(budgetYear)};
 }
 
 function parseAppfolioBudget(ws) {
