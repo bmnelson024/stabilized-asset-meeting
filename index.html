@@ -1340,12 +1340,18 @@ function autoMatchProformaToStatement(pfRows, stmtRows) {
   const matches = {};
   PF_LINE_ITEMS.filter(item => !item.isComputed).forEach(item => {
     // Find the statement row that best matches this canonical item
+    // Exclude category headers (no values) — prefer subtotals over line items
     let best = null;
+    let bestIsSubtotal = false;
     stmtRows.forEach(stmtRow => {
-      if(stmtRow.isCategory) return;
+      if(stmtRow.isCategory) return; // skip headers — they have no values
       const stmtGroup = getStmtMatchGroup(stmtRow.label);
       if(stmtGroup === item.group) {
-        if(!best || stmtRow.isSubtotal) best = stmtRow.label;
+        // Prefer subtotal > line item; among equals take first found
+        if(!best || (!bestIsSubtotal && stmtRow.isSubtotal)) {
+          best = stmtRow.label;
+          bestIsSubtotal = stmtRow.isSubtotal;
+        }
       }
     });
     if(best) matches[item.group] = best;
@@ -1720,9 +1726,19 @@ function renderMappingEditor(propId) {
   }
   const mapping = d.pfMapping || {};
 
+  // Build statement options — exclude category headers (no values), annotate subtotals
   const stmtNonCat = stmt.rows.filter(r=>!r.isCategory);
   const noneOption = `<option value="">— no match —</option>`;
   const itemsToShow = PF_LINE_ITEMS.filter(item => !item.isComputed);
+
+  function stmtRowDisplayLabel(r) {
+    if(r.isNOI)          return r.label + ' [NOI]';
+    if(r.isTotalIncome)  return r.label + ' [total income]';
+    if(r.isTotalExpense) return r.label + ' [total expense]';
+    if(r.isNetIncome)    return r.label + ' [net income]';
+    if(r.isSubtotal)     return r.label + ' [subtotal]';
+    return r.label + ' [line item]';
+  }
 
   function findPfRow(item) {
     return pf.rows.find(r => item.pfKeys.some(k => r.label.toLowerCase().includes(k)));
@@ -1764,7 +1780,7 @@ function renderMappingEditor(propId) {
       <select style="font-size:12px;padding:5px 8px;border:1px solid ${matched?'var(--green)':'var(--border)'};border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit;width:100%"
         onchange="savePfMappingByGroup('${propId}','${item.group}',this.value)">
         ${noneOption}
-        ${stmtNonCat.map(r=>`<option value="${escHtml(r.label)}" ${matched===r.label?'selected':''}>${r.label}</option>`).join('')}
+        ${stmtNonCat.map(r=>`<option value="${escHtml(r.label)}" ${matched===r.label?'selected':''}>${stmtRowDisplayLabel(r)}</option>`).join('')}
       </select>
     </div>`;
   });
