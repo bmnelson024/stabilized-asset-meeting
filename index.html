@@ -722,20 +722,19 @@ function renderUploadTab(p) {
   const pfEl = document.getElementById('proforma-summary-card');
   const pf = d.proforma;
   if(pf && pf.rows) {
-    const noiRow = pf.rows.find(r=>r.isNOI);
-    const incRow = pf.rows.find(r=>r.isTotalIncome);
-    const expRow = pf.rows.find(r=>r.isTotalExpense);
+    // Use last non-zero matching row — proformas often have a zero header row
+    // followed by the real subtotal/annual row with the same flag
+    const allNOI  = pf.rows.filter(r=>r.isNOI);
+    const allInc  = pf.rows.filter(r=>r.isTotalIncome);
+    const allExp  = pf.rows.filter(r=>r.isTotalExpense);
+    const noiRow  = allNOI.find(r=>r.total)  || allNOI[allNOI.length-1]   || null;
+    const incRow  = allInc.find(r=>r.total)  || allInc[allInc.length-1]   || null;
+    const expRow  = allExp.find(r=>r.total)  || allExp[allExp.length-1]   || null;
     // Fallback: derive NOI from income - expense if NOI row is missing or zero
-    // Derive missing/zero values from whatever we do have
-    const effectiveExpRow = (expRow && expRow.total)
-      ? expRow
-      : (incRow && noiRow && noiRow.total)
-        ? {total: incRow.total - noiRow.total, values: Array(12).fill((incRow.total - noiRow.total)/12)}
-        : expRow;
-    const derivedNOI = (incRow && effectiveExpRow && (!noiRow || !noiRow.total))
-      ? {total: incRow.total - effectiveExpRow.total, values: Array(12).fill((incRow.total - effectiveExpRow.total)/12)}
-      : noiRow;
-    const effectiveNOIRow = (noiRow && noiRow.total) ? noiRow : derivedNOI;
+    // effectiveExpRow/NOIRow already resolved to best non-zero rows above
+    const effectiveExpRow = expRow;
+    const effectiveNOIRow = noiRow && noiRow.total ? noiRow
+      : (incRow && expRow ? {total: incRow.total - expRow.total, values: Array(12).fill((incRow.total - expRow.total)/12)} : null);
     const isSeeded = pf.system === 'proforma_seed';
     const pfYear = pf.pfYear || '—';
     const source = isSeeded ? 'Built in' : (d.proforma_filename || 'Uploaded');
@@ -1664,13 +1663,15 @@ function getKeyMetric(propId, metric) {
   if(metric==='proforma_noi') {
     const pf = d.proforma;
     if(!pf) return null;
-    const row = pf.rows.find(r=>r.isNOI);
+    const rows = pf.rows.filter(r=>r.isNOI);
+    const row = rows.find(r=>r.total) || rows[rows.length-1] || null;
     return row ? row.total : null;
   }
   if(metric==='budget_noi') {
     const bg = d.budget;
     if(!bg) return null;
-    const row = bg.rows.find(r=>r.isNOI);
+    const rows = bg.rows.filter(r=>r.isNOI);
+    const row = rows.find(r=>r.total) || rows[rows.length-1] || null;
     return row ? row.total : null;
   }
   return null;
@@ -2046,17 +2047,22 @@ function renderBenchmarkTab() {
     let pfAnnual = r._pfAnnual !== undefined ? r._pfAnnual : null;
     if(pfAnnual === null && hasPF) {
       let pfRow = null;
+      // Helper: pick best matching proforma row — prefer non-zero, take last if all zero
+      function bestPfRow(pred) {
+        const matches = pf.rows.filter(pred);
+        return matches.find(r=>r.total) || matches[matches.length-1] || null;
+      }
       if(r.isNOI) {
-        pfRow = pf.rows.find(x=>x.isNOI);
+        pfRow = bestPfRow(x=>x.isNOI);
         // Fallback: derive NOI from income minus expense if NOI row total is zero/missing
         if(!pfRow || !pfRow.total) {
-          const pfInc = pf.rows.find(x=>x.isTotalIncome);
-          const pfExp = pf.rows.find(x=>x.isTotalExpense);
+          const pfInc = bestPfRow(x=>x.isTotalIncome);
+          const pfExp = bestPfRow(x=>x.isTotalExpense);
           if(pfInc && pfExp) pfAnnual = pfInc.total - pfExp.total;
         }
       }
-      else if(r.isTotalIncome)  pfRow = pf.rows.find(x=>x.isTotalIncome);
-      else if(r.isTotalExpense) pfRow = pf.rows.find(x=>x.isTotalExpense);
+      else if(r.isTotalIncome)  pfRow = bestPfRow(x=>x.isTotalIncome);
+      else if(r.isTotalExpense) pfRow = bestPfRow(x=>x.isTotalExpense);
       else {
         // For debt service rows, also match against override
         pfRow = pfMap[r.label.toLowerCase()];
