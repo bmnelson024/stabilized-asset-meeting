@@ -215,7 +215,6 @@
   </div>
   <div class="topbar-right">
     <button class="btn" onclick="openAddProperty()">+ Add property</button>
-    <button class="btn" onclick="debugCopyMapping()" id="debug-copy-btn" style="font-size:11px;color:var(--text3)">Debug: copy mapping</button>
     <button class="btn btn-primary" onclick="exportNotes()">Export notes</button>
   </div>
 </div>
@@ -877,8 +876,17 @@ function handleUpload(event, propId, fileKey) {
         renderBenchmarkTab();
         renderPortfolio();
         
-        // refresh detail meta for purchase date
-        selectProp(propId);
+        // Refresh detail meta for purchase date without resetting tab
+        const prop2 = properties.find(x=>x.id===propId);
+        if(prop2) {
+          document.getElementById('detail-prop-name').textContent = prop2.name;
+          document.getElementById('breadcrumb-prop-name').textContent = prop2.name;
+          const pfYear2 = prop2.purchaseDate ? getProformaYear(prop2.purchaseDate) : null;
+          const pfYearStr2 = pfYear2 ? ` · Proforma Year ${pfYear2}` : ' · No purchase date set';
+          document.getElementById('detail-prop-meta').textContent = `${prop2.system==='buildium'?'Buildium':'Appfolio'} · ${prop2.units||'?'} units${pfYearStr2}`;
+          renderUploadTab(prop2);
+          updateDetailBadge();
+        }
       } catch(err) {
         alert('Error parsing CSV proforma: '+err.message);
       }
@@ -1595,15 +1603,17 @@ function parseBuildiumBudget(ws) {
   const months = [];
   let annualCol = -1;
   let priorYearCol = -1;
+  const budgetYear = new Date().getFullYear();
+  const priorYear = budgetYear - 1;
   headers.forEach((h,ci)=>{
     if(!h) return;
     const hs = h.toString().trim();
-    if(hs === '2025 Actual' || hs.includes('Actual')) { priorYearCol = ci; return; }
+    if(hs.includes('Actual') || hs === String(priorYear)+' Actual') { priorYearCol = ci; return; }
     if(hs.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/)) {
-      months.push(hs + ' 2026');
+      months.push(hs + ' ' + budgetYear);
       monthCols.push(ci);
     }
-    if(hs.includes('Annual') || hs.includes('Total') || hs === '2026 Annual') annualCol = ci;
+    if(hs.includes('Annual') || hs.includes('Total') || hs === String(budgetYear)+' Annual') annualCol = ci;
   });
   if(annualCol < 0) annualCol = headers.length - 1;
 
@@ -1624,8 +1634,9 @@ function parseBuildiumBudget(ws) {
     const isNOI = NOI_LABELS.some(x=>lc.startsWith(x));
     const isTotalIncome = TOTAL_INCOME_LABELS.some(x=>lc===x);
     const isTotalExpense = TOTAL_EXPENSE_LABELS.some(x=>lc.startsWith(x));
+    const NET_INCOME_LABELS_BG = ['net income','cash flow'];
+    const isNetIncome = !isNOI && !isTotal && NET_INCOME_LABELS_BG.some(x=>lc.includes(x));
     const isTotal = isTotalIncome || isTotalExpense;
-    const isNetIncome = false;
     const isCategory = !row.slice(1).some(v=>v!==null&&v!==''&&v!==0);
     const isSubtotal = !isCategory && !isNOI && !isTotal && lc.startsWith('total');
     const values = monthCols.map(ci=>parseFloat(row[ci])||0);
@@ -1659,12 +1670,14 @@ function getKeyMetric(propId, metric) {
   }
   if(metric==='income_total') {
     if(!stmt) return null;
-    const row = stmt.rows.find(r=>r.isTotalIncome);
+    const rows = stmt.rows.filter(r=>r.isTotalIncome);
+    const row = rows.find(r=>r.total) || rows[rows.length-1] || null;
     return row ? row.total : null;
   }
   if(metric==='expense_total') {
     if(!stmt) return null;
-    const row = stmt.rows.find(r=>r.isTotalExpense);
+    const rows = stmt.rows.filter(r=>r.isTotalExpense);
+    const row = rows.find(r=>r.total) || rows[rows.length-1] || null;
     return row ? row.total : null;
   }
   if(metric==='proforma_noi') {
@@ -2190,8 +2203,10 @@ function renderBenchmarkTab() {
 
     // Compute actual NOI for DSCR
     const actualNOI = anchorNOI ? anchorNOI.values[monthIdx] : null;
-    const pfNOIRow  = pf.rows.find(r => r.isNOI);
-    const pfNOI     = pfNOIRow ? pfNOIRow.total / 12 : null;
+    const pfNOIRows = pf.rows.filter(r => r.isNOI);
+    const pfNOIRowBest = pfNOIRows.filter(r=>r.label.toLowerCase().includes('annual')&&r.total).pop()
+                      || pfNOIRows.find(r=>r.total) || pfNOIRows[pfNOIRows.length-1] || null;
+    const pfNOI = pfNOIRowBest ? pfNOIRowBest.total / 12 : null;
 
     const visibleItems = PF_LINE_ITEMS.filter(item => {
       if(item.isComputed) return true; // always show DSCR if we have data
@@ -2265,9 +2280,10 @@ function renderBenchmarkTab() {
           ? `<div style="font-size:10px;color:var(--text3);margin-top:1px">${stmtLabels.map(l=>l.replace(' [line item]','')).join(' + ')}</div>`
           : '';
 
-        // Find proforma value for this item
+        // Find proforma value for this item — prefer rows with non-zero total
         let pfAnnual = null;
-        const pfRow = pf.rows.find(r => item.pfKeys.some(k => r.label.toLowerCase().includes(k)));
+        const pfCandidates = pf.rows.filter(r => item.pfKeys.some(k => r.label.toLowerCase().includes(k)));
+        const pfRow = pfCandidates.find(r=>r.total) || pfCandidates[pfCandidates.length-1] || null;
         if(pfRow) pfAnnual = pfRow.total;
         const pfMonth = pfAnnual !== null ? pfAnnual / 12 : null;
 
@@ -2309,9 +2325,14 @@ function renderBenchmarkTab() {
       const isKey = KEY_LABELS.some(k=>lc===k||lc.includes(k));
       if(!isKey && !r.isNOI && !r.isTotal) return;
       const ytd = r.values.slice(0, monthIdx+1).reduce((a,b)=>a+b,0);
-      const bgRow = bgMap[lc] || (r.isNOI ? bg.rows.find(x=>x.isNOI) : null)
-                               || (r.isTotalIncome ? bg.rows.find(x=>x.isTotalIncome) : null)
-                               || (r.isTotalExpense ? bg.rows.find(x=>x.isTotalExpense) : null);
+      function ytdBestBg(pred) {
+        const m = bg.rows.filter(pred);
+        return m.find(r=>r.total) || m[m.length-1] || null;
+      }
+      const bgRow = bgMap[lc]
+                 || (r.isNOI ? ytdBestBg(x=>x.isNOI) : null)
+                 || (r.isTotalIncome ? ytdBestBg(x=>x.isTotalIncome) : null)
+                 || (r.isTotalExpense ? ytdBestBg(x=>x.isTotalExpense) : null);
       const bgAnnual = bgRow ? bgRow.total : null;
       const pct = bgAnnual ? ytd/bgAnnual*100 : null;
       const rem = bgAnnual !== null ? bgAnnual - ytd : null;
@@ -2582,10 +2603,11 @@ function acqUpdateSkip(propId, filename, val) {
 }
 
 function cancelAcqMapper(propId) {
-  // Clean up temp raw data
+  // Clean up temp raw data (also clears sheet names to avoid localStorage bloat)
   if(propData[propId]) {
     delete propData[propId]._acqRawData;
     delete propData[propId]._acqRawFilename;
+    delete propData[propId]._acqSheetNames;
   }
   save();
   const el = document.getElementById('acq-unit-editor');
@@ -2654,9 +2676,10 @@ function applyAcqMapping(propId, filename) {
     imported++;
   });
 
-  // Clean up temp state
+  // Clean up temp state (clear raw data to avoid localStorage bloat)
   delete propData[propId]._acqRawData;
   delete propData[propId]._acqRawFilename;
+  delete propData[propId]._acqSheetNames;
   propData[propId]['acqrentroll_filename'] = filename;
   save();
 
@@ -3113,49 +3136,6 @@ function fmtVar(v) {
   return '+$'+n.toLocaleString();
 }
 
-// ─── DEBUG ───────────────────────────────────────────────────────────────────
-function debugCopyMapping() {
-  const out = {};
-  properties.forEach(p => {
-    const d = propData[p.id]||{};
-    if(d.pfMapping && Object.keys(d.pfMapping).length) {
-      out[p.name] = {system: p.system, mapping: d.pfMapping};
-    }
-  });
-  // Also include proforma rows for current property
-  if(currentPropId) {
-    const d = propData[currentPropId]||{};
-    if(d.proforma) {
-      const p = properties.find(x=>x.id===currentPropId);
-      out['__proforma_rows__'+p.name] = d.proforma.rows.map(r=>({
-        label: r.label,
-        total: r.total,
-        isNOI: r.isNOI,
-        isTotalIncome: r.isTotalIncome,
-        isTotalExpense: r.isTotalExpense,
-        isNetIncome: r.isNetIncome,
-        isDebtService: r.isDebtService,
-      }));
-    }
-  }
-  const text = JSON.stringify(out, null, 2);
-  navigator.clipboard.writeText(text).then(()=>{
-    const btn = document.getElementById('debug-copy-btn');
-    const orig = btn.textContent;
-    btn.textContent = '✓ Copied!';
-    btn.style.color = 'var(--green)';
-    setTimeout(()=>{ btn.textContent = orig; btn.style.color = 'var(--text3)'; }, 2000);
-  }).catch(()=>{
-    // Fallback: show in a textarea
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);width:600px;height:300px;z-index:999;font-size:11px;font-family:monospace;background:#1c1c1e;color:#f2f2f7;border:1px solid #48484a;border-radius:8px;padding:10px';
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    setTimeout(()=>ta.remove(), 8000);
-  });
-}
 
 // ─── KEYBOARD ─────────────────────────────────────────────────────────────────
 document.addEventListener('keydown', e=>{
