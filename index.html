@@ -3078,6 +3078,22 @@ function debugCopyMapping() {
       out[p.name] = {system: p.system, mapping: d.pfMapping};
     }
   });
+  // Also include proforma rows for current property
+  if(currentPropId) {
+    const d = propData[currentPropId]||{};
+    if(d.proforma) {
+      const p = properties.find(x=>x.id===currentPropId);
+      out['__proforma_rows__'+p.name] = d.proforma.rows.map(r=>({
+        label: r.label,
+        total: r.total,
+        isNOI: r.isNOI,
+        isTotalIncome: r.isTotalIncome,
+        isTotalExpense: r.isTotalExpense,
+        isNetIncome: r.isNetIncome,
+        isDebtService: r.isDebtService,
+      }));
+    }
+  }
   const text = JSON.stringify(out, null, 2);
   navigator.clipboard.writeText(text).then(()=>{
     const btn = document.getElementById('debug-copy-btn');
