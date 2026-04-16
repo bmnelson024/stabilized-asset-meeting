@@ -1175,34 +1175,160 @@ function normalizeRenovTier(tags) {
 }
 
 // ─── PROFORMA LINE ITEM MATCHING ─────────────────────────────────────────────
+// Canonical line items shown in the benchmark detail view.
+// Each entry defines the display label, a match group key, and keywords used
+// to identify both the proforma row and the statement row.
+const PF_LINE_ITEMS = [
+  {
+    group: 'avg_rent',
+    label: 'Avg Monthly Rent / Unit',
+    pfKeys:   ['average monthly rent','avg monthly rent','avg rent per unit','average rent per unit'],
+    stmtKeys: ['average monthly rent','avg rent','rent per unit'],
+    isIncome: true,
+  },
+  {
+    group: 'rental_income',
+    label: 'Total Rental Income',
+    pfKeys:   ['total rental income','rental income','gross rental income','gross rent'],
+    stmtKeys: ['rental income','gross rent','rent income','total rent'],
+    isIncome: true,
+  },
+  {
+    group: 'utility_reimb',
+    label: 'Utility Reimbursement',
+    pfKeys:   ['utility reimbursement','utility reimb','utilities reimbursement','rubs','utility income'],
+    stmtKeys: ['utility reimbursement','utility reimb','rubs','utilities reimb'],
+    isIncome: true,
+  },
+  {
+    group: 'mgmt_fee',
+    label: 'Property Management Fees',
+    pfKeys:   ['property management','management fee','mgmt fee','management fees'],
+    stmtKeys: ['management fee','property management','mgmt fee','management fees'],
+    isIncome: false,
+  },
+  {
+    group: 'repairs',
+    label: 'Repairs & Maintenance',
+    pfKeys:   ['repair','maintenance','repairs & maintenance','repairs and maintenance','maint'],
+    stmtKeys: ['repair','maintenance','maint'],
+    isIncome: false,
+  },
+  {
+    group: 'tax',
+    label: 'Real Estate Taxes',
+    pfKeys:   ['real estate tax','property tax','taxes','real estate taxes'],
+    stmtKeys: ['real estate tax','property tax','taxes','tax'],
+    isIncome: false,
+  },
+  {
+    group: 'insurance',
+    label: 'Rental Property Insurance',
+    pfKeys:   ['insurance','rental property insurance','property insurance'],
+    stmtKeys: ['insurance'],
+    isIncome: false,
+  },
+  {
+    group: 'landscaping',
+    label: 'Landscaping & Snow Removal',
+    pfKeys:   ['landscaping','snow removal','lawn','grounds','landscaping and snow'],
+    stmtKeys: ['landscap','snow','lawn','grounds','mowing'],
+    isIncome: false,
+  },
+  {
+    group: 'water',
+    label: 'Water',
+    pfKeys:   ['water','water/sewer','water & sewer','sewer'],
+    stmtKeys: ['water','sewer'],
+    isIncome: false,
+  },
+  {
+    group: 'garbage',
+    label: 'Garbage',
+    pfKeys:   ['garbage','trash','recycling'],
+    stmtKeys: ['garbage','trash','recycling'],
+    isIncome: false,
+  },
+  {
+    group: 'electric',
+    label: 'Electricity',
+    pfKeys:   ['electric','electricity','elec'],
+    stmtKeys: ['electric','electricity','elec'],
+    isIncome: false,
+  },
+  {
+    group: 'admin',
+    label: 'Admin & Marketing',
+    pfKeys:   ['admin','marketing','advertising','administrative','admin and marketing'],
+    stmtKeys: ['admin','marketing','advertising'],
+    isIncome: false,
+  },
+  {
+    group: 'asset_mgmt',
+    label: 'Asset Management Fee',
+    pfKeys:   ['asset management','asset mgmt'],
+    stmtKeys: ['asset management','asset mgmt'],
+    isIncome: false,
+  },
+  {
+    group: 'mortgage',
+    label: 'Monthly Mortgage',
+    pfKeys:   ['mortgage','loan payment','debt service','monthly mortgage'],
+    stmtKeys: ['mortgage','loan payment','debt service'],
+    isIncome: false,
+    isDebtService: true,
+  },
+  {
+    group: 'dscr',
+    label: 'DSCR',
+    pfKeys:   ['dscr','debt service coverage','debt coverage'],
+    stmtKeys: [],  // computed — not a statement line item
+    isIncome: false,
+    isComputed: true,
+  },
+];
+
+// Legacy keyword list kept for getMatchGroup (used elsewhere)
 const MATCH_KEYWORDS = [
-  {keys:['water','sewer','water/sewer'],  group:'water'},
+  {keys:['water','sewer'],                group:'water'},
   {keys:['garbage','trash','recycling'],  group:'garbage'},
   {keys:['electricity','electric','elec'],group:'electric'},
-  {keys:['gas','natural gas'],            group:'gas'},
-  {keys:['internet','cable','telecom'],   group:'internet'},
   {keys:['insurance'],                    group:'insurance'},
-  {keys:['tax','taxes'],                  group:'tax'},
-  {keys:['management','mgmt','mgmnt'],    group:'management'},
-  {keys:['landscap','lawn','grounds','snow','mowing'],group:'landscaping'},
+  {keys:['real estate tax','property tax','taxes'], group:'tax'},
+  {keys:['property management','management fee','mgmt fee'], group:'mgmt_fee'},
+  {keys:['landscap','lawn','grounds','snow'], group:'landscaping'},
   {keys:['repair','maintenance','maint'], group:'repairs'},
-  {keys:['advertising','marketing','ad '],group:'advertising'},
-  {keys:['janitorial','cleaning','clean'],group:'cleaning'},
-  {keys:['pest','exterminating'],         group:'pest'},
-  {keys:['payroll','salary','wages'],     group:'payroll'},
-  {keys:['capital','capex','cap ex'],     group:'capex'},
-  {keys:['reserve','replacement'],        group:'reserve'},
-  {keys:['admin','office'],              group:'admin'},
-  {keys:['rent income','rental income'],  group:'rent_income'},
+  {keys:['admin','marketing','advertising'], group:'admin'},
+  {keys:['asset management','asset mgmt'], group:'asset_mgmt'},
+  {keys:['rental income','total rental income','gross rent'], group:'rental_income'},
+  {keys:['utility reimbursement','utility reimb','rubs'], group:'utility_reimb'},
+  {keys:['average monthly rent','avg rent per unit'], group:'avg_rent'},
+  {keys:['mortgage','loan payment','debt service'], group:'mortgage'},
   {keys:['vacancy','credit loss'],        group:'vacancy'},
   {keys:['pet'],                          group:'pet'},
   {keys:['laundry'],                      group:'laundry'},
   {keys:['parking'],                      group:'parking'},
-  {keys:['late fee','late'],              group:'late_fee'},
+  {keys:['late fee'],                     group:'late_fee'},
 ];
 
 function getMatchGroup(label) {
   const lc = label.toLowerCase();
+  // Check PF_LINE_ITEMS first for precise matching
+  for(const item of PF_LINE_ITEMS) {
+    if(item.pfKeys.some(k => lc.includes(k))) return item.group;
+  }
+  // Fall back to legacy list
+  for(const {keys, group} of MATCH_KEYWORDS) {
+    if(keys.some(k=>lc.includes(k))) return group;
+  }
+  return null;
+}
+
+function getStmtMatchGroup(label) {
+  const lc = label.toLowerCase();
+  for(const item of PF_LINE_ITEMS) {
+    if(item.stmtKeys.some(k => lc.includes(k))) return item.group;
+  }
   for(const {keys, group} of MATCH_KEYWORDS) {
     if(keys.some(k=>lc.includes(k))) return group;
   }
@@ -1210,23 +1336,19 @@ function getMatchGroup(label) {
 }
 
 function autoMatchProformaToStatement(pfRows, stmtRows) {
-  // Returns map: pfLabel -> stmtLabel (best match)
+  // Returns map: group -> stmtLabel (best match)
   const matches = {};
-  pfRows.forEach(pfRow => {
-    if(pfRow.isTotal||pfRow.isNOI||pfRow.isCategory) return;
-    const pfGroup = getMatchGroup(pfRow.label);
-    if(!pfGroup) return;
-    // Find best statement row match
+  PF_LINE_ITEMS.filter(item => !item.isComputed).forEach(item => {
+    // Find the statement row that best matches this canonical item
     let best = null;
     stmtRows.forEach(stmtRow => {
       if(stmtRow.isCategory) return;
-      const stmtGroup = getMatchGroup(stmtRow.label);
-      if(stmtGroup === pfGroup) {
-        // Prefer subtotals over line items for multi-line groups
+      const stmtGroup = getStmtMatchGroup(stmtRow.label);
+      if(stmtGroup === item.group) {
         if(!best || stmtRow.isSubtotal) best = stmtRow.label;
       }
     });
-    if(best) matches[pfRow.label] = best;
+    if(best) matches[item.group] = best;
   });
   return matches;
 }
@@ -1591,47 +1713,58 @@ function renderMappingEditor(propId) {
   const el = document.getElementById('mapping-editor');
   if(!pf||!stmt||!el) return;
 
-  const lineItems = pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine);
-  if(!lineItems.length) { el.style.display='none'; return; }
-
-  // Get or generate auto-matches
+  // Auto-match on first render using group-based keys
   if(!d.pfMapping) {
     propData[propId].pfMapping = autoMatchProformaToStatement(pf.rows, stmt.rows);
     save();
   }
   const mapping = d.pfMapping || {};
 
-  // Build dropdown options from statement rows
-  const stmtOptions = stmt.rows
-    .filter(r=>!r.isCategory)
-    .map(r=>`<option value="${escHtml(r.label)}">${r.label}</option>`)
-    .join('');
+  const stmtNonCat = stmt.rows.filter(r=>!r.isCategory);
   const noneOption = `<option value="">— no match —</option>`;
+  const itemsToShow = PF_LINE_ITEMS.filter(item => !item.isComputed);
+
+  function findPfRow(item) {
+    return pf.rows.find(r => item.pfKeys.some(k => r.label.toLowerCase().includes(k)));
+  }
+
+  let matchedCount = itemsToShow.filter(item => mapping[item.group]).length;
 
   let html = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <div style="font-size:13px;font-weight:500">Proforma line item mapping</div>
-      <div style="font-size:12px;color:var(--text3)">Auto-matched — adjust any incorrect mappings below</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:12px;color:var(--text3)">${matchedCount} of ${itemsToShow.length} matched</span>
+        <button class="btn" style="font-size:11px;padding:3px 8px" onclick="resetPfMapping('${propId}')">Re-auto-match</button>
+      </div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 24px 1fr;gap:8px;align-items:center;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
-      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Proforma line item</div>
+    <div style="display:grid;grid-template-columns:200px 20px 1fr;gap:8px;align-items:center;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
+      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Line item</div>
       <div></div>
-      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Matches to statement line</div>
+      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Maps to statement row</div>
     </div>`;
 
-  lineItems.forEach(pfRow => {
-    const matched = mapping[pfRow.label] || '';
-    const autoMatched = !!autoMatchProformaToStatement([pfRow], stmt.rows)[pfRow.label];
-    const badge = autoMatched && matched ? `<span class="badge badge-ok" style="font-size:10px">auto</span>` :
-                  matched ? `<span class="badge badge-neutral" style="font-size:10px">manual</span>` :
-                  `<span class="badge badge-warn" style="font-size:10px">unmatched</span>`;
-    html += `<div style="display:grid;grid-template-columns:1fr 24px 1fr;gap:8px;align-items:center;margin-bottom:6px">
-      <div style="font-size:13px;display:flex;align-items:center;gap:6px">${escHtml(pfRow.label)} ${badge}</div>
-      <div style="text-align:center;color:var(--text3);font-size:14px">→</div>
-      <select style="font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit;width:100%"
-        onchange="savePfMapping('${propId}','${escHtml(pfRow.label).replace(/'/g,"\\'")}',this.value)">
+  itemsToShow.forEach(item => {
+    const matched = mapping[item.group] || '';
+    const pfRow = findPfRow(item);
+    const pfFoundLabel = pfRow ? pfRow.label : null;
+    const badge = matched
+      ? `<span class="badge badge-ok" style="font-size:10px">matched</span>`
+      : `<span class="badge badge-warn" style="font-size:10px">unmatched</span>`;
+    const pfHint = pfFoundLabel
+      ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">Proforma: "${pfFoundLabel.slice(0,40)}"</div>`
+      : `<div style="font-size:10px;color:var(--text3);margin-top:2px">Not in proforma file</div>`;
+
+    html += `<div style="display:grid;grid-template-columns:200px 20px 1fr;gap:8px;align-items:start;margin-bottom:10px">
+      <div>
+        <div style="font-size:12px;font-weight:500;display:flex;align-items:center;gap:5px">${item.label} ${badge}</div>
+        ${pfHint}
+      </div>
+      <div style="text-align:center;color:var(--text3);font-size:14px;padding-top:2px">→</div>
+      <select style="font-size:12px;padding:5px 8px;border:1px solid ${matched?'var(--green)':'var(--border)'};border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit;width:100%"
+        onchange="savePfMappingByGroup('${propId}','${item.group}',this.value)">
         ${noneOption}
-        ${stmt.rows.filter(r=>!r.isCategory).map(r=>`<option value="${escHtml(r.label)}" ${matched===r.label?'selected':''}>${r.label}</option>`).join('')}
+        ${stmtNonCat.map(r=>`<option value="${escHtml(r.label)}" ${matched===r.label?'selected':''}>${r.label}</option>`).join('')}
       </select>
     </div>`;
   });
@@ -1641,12 +1774,31 @@ function renderMappingEditor(propId) {
   el.style.display = 'block';
 }
 
+
 function savePfMapping(propId, pfLabel, stmtLabel) {
+  // Legacy — kept for compatibility
+  savePfMappingByGroup(propId, pfLabel, stmtLabel);
+}
+
+function savePfMappingByGroup(propId, group, stmtLabel) {
   if(!propData[propId]) propData[propId]={};
   if(!propData[propId].pfMapping) propData[propId].pfMapping={};
-  if(stmtLabel) propData[propId].pfMapping[pfLabel] = stmtLabel;
-  else delete propData[propId].pfMapping[pfLabel];
+  if(stmtLabel) propData[propId].pfMapping[group] = stmtLabel;
+  else delete propData[propId].pfMapping[group];
   save();
+  renderMappingEditor(propId);
+  renderBenchmarkTab();
+}
+
+function resetPfMapping(propId) {
+  if(!propData[propId]) return;
+  const d = propData[propId];
+  if(!d.proforma || !d.statement) return;
+  // Re-run auto-match and rebuild group-keyed mapping
+  const rawMatches = autoMatchProformaToStatement(d.proforma.rows, d.statement.rows);
+  propData[propId].pfMapping = rawMatches;
+  save();
+  renderMappingEditor(propId);
   renderBenchmarkTab();
 }
 
@@ -1660,12 +1812,18 @@ const benchOpenState = {};
 function toggleBenchSection(propId, key) {
   const k = propId+'|'+key;
   benchOpenState[k] = !benchOpenState[k];
+  const isOpen = !!benchOpenState[k];
   // Toggle chevron
   const chevron = document.getElementById('bch-'+key);
-  if(chevron) chevron.classList.toggle('open', !!benchOpenState[k]);
-  // Toggle detail rows
-  document.querySelectorAll('.bdr-'+key).forEach(row => {
-    row.classList.toggle('open', !!benchOpenState[k]);
+  if(chevron) chevron.classList.toggle('open', isOpen);
+  // Toggle detail rows (table rows) and detail divs (block elements)
+  document.querySelectorAll('.bdr-'+key).forEach(el => {
+    if(el.tagName === 'TR') {
+      el.classList.toggle('open', isOpen);
+    } else {
+      el.style.display = isOpen ? 'block' : 'none';
+      el.classList.toggle('open', isOpen);
+    }
   });
 }
 
@@ -1869,6 +2027,99 @@ function renderBenchmarkTab() {
   if(anchorNet)     html += summaryRow(anchorNet,     'net',     'row-net',     false,                        'Net Income / Cash Flow');
 
   html += `</tbody></table></div></div>`;
+
+  // ── Proforma line item detail section ────────────────────────────────────────
+  if(hasPF && d.pfMapping && Object.keys(d.pfMapping).length) {
+    const mapping = d.pfMapping;
+    const stmtLookup = {};
+    stmt.rows.forEach(r => { stmtLookup[r.label] = r; });
+    const pfLookup = {};
+    pf.rows.forEach(r => { pfLookup[r.label.toLowerCase()] = r; });
+
+    // Compute actual NOI for DSCR
+    const actualNOI = anchorNOI ? anchorNOI.values[monthIdx] : null;
+    const pfNOIRow  = pf.rows.find(r => r.isNOI);
+    const pfNOI     = pfNOIRow ? pfNOIRow.total / 12 : null;
+
+    const visibleItems = PF_LINE_ITEMS.filter(item => {
+      if(item.isComputed) return true; // always show DSCR if we have data
+      return !!mapping[item.group];    // only show if mapped
+    });
+
+    if(visibleItems.length) {
+      const isOpenKey = currentPropId+'|pf_items';
+      const isOpen = !!benchOpenState[isOpenKey];
+      html += `<div class="bench-section">
+        <div class="bench-title" style="cursor:pointer;user-select:none" onclick="toggleBenchSection('${currentPropId}','pf_items')">
+          <span class="bench-chevron ${isOpen?'open':''}" id="bch-pf_items">▶</span>
+          Proforma line items — ${selMonth}
+          <span style="font-size:11px;color:var(--text3);margin-left:8px;font-weight:400">${Object.keys(mapping).length} of ${PF_LINE_ITEMS.filter(i=>!i.isComputed).length} mapped · click to ${isOpen?'collapse':'expand'}</span>
+        </div>
+        <div class="bench-detail-row bdr-pf_items ${isOpen?'open':''}" style="display:${isOpen?'block':'none'}">
+        <div class="bench-wrap"><table class="bench-table">
+        <thead><tr>
+          <th style="text-align:left">Line item</th>
+          <th>Actual (${selMonth})</th>
+          ${hasPF?`<th>${pfYearLabel} / mo</th><th>PF Var $</th><th>PF Var %</th>`:''}
+          <th>T12 avg</th><th>Prior mo</th>
+        </tr></thead><tbody>`;
+
+      visibleItems.forEach(item => {
+        if(item.isComputed && item.group === 'dscr') {
+          // DSCR = NOI / monthly debt service
+          const dsRow = effectiveDebtSubs.length
+            ? {values: effectiveDebtSubs.reduce((acc,r)=>acc.map((v,i)=>v+r.values[i]), Array(12).fill(0)),
+               total: effectiveDebtSubs.reduce((s,r)=>s+r.total,0)}
+            : null;
+          if(!dsRow || !actualNOI) return;
+          const monthlyDS = dsRow.values[monthIdx];
+          const actualDSCR = monthlyDS ? (actualNOI / monthlyDS).toFixed(2) : '—';
+          const pfDSCR = pfNOI && monthlyDS ? (pfNOI / monthlyDS).toFixed(2) : '—';
+          const dscrCls = parseFloat(actualDSCR) >= 1.25 ? 'val-pos' : 'val-neg';
+          html += `<tr style="font-weight:500">
+            <td>DSCR</td>
+            <td class="${dscrCls}">${actualDSCR}x</td>
+            ${hasPF?`<td>${pfDSCR !== '—' ? pfDSCR+'x' : '—'}</td><td>—</td><td>—</td>`:''}
+            <td>—</td><td>—</td>
+          </tr>`;
+          return;
+        }
+
+        const stmtLabel = mapping[item.group];
+        if(!stmtLabel) return;
+        const stmtRow = stmtLookup[stmtLabel];
+        if(!stmtRow) return;
+
+        const actual = stmtRow.values[monthIdx];
+        const prevActual = monthIdx > 0 ? stmtRow.values[monthIdx-1] : null;
+        const t12Avg = stmtRow.values.reduce((a,b)=>a+b,0) / stmtRow.values.length;
+
+        // Find proforma value for this item
+        let pfAnnual = null;
+        const pfRow = pf.rows.find(r => item.pfKeys.some(k => r.label.toLowerCase().includes(k)));
+        if(pfRow) pfAnnual = pfRow.total;
+        const pfMonth = pfAnnual !== null ? pfAnnual / 12 : null;
+
+        const isExp = !item.isIncome;
+        const varGood = v => isExp ? v <= 0 : v >= 0;
+        const varD = pfMonth !== null ? actual - pfMonth : null;
+        const varPct = pfMonth ? varD/Math.abs(pfMonth)*100 : null;
+        const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
+
+        html += `<tr>
+          <td style="padding-left:4px">${item.label}</td>
+          <td>${fmt(actual)}</td>
+          ${hasPF?`<td>${pfMonth!==null?fmt(pfMonth):'—'}</td>
+            <td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td>
+            <td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`:''}
+          <td>${fmt(t12Avg)}</td>
+          <td>${prevActual!==null?fmt(prevActual):'—'}</td>
+        </tr>`;
+      });
+
+      html += `</tbody></table></div></div></div>`;
+    }
+  }
 
   // ── YTD vs annual budget (kept as-is, collapsed sections not needed here) ──
   if(hasBG) {
