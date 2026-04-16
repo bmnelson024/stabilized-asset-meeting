@@ -2656,7 +2656,7 @@ function showAcqColumnMapper(propId, rawData, filename, sheetNames, wb) {
         <button class="btn btn-primary" onclick="applyAcqMapping('${propId}','${filename}')" style="font-size:13px">
           Import ${currentData.length - skipRows - 1} rows
         </button>
-        <span style="font-size:11px;color:var(--text3)">* required — rows with no unit number or no rent value will be skipped</span>
+        <span style="font-size:11px;color:var(--text3)">* Unit # is required — market/actual rent are optional (can be filled manually)</span>
       </div>
     </div>`;
   }
@@ -2770,8 +2770,9 @@ function applyAcqMapping(propId, filename) {
   const statusCol  = parseInt(document.getElementById('acq-col-status').value);
   const sameRent   = document.getElementById('acq-same-rent').checked;
 
-  if(unitCol < 0)   { alert('Please select the Unit # column.'); return; }
-  if(marketCol < 0) { alert('Please select the Market rent column.'); return; }
+  if(unitCol < 0) { alert('Please select the Unit # column.'); return; }
+  // Market rent is optional — if not mapped, units are imported with 0 rent
+  // and can be filled in manually in the unit editor
 
   const data = state.currentData;
   const skipRows = state.skipRows;
@@ -2792,9 +2793,9 @@ function applyAcqMapping(propId, filename) {
     const lcu = unitNum.toLowerCase();
     if(lcu.includes('total') || lcu.includes('grand') || lcu.includes('subtotal')) return;
 
-    const marketRaw = row[marketCol];
-    const marketRent = parseFloat(String(marketRaw || '').replace(/[$, ]/g,'')) || 0;
-    if(!marketRent) { skipped++; return; }
+    const marketRent = marketCol >= 0
+      ? parseFloat(String(row[marketCol] || '').replace(/[$, ]/g,'')) || 0
+      : 0;
 
     const actualRent = sameRent ? marketRent :
       (actualCol >= 0 ? parseFloat(String(row[actualCol] || '').replace(/[$, ]/g,'')) || marketRent : marketRent);
