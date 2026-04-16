@@ -8,16 +8,16 @@
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   :root{
-    --bg:#fff;--bg2:#f7f7f5;--bg3:#f0efeb;
-    --text:#1a1a18;--text2:#555551;--text3:#9b9994;
-    --border:#e5e4de;--border2:#cccac3;
-    --blue:#185fa5;--blue-bg:#e6f1fb;
-    --green:#3b6d11;--green-bg:#eaf3de;
-    --amber:#854f0b;--amber-bg:#faeeda;
-    --red:#a32d2d;--red-bg:#fcebeb;
+    --bg:#1c1c1e;--bg2:#2c2c2e;--bg3:#3a3a3c;
+    --text:#f2f2f7;--text2:#aeaeb2;--text3:#636366;
+    --border:#3a3a3c;--border2:#48484a;
+    --blue:#4da3ff;--blue-bg:#1a2f4a;
+    --green:#5ac87a;--green-bg:#1a3328;
+    --amber:#ffa040;--amber-bg:#3a2710;
+    --red:#ff6b6b;--red-bg:#3a1a1a;
     --radius:8px;--radius-lg:12px;
   }
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg3);color:var(--text);font-size:14px;min-height:100vh}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);font-size:14px;min-height:100vh}
   
   /* TOP BAR */
   .topbar{background:var(--bg);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
@@ -38,13 +38,13 @@
   /* STATUS DOTS */
   .prop-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;display:inline-block}
   .dot-none{background:var(--border2)}
-  .dot-ok{background:#639922}
-  .dot-warn{background:#ba7517}
-  .dot-flag{background:#e24b4a}
+  .dot-ok{background:#5ac87a}
+  .dot-warn{background:#ffa040}
+  .dot-flag{background:#ff6b6b}
   .btn{font-size:13px;padding:6px 14px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg);color:var(--text);cursor:pointer;font-family:inherit}
   .btn:hover{background:var(--bg2)}
   .btn-primary{background:var(--blue);color:#fff;border-color:var(--blue)}
-  .btn-primary:hover{background:#0c447c}
+  .btn-primary:hover{background:#2d8aee}
 
   /* LAYOUT */
   .layout{min-height:calc(100vh - 49px);overflow:auto}
@@ -135,7 +135,7 @@
   .bench-summary-row td{font-weight:500;background:var(--bg2);cursor:pointer;user-select:none}
   .bench-summary-row:hover td{background:var(--bg3)}
   .bench-summary-row.row-noi td{background:var(--blue-bg);color:var(--blue)}
-  .bench-summary-row.row-noi:hover td{background:#d6e9f8}
+  .bench-summary-row.row-noi:hover td{background:#1e3a5a}
   .bench-summary-row.row-net td{background:var(--bg2)}
   .bench-chevron{display:inline-block;font-size:9px;margin-right:7px;transition:transform .15s;color:var(--text3);vertical-align:middle}
   .bench-chevron.open{transform:rotate(90deg)}
@@ -161,9 +161,9 @@
   .notes-textarea:focus{border-color:var(--blue)}
   .notes-flags{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
   .flag-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:12px;cursor:pointer;border:1px solid transparent}
-  .flag-action{background:var(--amber-bg);color:var(--amber);border-color:#fac775}
-  .flag-concern{background:var(--red-bg);color:var(--red);border-color:#f7c1c1}
-  .flag-ok{background:var(--green-bg);color:var(--green);border-color:#c0dd97}
+  .flag-action{background:var(--amber-bg);color:var(--amber);border-color:#6b4010}
+  .flag-concern{background:var(--red-bg);color:var(--red);border-color:#6b2020}
+  .flag-ok{background:var(--green-bg);color:var(--green);border-color:#1f5a35}
   .notes-list{margin-top:16px}
   .note-item{padding:10px;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px;display:flex;gap:10px;align-items:flex-start}
   .note-item .flag-chip{flex-shrink:0;cursor:default}
@@ -229,9 +229,9 @@
       </div>
       <div class="portfolio-kpis" id="portfolio-kpis">
         <div class="kpi-card"><div class="kpi-label">Properties loaded</div><div class="kpi-val" id="pk-loaded">0</div></div>
-        <div class="kpi-card"><div class="kpi-label">On track</div><div class="kpi-val" style="color:#639922" id="pk-ok">0</div></div>
-        <div class="kpi-card"><div class="kpi-label">Watch</div><div class="kpi-val" style="color:#ba7517" id="pk-warn">0</div></div>
-        <div class="kpi-card"><div class="kpi-label">Flagged</div><div class="kpi-val" style="color:#e24b4a" id="pk-flag">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">On track</div><div class="kpi-val" style="color:#5ac87a" id="pk-ok">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Watch</div><div class="kpi-val" style="color:#ffa040" id="pk-warn">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Flagged</div><div class="kpi-val" style="color:#ff6b6b" id="pk-flag">0</div></div>
       </div>
       <div id="portfolio-table-wrap" class="portfolio-table-wrap">
         <table class="portfolio-table" id="portfolio-table">
@@ -256,7 +256,7 @@
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <span id="detail-status-badge" class="badge badge-neutral">No data</span>
-          <button class="btn" onclick="deleteProperty()" style="color:#a32d2d;border-color:#f7c1c1">Remove</button>
+          <button class="btn" onclick="deleteProperty()" style="color:var(--red);border-color:var(--red-bg)">Remove</button>
         </div>
       </div>
       <div class="tabs">
@@ -697,6 +697,12 @@ function renderUploadTab(p) {
     const source = isSeeded ? 'Built in' : (d.proforma_filename || 'Uploaded');
     const lineItems = pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine);
     const hasLineItems = lineItems.length > 0;
+
+    // Check if proforma has zero-value debt service rows (array formula limitation)
+    const pfDebtRows = pf.rows.filter(r=>r.isDebtService);
+    const hasZeroDebt = pfDebtRows.length > 0 && pfDebtRows.every(r=>r.total===0);
+    const dsOverride = d.debtServiceOverride || {};
+
     pfEl.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
         <div style="font-size:13px;font-weight:500">Proforma — Year ${pfYear}</div>
@@ -716,13 +722,47 @@ function renderUploadTab(p) {
           <div style="font-size:16px;font-weight:500">${expRow?fmt(expRow.total):'—'}</div>
           <div style="font-size:11px;color:var(--text3);margin-top:2px">${expRow?fmt(expRow.total/12)+' / mo':'—'}</div>
         </div>
-        <div class="kpi-card" style="border:1px solid #c0dd97">
+        <div class="kpi-card" style="border:1px solid #1f5a35">
           <div class="kpi-label">Annual NOI</div>
           <div style="font-size:16px;font-weight:500;color:var(--green)">${noiRow?fmt(noiRow.total):'—'}</div>
           <div style="font-size:11px;color:var(--text3);margin-top:2px">${noiRow?fmt(noiRow.total/12)+' / mo':'—'}</div>
         </div>
       </div>
-      ${p.purchaseDate?`<div style="font-size:11px;color:var(--text3);margin-top:10px">Purchase date: ${new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</div>`:''}`;
+      ${p.purchaseDate?`<div style="font-size:11px;color:var(--text3);margin-top:10px">Purchase date: ${new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</div>`:''}
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div>
+            <div style="font-size:12px;font-weight:500;color:var(--text2)">Debt service (proforma)</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">${hasZeroDebt ? '⚠ Could not be read from file — enter manually below' : 'Enter to override values from file'}</div>
+          </div>
+          ${dsOverride.interest||dsOverride.principal ? `<span class="badge badge-ok">Saved</span>` : (hasZeroDebt?`<span class="badge badge-warn">Needs entry</span>`:'')}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+          <div class="kpi-card" style="padding:10px">
+            <div class="kpi-label">Annual interest</div>
+            <input type="number" placeholder="e.g. 24000"
+              value="${dsOverride.interest||''}"
+              style="width:100%;margin-top:6px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;background:var(--bg3);color:var(--text);outline:none"
+              onchange="saveDebtServiceOverride('${p.id}','interest',this.value)"
+              onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border)'">
+            <div style="font-size:10px;color:var(--text3);margin-top:4px">${dsOverride.interest?fmt(dsOverride.interest/12)+' / mo':'—'}</div>
+          </div>
+          <div class="kpi-card" style="padding:10px">
+            <div class="kpi-label">Annual principal</div>
+            <input type="number" placeholder="e.g. 8000"
+              value="${dsOverride.principal||''}"
+              style="width:100%;margin-top:6px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;background:var(--bg3);color:var(--text);outline:none"
+              onchange="saveDebtServiceOverride('${p.id}','principal',this.value)"
+              onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border)'">
+            <div style="font-size:10px;color:var(--text3);margin-top:4px">${dsOverride.principal?fmt(dsOverride.principal/12)+' / mo':'—'}</div>
+          </div>
+          <div class="kpi-card" style="padding:10px;border:1px solid var(--border2)">
+            <div class="kpi-label">Total debt service</div>
+            <div style="font-size:15px;font-weight:500;margin-top:8px">${(dsOverride.interest||dsOverride.principal)?fmt((dsOverride.interest||0)+(dsOverride.principal||0)):'—'}</div>
+            <div style="font-size:10px;color:var(--text3);margin-top:4px">${(dsOverride.interest||dsOverride.principal)?fmt(((dsOverride.interest||0)+(dsOverride.principal||0))/12)+' / mo':'—'}</div>
+          </div>
+        </div>
+      </div>`;
     pfEl.style.display = 'block';
 
     // Show mapping editor if proforma has line items and statement exists
@@ -1189,39 +1229,65 @@ function parseProforma(ws, purchaseDate) {
 
   // Section tracking — are we in income or expense?
   let inExpenseSection = false;
+  let pastNOI = false;
   const rows = [];
+
+  // Labels that are always key rows regardless of value
+  const KEY_LABEL_PATTERNS = [
+    'total annual operating income', 'total annual operating expense',
+    'annual net operating income', 'net operating income (noi)',
+    'gross monthly operating income', 'monthly operating expenses',
+    'annual interest', 'annual principal', 'total annual debt service',
+    'total monthly cash flow', 'total annual cash flow',
+    'net income', 'cash flow',
+  ];
 
   for(let i=yearRow+1;i<data.length;i++) {
     const row = data[i];
     if(!row || !row[1]) continue;
-    const label = row[1].toString().trim();
-    if(!label) continue;
-    const lc = label.toLowerCase();
+    const rawLabel = row[1].toString().trim();
+    if(!rawLabel) continue;
+    // Skip rows where label is itself a formula reference (starts with =)
+    if(rawLabel.startsWith('=')) continue;
+    const lc = rawLabel.toLowerCase();
     const val = parseFloat(row[targetCol]) || 0;
-    if(!val && !lc.includes('total') && !lc.includes('noi') && !lc.includes('net operating')) continue;
+    const isKeyLabel = KEY_LABEL_PATTERNS.some(k => lc.includes(k));
+    if(!val && !isKeyLabel) continue;
 
-    const isNOI = lc.includes('annual net operating income') || lc.includes('net operating income (noi)');
+    const isNOI         = lc.includes('annual net operating income') || lc.includes('net operating income (noi)');
     const isTotalIncome = lc.includes('total annual operating income');
-    const isTotalExpense = lc.includes('total annual operating expense');
+    const isTotalExpense= lc.includes('total annual operating expense');
     const isMonthlyExpenseTotal = lc === 'monthly operating expenses' && i > yearRow + 5;
-    const isMonthlyIncomeTotal = lc === 'gross monthly operating income';
+    const isMonthlyIncomeTotal  = lc === 'gross monthly operating income';
+    const isDebtService = lc.includes('annual interest') || lc.includes('annual principal') || lc.includes('total annual debt service');
+    const isNetIncome   = !isNOI && !isDebtService && (
+      lc.includes('total annual cash flow') || lc.includes('total monthly cash flow') ||
+      lc.includes('net income') || (lc.includes('cash flow') && !lc.includes('operating'))
+    );
 
+    if(isNOI) pastNOI = true;
     if(isTotalIncome || isMonthlyIncomeTotal) inExpenseSection = false;
     if(isTotalExpense || isMonthlyExpenseTotal) inExpenseSection = true;
-
-    // Detect expense section start
     if(lc.includes('monthly operating expenses') || lc.includes('operating expense')) inExpenseSection = true;
 
     const isTotal = isTotalIncome || isTotalExpense;
-    const isLineItem = !isNOI && !isTotal && !isMonthlyIncomeTotal && !isMonthlyExpenseTotal;
+    const isLineItem = !isNOI && !isTotal && !isMonthlyIncomeTotal && !isMonthlyExpenseTotal && !isDebtService && !isNetIncome;
+
+    // Annual vs monthly: totals/NOI/net income are annual; monthly subtotals × 12; line items × 12
+    // Debt service rows are annual in this proforma format
+    const annualVal = (isNOI || isTotal || isNetIncome || isDebtService)
+      ? val
+      : val * 12;
 
     rows.push({
-      label, isNOI, isTotalIncome, isTotalExpense, isTotal,
-      isNetIncome: false, isCategory: false, isSubtotal: false, level: isTotal||isNOI ? 0 : 1,
+      label: rawLabel, isNOI, isTotalIncome, isTotalExpense, isTotal, isNetIncome,
+      isDebtService,
+      isCategory: false, isSubtotal: false,
+      level: (isTotal || isNOI || isNetIncome || isDebtService) ? 0 : 1,
       isExpenseLine: inExpenseSection && isLineItem,
-      isIncomeLine: !inExpenseSection && isLineItem,
-      total: isNOI||isTotal ? val : val * 12,  // line items are monthly, totals are annual
-      values: Array(12).fill(isNOI||isTotal ? val/12 : val),
+      isIncomeLine: !inExpenseSection && isLineItem && !pastNOI,
+      total: annualVal,
+      values: Array(12).fill(annualVal / 12),
     });
   }
   return {rows, pfYear, system:'proforma', months: Array(12).fill(''), propertyName:''};
@@ -1474,6 +1540,20 @@ function renderStatementTable(monthIdx) {
   tbl.innerHTML = `<thead>${thead}</thead><tbody>${rows_html}</tbody>`;
 }
 
+// ─── DEBT SERVICE OVERRIDE ────────────────────────────────────────────────────
+function saveDebtServiceOverride(propId, field, val) {
+  if(!propData[propId]) propData[propId]={};
+  if(!propData[propId].debtServiceOverride) propData[propId].debtServiceOverride={};
+  const num = parseFloat(val)||0;
+  if(num) propData[propId].debtServiceOverride[field] = num;
+  else delete propData[propId].debtServiceOverride[field];
+  save();
+  // Refresh the upload tab card to update totals and badge
+  const p = properties.find(x=>x.id===propId);
+  if(p) renderUploadTab(p);
+  renderBenchmarkTab();
+}
+
 // ─── MAPPING EDITOR ───────────────────────────────────────────────────────────
 function renderMappingEditor(propId) {
   const d = propData[propId]||{};
@@ -1627,24 +1707,53 @@ function renderBenchmarkTab() {
   })());
   const debtSubs    = stmt.rows.filter(r => isDebtService(r));
 
+  // If statement has no debt service rows, synthesize them from the override
+  const dsOverride = d.debtServiceOverride || {};
+  const syntheticDebtSubs = [];
+  if(!debtSubs.length && (dsOverride.interest || dsOverride.principal)) {
+    if(dsOverride.interest) syntheticDebtSubs.push({
+      label: 'Mortgage Interest', isDebtService: true, isTotalExpense: false, isNOI: false,
+      isNetIncome: false, isTotal: false, isCategory: false, isSubtotal: false, level: 1,
+      values: Array(12).fill(dsOverride.interest/12), total: dsOverride.interest,
+      _pfAnnual: dsOverride.interest, _synthetic: true,
+    });
+    if(dsOverride.principal) syntheticDebtSubs.push({
+      label: 'Mortgage Principal', isDebtService: true, isTotalExpense: false, isNOI: false,
+      isNetIncome: false, isTotal: false, isCategory: false, isSubtotal: false, level: 1,
+      values: Array(12).fill(dsOverride.principal/12), total: dsOverride.principal,
+      _pfAnnual: dsOverride.principal, _synthetic: true,
+    });
+  }
+  const effectiveDebtSubs = debtSubs.length ? debtSubs : syntheticDebtSubs;
+
   // Helper: build the data cells for one row
-  const isExpenseRow = (r) => r.isTotalExpense || isDebtService(r);
+  const isExpenseRow = (r) => r.isTotalExpense || isDebtService(r) || r.isDebtService;
   function rowCells(r, mi) {
-    const actual = r.values[mi];
-    const prevActual = mi > 0 ? r.values[mi-1] : null;
+    const actual = r._synthetic ? r.values[mi] : r.values[mi];
+    const prevActual = (!r._synthetic && mi > 0) ? r.values[mi-1] : null;
     const t12Avg = r.values.reduce((a,b)=>a+b,0) / r.values.length;
     const t12Var = actual - t12Avg;
     const isExp = isExpenseRow(r);
     const varGood = v => isExp ? v <= 0 : v >= 0;
 
-    let pfAnnual = null;
-    if(hasPF) {
+    let pfAnnual = r._pfAnnual !== undefined ? r._pfAnnual : null;
+    if(pfAnnual === null && hasPF) {
       let pfRow = null;
-      if(r.isNOI)         pfRow = pf.rows.find(x=>x.isNOI);
+      if(r.isNOI)               pfRow = pf.rows.find(x=>x.isNOI);
       else if(r.isTotalIncome)  pfRow = pf.rows.find(x=>x.isTotalIncome);
       else if(r.isTotalExpense) pfRow = pf.rows.find(x=>x.isTotalExpense);
-      else pfRow = pfMap[r.label.toLowerCase()];
-      pfAnnual = pfRow ? pfRow.total : null;
+      else {
+        // For debt service rows, also match against override
+        pfRow = pfMap[r.label.toLowerCase()];
+        if(!pfRow && isDebtService(r)) {
+          const lc = r.label.toLowerCase();
+          if(lc.includes('interest') && dsOverride.interest) pfAnnual = dsOverride.interest;
+          else if(lc.includes('principal') && dsOverride.principal) pfAnnual = dsOverride.principal;
+          else if((lc.includes('total') || lc.includes('debt service')) && (dsOverride.interest||dsOverride.principal))
+            pfAnnual = (dsOverride.interest||0) + (dsOverride.principal||0);
+        }
+      }
+      if(pfRow && pfAnnual === null) pfAnnual = pfRow.total;
     }
     const bgRow = bgMap[r.label.toLowerCase()]
       || (hasBG && r.isNOI ? bg.rows.find(x=>x.isNOI) : null)
@@ -1652,7 +1761,7 @@ function renderBenchmarkTab() {
       || (hasBG && r.isTotalExpense ? bg.rows.find(x=>x.isTotalExpense) : null);
     const bgAnnual = bgRow ? bgRow.total : null;
 
-    let cells = `<td>${fmt(actual)}</td>`;
+    let cells = `<td>${r._synthetic ? fmt(actual)+' <span style="font-size:10px;color:var(--text3)">(est)</span>' : fmt(actual)}</td>`;
     if(hasPF) {
       const pfMonth = pfAnnual !== null ? pfAnnual/12 : null;
       const varD = pfMonth !== null ? actual - pfMonth : null;
@@ -1667,8 +1776,9 @@ function renderBenchmarkTab() {
       const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
       cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
     }
-    const t12Cls = varGood(t12Var) ? 'val-pos' : 'val-neg';
-    cells += `<td class="${t12Cls}">${fmt(t12Avg)}</td><td class="${t12Cls}">${fmtVar(t12Var)}</td>`;
+    const t12Cls = !r._synthetic ? (varGood(t12Var) ? 'val-pos' : 'val-neg') : '';
+    cells += `<td class="${t12Cls}">${!r._synthetic?fmt(t12Avg):'—'}</td>`;
+    cells += `<td class="${t12Cls}">${!r._synthetic?fmtVar(t12Var):'—'}</td>`;
     cells += `<td>${prevActual!==null?fmt(prevActual):'—'}</td>`;
     return cells;
   }
@@ -1704,10 +1814,10 @@ function renderBenchmarkTab() {
     <thead><tr>${cols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
     <tbody>`;
 
-  if(anchorIncome)  html += summaryRow(anchorIncome,  'income',  'row-total',   incomeSubs.length>0,  'Total Operating Income')  + detailRows(incomeSubs,  'income');
-  if(anchorExpense) html += summaryRow(anchorExpense, 'expense', 'row-total',   expenseSubs.length>0, 'Total Operating Expense') + detailRows(expenseSubs, 'expense');
-  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',     debtSubs.length>0,    'Net Operating Income')    + detailRows(debtSubs,    'noi');
-  if(anchorNet)     html += summaryRow(anchorNet,     'net',     'row-net',     false,                'Net Income / Cash Flow');
+  if(anchorIncome)  html += summaryRow(anchorIncome,  'income',  'row-total',   incomeSubs.length>0,          'Total Operating Income')  + detailRows(incomeSubs,          'income');
+  if(anchorExpense) html += summaryRow(anchorExpense, 'expense', 'row-total',   expenseSubs.length>0,         'Total Operating Expense') + detailRows(expenseSubs,         'expense');
+  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',     effectiveDebtSubs.length>0,   'Net Operating Income')    + detailRows(effectiveDebtSubs,   'noi');
+  if(anchorNet)     html += summaryRow(anchorNet,     'net',     'row-net',     false,                        'Net Income / Cash Flow');
 
   html += `</tbody></table></div></div>`;
 
