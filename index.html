@@ -215,6 +215,7 @@
   </div>
   <div class="topbar-right">
     <button class="btn" onclick="openAddProperty()">+ Add property</button>
+    <button class="btn" onclick="debugCopyMapping()" id="debug-copy-btn" style="font-size:11px;color:var(--text3)">Debug: copy mapping</button>
     <button class="btn btn-primary" onclick="exportNotes()">Export notes</button>
   </div>
 </div>
@@ -3014,6 +3015,34 @@ function fmtVar(v) {
   const n = Math.round(v);
   if(n<0) return '-$'+Math.abs(n).toLocaleString();
   return '+$'+n.toLocaleString();
+}
+
+// ─── DEBUG ───────────────────────────────────────────────────────────────────
+function debugCopyMapping() {
+  const out = {};
+  properties.forEach(p => {
+    const d = propData[p.id]||{};
+    if(d.pfMapping && Object.keys(d.pfMapping).length) {
+      out[p.name] = {system: p.system, mapping: d.pfMapping};
+    }
+  });
+  const text = JSON.stringify(out, null, 2);
+  navigator.clipboard.writeText(text).then(()=>{
+    const btn = document.getElementById('debug-copy-btn');
+    const orig = btn.textContent;
+    btn.textContent = '✓ Copied!';
+    btn.style.color = 'var(--green)';
+    setTimeout(()=>{ btn.textContent = orig; btn.style.color = 'var(--text3)'; }, 2000);
+  }).catch(()=>{
+    // Fallback: show in a textarea
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);width:600px;height:300px;z-index:999;font-size:11px;font-family:monospace;background:#1c1c1e;color:#f2f2f7;border:1px solid #48484a;border-radius:8px;padding:10px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    setTimeout(()=>ta.remove(), 8000);
+  });
 }
 
 // ─── KEYBOARD ─────────────────────────────────────────────────────────────────
