@@ -127,11 +127,21 @@
   .bench-wrap{border:1px solid var(--border);border-radius:var(--radius-lg);overflow:auto}
   .bench-table{width:100%;border-collapse:collapse;font-size:12px}
   .bench-table th{background:var(--bg2);padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1}
-  .bench-table th:first-child{text-align:left;min-width:180px}
+  .bench-table th:first-child{text-align:left;min-width:220px}
   .bench-table td{padding:7px 10px;border-bottom:1px solid var(--border);text-align:right}
   .bench-table td:first-child{text-align:left}
   .bench-table tr:last-child td{border-bottom:none}
   .bench-table .row-total td{font-weight:500;background:var(--bg2)}
+  .bench-summary-row td{font-weight:500;background:var(--bg2);cursor:pointer;user-select:none}
+  .bench-summary-row:hover td{background:var(--bg3)}
+  .bench-summary-row.row-noi td{background:var(--blue-bg);color:var(--blue)}
+  .bench-summary-row.row-noi:hover td{background:#d6e9f8}
+  .bench-summary-row.row-net td{background:var(--bg2)}
+  .bench-chevron{display:inline-block;font-size:9px;margin-right:7px;transition:transform .15s;color:var(--text3);vertical-align:middle}
+  .bench-chevron.open{transform:rotate(90deg)}
+  .bench-detail-row{display:none}
+  .bench-detail-row.open{display:table-row}
+  .bench-detail-row td:first-child{padding-left:28px;color:var(--text2)}
   .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:500}
   .badge-ok{background:var(--green-bg);color:var(--green)}
   .badge-warn{background:var(--amber-bg);color:var(--amber)}
@@ -1536,6 +1546,20 @@ function escHtml(s) {
 }
 
 // ─── BENCHMARK TAB ────────────────────────────────────────────────────────────
+// Tracks which bench sections are open: keyed by propId+'|'+sectionKey
+const benchOpenState = {};
+function toggleBenchSection(propId, key) {
+  const k = propId+'|'+key;
+  benchOpenState[k] = !benchOpenState[k];
+  // Toggle chevron
+  const chevron = document.getElementById('bch-'+key);
+  if(chevron) chevron.classList.toggle('open', !!benchOpenState[k]);
+  // Toggle detail rows
+  document.querySelectorAll('.bdr-'+key).forEach(row => {
+    row.classList.toggle('open', !!benchOpenState[k]);
+  });
+}
+
 function renderBenchmarkTab() {
   if(!currentPropId) return;
   const d = propData[currentPropId]||{};
@@ -1561,7 +1585,6 @@ function renderBenchmarkTab() {
   const monthIdx = getPrevMonthIdx(stmt.months);
   const selMonth = stmt.months[monthIdx];
 
-  // Build lookup for proforma and budget by label
   function buildLookup(parsed) {
     if(!parsed) return {};
     const map = {};
@@ -1571,193 +1594,139 @@ function renderBenchmarkTab() {
   const pfMap = buildLookup(pf);
   const bgMap = buildLookup(bg);
 
-  // Key rows to highlight
-  const KEY_LABELS = ['total operating income','total income','total budgeted operating income',
-    'total operating expense','total expense','total budgeted operating expense',
-    'total operating expe','noi - net operating income','net operating income',
-    'net income','total budgeted income'];
-
   const p = properties.find(x=>x.id===currentPropId);
   const pfYear = pf ? (pf.pfYear || getProformaYear(p.purchaseDate) || 1) : null;
   const isSeeded = pf && pf.system === 'proforma_seed';
   const pfYearLabel = pfYear ? `Proforma Year ${pfYear}${isSeeded?' (built-in)':' (monthly avg)'}` : 'Proforma (monthly avg)';
 
-  // Determine columns
-  let cols = ['Account', 'Actual ('+selMonth+')'];
+  // ── Classify statement rows into four buckets ──────────────────────────────
+  // Debt service labels (below NOI in income statement)
+  const DEBT_SERVICE_KEYS = ['mortgage interest','mortgage principal','interest expense','principal','loan interest','debt service','loan payment'];
+  const isDebtService = r => {
+    const lc = r.label.toLowerCase();
+    return DEBT_SERVICE_KEYS.some(k => lc.includes(k));
+  };
+
+  // Find the four anchor rows from the statement
+  const anchorIncome  = stmt.rows.find(r => r.isTotalIncome);
+  const anchorExpense = stmt.rows.find(r => r.isTotalExpense);
+  const anchorNOI     = stmt.rows.find(r => r.isNOI);
+  const anchorNet     = stmt.rows.find(r => r.isNetIncome);
+
+  // Collect detail rows for each bucket — individual line items only (not subtotals, not category headers)
+  const incomeSubs  = stmt.rows.filter(r => !r.isCategory && !r.isSubtotal && !r.isTotal && !r.isNOI && !r.isNetIncome && r.level > 0 && !isDebtService(r) && (() => {
+    // Must appear before the total income row in the statement
+    const ai = stmt.rows.indexOf(anchorIncome);
+    return ai < 0 || stmt.rows.indexOf(r) < ai;
+  })());
+  const expenseSubs = stmt.rows.filter(r => !r.isCategory && !r.isSubtotal && !r.isTotal && !r.isNOI && !r.isNetIncome && r.level > 0 && !isDebtService(r) && (() => {
+    const ai = stmt.rows.indexOf(anchorIncome);
+    const ae = stmt.rows.indexOf(anchorExpense);
+    const ri = stmt.rows.indexOf(r);
+    return ri > ai && (ae < 0 || ri < ae);
+  })());
+  const debtSubs    = stmt.rows.filter(r => isDebtService(r));
+
+  // Helper: build the data cells for one row
+  const isExpenseRow = (r) => r.isTotalExpense || isDebtService(r);
+  function rowCells(r, mi) {
+    const actual = r.values[mi];
+    const prevActual = mi > 0 ? r.values[mi-1] : null;
+    const t12Avg = r.values.reduce((a,b)=>a+b,0) / r.values.length;
+    const t12Var = actual - t12Avg;
+    const isExp = isExpenseRow(r);
+    const varGood = v => isExp ? v <= 0 : v >= 0;
+
+    let pfAnnual = null;
+    if(hasPF) {
+      let pfRow = null;
+      if(r.isNOI)         pfRow = pf.rows.find(x=>x.isNOI);
+      else if(r.isTotalIncome)  pfRow = pf.rows.find(x=>x.isTotalIncome);
+      else if(r.isTotalExpense) pfRow = pf.rows.find(x=>x.isTotalExpense);
+      else pfRow = pfMap[r.label.toLowerCase()];
+      pfAnnual = pfRow ? pfRow.total : null;
+    }
+    const bgRow = bgMap[r.label.toLowerCase()]
+      || (hasBG && r.isNOI ? bg.rows.find(x=>x.isNOI) : null)
+      || (hasBG && r.isTotalIncome ? bg.rows.find(x=>x.isTotalIncome) : null)
+      || (hasBG && r.isTotalExpense ? bg.rows.find(x=>x.isTotalExpense) : null);
+    const bgAnnual = bgRow ? bgRow.total : null;
+
+    let cells = `<td>${fmt(actual)}</td>`;
+    if(hasPF) {
+      const pfMonth = pfAnnual !== null ? pfAnnual/12 : null;
+      const varD = pfMonth !== null ? actual - pfMonth : null;
+      const varPct = pfMonth ? varD/Math.abs(pfMonth)*100 : null;
+      const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
+      cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
+    }
+    if(hasBG) {
+      const bgMonth = bgAnnual !== null ? bgAnnual/12 : null;
+      const varD = bgMonth !== null ? actual - bgMonth : null;
+      const varPct = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
+      const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
+      cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
+    }
+    const t12Cls = varGood(t12Var) ? 'val-pos' : 'val-neg';
+    cells += `<td class="${t12Cls}">${fmt(t12Avg)}</td><td class="${t12Cls}">${fmtVar(t12Var)}</td>`;
+    cells += `<td>${prevActual!==null?fmt(prevActual):'—'}</td>`;
+    return cells;
+  }
+
+  // Build header columns
+  const ncols = 1 + 1 + (hasPF?3:0) + (hasBG?3:0) + 3; // label + actual + pf cols + bg cols + t12avg + t12var + prior
+  let cols = ['Account', `Actual (${selMonth})`];
   if(hasPF) cols.push(pfYearLabel, 'Var $', 'Var %');
-  if(hasBG) cols.push('Budget (monthly avg)', 'Var $', 'Var %');
-  cols.push('T12 avg', 'vs T12 $', 'Prior month');
+  if(hasBG) cols.push('Budget / mo', 'Var $', 'Var %');
+  cols.push('T12 avg', 'vs T12', 'Prior mo');
+
+  // ── Build section HTML ─────────────────────────────────────────────────────
+  function summaryRow(r, key, rowClass, hasSubs, label) {
+    const isOpen = !!benchOpenState[currentPropId+'|'+key];
+    const chevronHtml = hasSubs
+      ? `<span class="bench-chevron ${isOpen?'open':''}" id="bch-${key}" onclick="event.stopPropagation();toggleBenchSection('${currentPropId}','${key}')">▶</span>`
+      : `<span style="display:inline-block;width:16px"></span>`;
+    return `<tr class="bench-summary-row ${rowClass}" onclick="${hasSubs?`toggleBenchSection('${currentPropId}','${key}')`:''}" >
+      <td>${chevronHtml}${label||r.label}</td>${rowCells(r, monthIdx)}
+    </tr>`;
+  }
+
+  function detailRows(rows, key) {
+    const isOpen = !!benchOpenState[currentPropId+'|'+key];
+    return rows.map(r => `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
+      <td>${r.label}</td>${rowCells(r, monthIdx)}
+    </tr>`).join('');
+  }
 
   let html = `<div class="bench-section">
     <div class="bench-title">Month vs benchmarks — ${selMonth}</div>
     <div class="bench-wrap"><table class="bench-table">
-    <thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody>`;
+    <thead><tr>${cols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
+    <tbody>`;
 
-  stmt.rows.forEach(r=>{
-    if(r.isCategory) return;
-    const lc = r.label.toLowerCase();
-    const isKey = KEY_LABELS.some(k=>lc===k||lc.includes(k));
-    if(!isKey && !r.isSubtotal && !r.isNOI && !r.isTotal) return;
-
-    const actual = r.values[monthIdx];
-    const prevActual = monthIdx > 0 ? r.values[monthIdx-1] : null;
-    // Trailing 12-month average (all months in the file)
-    const t12Avg = r.values.length ? r.values.reduce((a,b)=>a+b,0)/r.values.length : null;
-    const t12Var = t12Avg!==null ? actual - t12Avg : null;
-
-    // For proforma: match by isNOI, isTotalIncome, isTotalExpense flags since label names differ
-    let pfAnnual = null;
-    if(hasPF) {
-      let pfRow = null;
-      if(r.isNOI) pfRow = pf.rows.find(x=>x.isNOI);
-      else if(r.isTotalIncome) pfRow = pf.rows.find(x=>x.isTotalIncome);
-      else if(r.isTotalExpense) pfRow = pf.rows.find(x=>x.isTotalExpense);
-      else pfRow = pfMap[lc];
-      pfAnnual = pfRow ? pfRow.total : null;
-    }
-
-    const bgRow = bgMap[lc] || (hasBG && r.isNOI ? bg.rows.find(x=>x.isNOI) : null)
-                             || (hasBG && r.isTotalIncome ? bg.rows.find(x=>x.isTotalIncome) : null)
-                             || (hasBG && r.isTotalExpense ? bg.rows.find(x=>x.isTotalExpense) : null);
-    const bgAnnual = bgRow ? bgRow.total : null;
-
-    const cls = r.isNOI?'row-noi':r.isTotal?'row-total':'row-subtotal';
-
-    // Track whether we're in the expense section by watching for total income row
-    // isExpense: row is a total expense row, OR we haven't hit income total yet and it's a subtotal
-    const isExpense = r.isTotalExpense ||
-      (!r.isTotalIncome && !r.isNOI && !r.isNetIncome &&
-       (lc.includes('expense') || lc.includes('cost') || lc.includes('repair') ||
-        lc.includes('management') || lc.includes('insurance') || lc.includes('utilit') ||
-        lc.includes('tax') || lc.includes('maintenance') || lc.includes('advertising') ||
-        lc.includes('landscaping') || lc.includes('cleaning') || lc.includes('supplies')));
-    const varGood = (varD) => isExpense ? varD <= 0 : varD >= 0;
-
-    let cells = `<td>${r.label}</td><td>${fmt(actual)}</td>`;
-    if(hasPF) {
-      const pfMonth = pfAnnual !== null ? pfAnnual/12 : null;
-      const varD = pfMonth!==null ? actual - pfMonth : null;
-      const varP = pfMonth ? varD/Math.abs(pfMonth)*100 : null;
-      const vCls = varD!==null ? (varGood(varD)?'val-pos':'val-neg') : '';
-      cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td>`;
-      cells += `<td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td>`;
-      cells += `<td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td>`;
-    }
-    if(hasBG) {
-      const bgMonth = bgAnnual !== null ? bgAnnual/12 : null;
-      const varD = bgMonth!==null ? actual - bgMonth : null;
-      const varP = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
-      const vCls = varD!==null ? (varGood(varD)?'val-pos':'val-neg') : '';
-      cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td>`;
-      cells += `<td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td>`;
-      cells += `<td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td>`;
-    }
-    cells += `<td class="${t12Var!==null?(varGood(t12Var)?'val-pos':'val-neg'):''}">${t12Avg!==null?fmt(t12Avg):'—'}</td>`;
-    cells += `<td class="${t12Var!==null?(varGood(t12Var)?'val-pos':'val-neg'):''}">${t12Var!==null?fmtVar(t12Var):'—'}</td>`;
-    cells += `<td>${prevActual!==null?fmt(prevActual):'—'}</td>`;
-    html += `<tr class="${cls}">${cells}</tr>`;
-  });
+  if(anchorIncome)  html += summaryRow(anchorIncome,  'income',  'row-total',   incomeSubs.length>0,  'Total Operating Income')  + detailRows(incomeSubs,  'income');
+  if(anchorExpense) html += summaryRow(anchorExpense, 'expense', 'row-total',   expenseSubs.length>0, 'Total Operating Expense') + detailRows(expenseSubs, 'expense');
+  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',     debtSubs.length>0,    'Net Operating Income')    + detailRows(debtSubs,    'noi');
+  if(anchorNet)     html += summaryRow(anchorNet,     'net',     'row-net',     false,                'Net Income / Cash Flow');
 
   html += `</tbody></table></div></div>`;
 
-  // ── LINE ITEM COMPARISON (if proforma has line items and mapping exists) ──
-  const lineItems = pf ? pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine) : [];
-  const mapping = d.pfMapping || {};
-  const mappedItems = lineItems.filter(r=>mapping[r.label]);
-
-  if(mappedItems.length > 0) {
-    const stmtByLabel = {};
-    stmt.rows.forEach(r=>{ stmtByLabel[r.label]=r; });
-    const incomeItems = mappedItems.filter(r=>r.isIncomeLine);
-    const expenseItems = mappedItems.filter(r=>r.isExpenseLine);
-
-    // Monthly line-item comparison
-    html += `<div class="bench-section">
-      <div class="bench-title">Line item detail — ${selMonth} vs proforma monthly avg</div>
-      <div class="bench-wrap"><table class="bench-table">
-      <thead><tr><th style="text-align:left">Line item</th><th style="text-align:left;color:var(--text3);font-size:11px">Proforma label</th><th>Actual</th><th>Proforma / mo</th><th>Var $</th><th>Var %</th></tr></thead><tbody>`;
-    if(incomeItems.length) {
-      html += `<tr class="row-category"><td colspan="6">Income</td></tr>`;
-      incomeItems.forEach(pfRow=>{
-        const stmtRow = stmtByLabel[mapping[pfRow.label]];
-        if(!stmtRow) return;
-        const actual = stmtRow.values[monthIdx];
-        const pfMo = pfRow.values[0];
-        const varD = actual - pfMo;
-        const varP = pfMo ? varD/Math.abs(pfMo)*100 : null;
-        const vCls = varD>=0?'val-pos':'val-neg';
-        html += `<tr><td style="padding-left:16px">${stmtRow.label}</td><td style="font-size:11px;color:var(--text3)">${pfRow.label}</td>
-          <td>${fmt(actual)}</td><td>${fmt(pfMo)}</td>
-          <td class="${vCls}">${fmtVar(varD)}</td><td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td></tr>`;
-      });
-    }
-    if(expenseItems.length) {
-      html += `<tr class="row-category"><td colspan="6">Expenses</td></tr>`;
-      expenseItems.forEach(pfRow=>{
-        const stmtRow = stmtByLabel[mapping[pfRow.label]];
-        if(!stmtRow) return;
-        const actual = stmtRow.values[monthIdx];
-        const pfMo = pfRow.values[0];
-        const varD = actual - pfMo;
-        const varP = pfMo ? varD/Math.abs(pfMo)*100 : null;
-        const vCls = varD<=0?'val-pos':'val-neg';
-        html += `<tr><td style="padding-left:16px">${stmtRow.label}</td><td style="font-size:11px;color:var(--text3)">${pfRow.label}</td>
-          <td>${fmt(actual)}</td><td>${fmt(pfMo)}</td>
-          <td class="${vCls}">${fmtVar(varD)}</td><td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td></tr>`;
-      });
-    }
-    html += `</tbody></table></div></div>`;
-
-    // YTD line-item comparison
-    html += `<div class="bench-section">
-      <div class="bench-title">Line item detail — YTD (${stmt.months[0]} – ${selMonth}) vs proforma annual</div>
-      <div class="bench-wrap"><table class="bench-table">
-      <thead><tr><th style="text-align:left">Line item</th><th style="text-align:left;color:var(--text3);font-size:11px">Proforma label</th><th>YTD Actual</th><th>Proforma annual</th><th>Var $</th><th>Var %</th></tr></thead><tbody>`;
-    if(incomeItems.length) {
-      html += `<tr class="row-category"><td colspan="6">Income</td></tr>`;
-      incomeItems.forEach(pfRow=>{
-        const stmtRow = stmtByLabel[mapping[pfRow.label]];
-        if(!stmtRow) return;
-        const ytd = stmtRow.values.slice(0,monthIdx+1).reduce((a,b)=>a+b,0);
-        const pfAnnual = pfRow.total;
-        const varD = ytd - pfAnnual;
-        const varP = pfAnnual ? varD/Math.abs(pfAnnual)*100 : null;
-        const vCls = varD>=0?'val-pos':'val-neg';
-        html += `<tr><td style="padding-left:16px">${stmtRow.label}</td><td style="font-size:11px;color:var(--text3)">${pfRow.label}</td>
-          <td>${fmt(ytd)}</td><td>${fmt(pfAnnual)}</td>
-          <td class="${vCls}">${fmtVar(varD)}</td><td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td></tr>`;
-      });
-    }
-    if(expenseItems.length) {
-      html += `<tr class="row-category"><td colspan="6">Expenses</td></tr>`;
-      expenseItems.forEach(pfRow=>{
-        const stmtRow = stmtByLabel[mapping[pfRow.label]];
-        if(!stmtRow) return;
-        const ytd = stmtRow.values.slice(0,monthIdx+1).reduce((a,b)=>a+b,0);
-        const pfAnnual = pfRow.total;
-        const varD = ytd - pfAnnual;
-        const varP = pfAnnual ? varD/Math.abs(pfAnnual)*100 : null;
-        const vCls = varD<=0?'val-pos':'val-neg';
-        html += `<tr><td style="padding-left:16px">${stmtRow.label}</td><td style="font-size:11px;color:var(--text3)">${pfRow.label}</td>
-          <td>${fmt(ytd)}</td><td>${fmt(pfAnnual)}</td>
-          <td class="${vCls}">${fmtVar(varD)}</td><td class="${vCls}">${varP!==null?varP.toFixed(1)+'%':'—'}</td></tr>`;
-      });
-    }
-    html += `</tbody></table></div></div>`;
-  }
-
-  // YTD vs annual budget
+  // ── YTD vs annual budget (kept as-is, collapsed sections not needed here) ──
   if(hasBG) {
+    const KEY_LABELS = ['total operating income','total income','total budgeted operating income',
+      'total operating expense','total expense','total budgeted operating expense',
+      'total operating expe','noi - net operating income','net operating income',
+      'net income','total budgeted income'];
     const hasPriorYear = bg.rows.some(r=>r.priorActual!==null&&r.priorActual!==undefined);
     html += `<div class="bench-section">
       <div class="bench-title">YTD actual vs annual budget (${stmt.months[0]} – ${selMonth})</div>
       <div class="bench-wrap"><table class="bench-table">
-      <thead><tr><th>Account</th><th>YTD Actual</th><th>Annual Budget</th><th>Budget used %</th><th>Remaining</th>${hasPriorYear?'<th>2025 Actual</th>':''}</tr></thead><tbody>`;
+      <thead><tr><th>Account</th><th>YTD Actual</th><th>Annual Budget</th><th>Budget used %</th><th>Remaining</th>${hasPriorYear?'<th>Prior year actual</th>':''}</tr></thead><tbody>`;
     stmt.rows.forEach(r=>{
       if(r.isCategory) return;
       const lc = r.label.toLowerCase();
       const isKey = KEY_LABELS.some(k=>lc===k||lc.includes(k));
-      if(!isKey && !r.isSubtotal && !r.isNOI && !r.isTotal) return;
+      if(!isKey && !r.isNOI && !r.isTotal) return;
       const ytd = r.values.slice(0, monthIdx+1).reduce((a,b)=>a+b,0);
       const bgRow = bgMap[lc] || (r.isNOI ? bg.rows.find(x=>x.isNOI) : null)
                                || (r.isTotalIncome ? bg.rows.find(x=>x.isTotalIncome) : null)
@@ -1767,10 +1736,8 @@ function renderBenchmarkTab() {
       const rem = bgAnnual !== null ? bgAnnual - ytd : null;
       const cls = r.isNOI?'row-noi':r.isTotal?'row-total':'row-subtotal';
       const isExp = r.isTotalExpense || (!r.isTotalIncome && !r.isNOI && lc.includes('expense'));
-      // For expenses: over budget (pct>100) is bad, under budget is good
-      // For income/NOI: over budget is good, under is bad
-      const pctCls = pct!==null ? (isExp ? (pct>100?'val-neg':'val-pos') : (pct>100?'val-pos':'val-neg')) : '';
-      const remCls = rem!==null ? (isExp ? (rem>=0?'val-pos':'val-neg') : (rem>=0?'val-neg':'val-pos')) : '';
+      const pctCls = pct!==null ? (isExp?(pct>100?'val-neg':'val-pos'):(pct>100?'val-pos':'val-neg')) : '';
+      const remCls = rem!==null ? (isExp?(rem>=0?'val-pos':'val-neg'):(rem>=0?'val-neg':'val-pos')) : '';
       const priorActual = bgRow ? bgRow.priorActual : null;
       html += `<tr class="${cls}">
         <td>${r.label}</td><td>${fmt(ytd)}</td>
