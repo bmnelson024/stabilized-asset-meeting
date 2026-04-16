@@ -21,50 +21,33 @@
   
   /* TOP BAR */
   .topbar{background:var(--bg);border-bottom:1px solid var(--border);padding:10px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
-  .topbar-left{display:flex;align-items:center;gap:16px}
-  .topbar-title{font-size:15px;font-weight:500}
-  .topbar-month{font-size:13px;color:var(--text2);background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:4px 10px}
-  .topbar-right{display:flex;align-items:center;gap:10px}
+  .topbar-left{display:flex;align-items:center;gap:12px;flex:1;min-width:0}
+  .topbar-title{font-size:15px;font-weight:500;white-space:nowrap}
+  .topbar-month{font-size:13px;color:var(--text2);background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:4px 10px;white-space:nowrap}
+  .topbar-search{flex:1;max-width:260px}
+  .topbar-search input{width:100%;padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;background:var(--bg2);color:var(--text);outline:none}
+  .topbar-search input:focus{border-color:var(--blue)}
+  .topbar-breadcrumb{display:none;align-items:center;gap:6px;font-size:13px;color:var(--text2)}
+  .topbar-breadcrumb.visible{display:flex}
+  .topbar-breadcrumb-back{color:var(--blue);cursor:pointer;font-weight:500}
+  .topbar-breadcrumb-back:hover{text-decoration:underline}
+  .topbar-breadcrumb-sep{color:var(--text3)}
+  .topbar-breadcrumb-current{color:var(--text);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:300px}
+  .topbar-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
+
+  /* STATUS DOTS */
+  .prop-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;display:inline-block}
+  .dot-none{background:var(--border2)}
+  .dot-ok{background:#639922}
+  .dot-warn{background:#ba7517}
+  .dot-flag{background:#e24b4a}
   .btn{font-size:13px;padding:6px 14px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--bg);color:var(--text);cursor:pointer;font-family:inherit}
   .btn:hover{background:var(--bg2)}
   .btn-primary{background:var(--blue);color:#fff;border-color:var(--blue)}
   .btn-primary:hover{background:#0c447c}
 
   /* LAYOUT */
-  .layout{display:grid;grid-template-columns:240px 1fr;min-height:calc(100vh - 49px)}
-
-  /* SIDEBAR */
-  .sidebar{background:var(--bg);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
-  .sidebar-header{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-  .sidebar-header-label{font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em}
-  .sidebar-search{width:100%;padding:8px 14px;border-bottom:1px solid var(--border)}
-  .sidebar-search input{width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;background:var(--bg2);color:var(--text);outline:none}
-  .sidebar-search input:focus{border-color:var(--blue)}
-  .prop-list{overflow-y:auto;flex:1}
-  .prop-group-header{display:flex;align-items:center;justify-content:space-between;padding:6px 14px;cursor:pointer;background:var(--bg3);border-bottom:1px solid var(--border);user-select:none;position:sticky;top:0;z-index:2}
-  .prop-group-header:hover{background:var(--bg2)}
-  .prop-group-left{display:flex;align-items:center;gap:7px}
-  .prop-group-name{font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:0.05em}
-  .prop-group-count{font-size:10px;color:var(--text3)}
-  .prop-group-chevron{font-size:10px;color:var(--text3);transition:transform .15s;display:inline-block}
-  .prop-group-chevron.open{transform:rotate(90deg)}
-  .prop-group-body{display:none}
-  .prop-group-body.open{display:block}
-  .prop-item{display:flex;align-items:center;gap:8px;padding:8px 14px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .1s}
-  .prop-item:hover{background:var(--bg2)}
-  .prop-item.active{background:var(--blue-bg)}
-  .prop-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
-  .dot-none{background:var(--border2)}
-  .dot-ok{background:#639922}
-  .dot-warn{background:#ba7517}
-  .dot-flag{background:#e24b4a}
-  .prop-info{flex:1;min-width:0}
-  .prop-name{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
-  .prop-meta{font-size:11px;color:var(--text3);margin-top:1px}
-  .prop-sys-badge{font-size:10px;padding:1px 5px;border-radius:3px;background:var(--bg3);color:var(--text2);border:1px solid var(--border);flex-shrink:0}
-  .sidebar-legend{padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:12px}
-  .legend-item{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text3)}
-  .legend-dot{width:7px;height:7px;border-radius:50%}
+  .layout{min-height:calc(100vh - 49px);overflow:auto}
 
   /* PORTFOLIO SUMMARY */
   .portfolio-view{display:none}
@@ -211,36 +194,25 @@
   <div class="topbar-left">
     <span class="topbar-title">Stabilized Asset Meeting</span>
     <span class="topbar-month" id="meeting-month">—</span>
+    <div class="topbar-search" id="topbar-search">
+      <input type="text" placeholder="Search properties..." oninput="filterPortfolio(this.value)" id="prop-search">
+    </div>
+    <div class="topbar-breadcrumb" id="topbar-breadcrumb">
+      <span class="topbar-breadcrumb-back" onclick="showView('portfolio')">← Portfolio</span>
+      <span class="topbar-breadcrumb-sep">/</span>
+      <span class="topbar-breadcrumb-current" id="breadcrumb-prop-name"></span>
+    </div>
   </div>
   <div class="topbar-right">
-    <button class="btn" onclick="showView('portfolio')">Portfolio view</button>
     <button class="btn" onclick="openAddProperty()">+ Add property</button>
     <button class="btn btn-primary" onclick="exportNotes()">Export notes</button>
   </div>
 </div>
 
 <div class="layout">
-  <!-- SIDEBAR -->
-  <div class="sidebar">
-    <div class="sidebar-header">
-      <span class="sidebar-header-label">Properties (<span id="prop-count">0</span>)</span>
-    </div>
-    <div class="sidebar-search">
-      <input type="text" placeholder="Search properties..." oninput="filterProps(this.value)" id="prop-search">
-    </div>
-    <div class="prop-list" id="prop-list"></div>
-    <div class="sidebar-legend">
-      <div class="legend-item"><div class="legend-dot" style="background:#639922"></div>On track</div>
-      <div class="legend-item"><div class="legend-dot" style="background:#ba7517"></div>Watch</div>
-      <div class="legend-item"><div class="legend-dot" style="background:#e24b4a"></div>Flag</div>
-    </div>
-  </div>
 
-  <!-- MAIN CONTENT -->
-  <div style="overflow:auto">
-
-    <!-- PORTFOLIO VIEW -->
-    <div class="portfolio-view active" id="portfolio-view">
+  <!-- PORTFOLIO VIEW -->
+  <div class="portfolio-view active" id="portfolio-view">
       <div class="portfolio-header">
         <h2>Portfolio overview</h2>
         <div class="portfolio-sub" id="portfolio-sub">Upload files for each property to see performance summary.</div>
@@ -358,7 +330,6 @@
       </div>
     </div>
 
-  </div>
 </div>
 
 <!-- ADD PROPERTY MODAL -->
@@ -514,11 +485,6 @@ const PM_MAP = {
 // Group open state — persisted in localStorage
 let groupOpenState = JSON.parse(localStorage.getItem('sam_groups') || '{}');
 function saveGroupState() { localStorage.setItem('sam_groups', JSON.stringify(groupOpenState)); }
-function toggleGroup(pm) {
-  groupOpenState[pm] = !groupOpenState[pm];
-  saveGroupState();
-  renderSidebar(document.getElementById('prop-search').value);
-}
 let properties = JSON.parse(localStorage.getItem('sam_properties') || 'null');
 let propData = JSON.parse(localStorage.getItem('sam_propdata') || '{}');
 let notes = JSON.parse(localStorage.getItem('sam_notes') || '[]');
@@ -568,81 +534,34 @@ function init() {
   }
   const now = new Date();
   document.getElementById('meeting-month').textContent = now.toLocaleDateString('en-US',{month:'long',year:'numeric'});
-  renderSidebar();
   renderPortfolio();
 }
 
-// ─── SIDEBAR ──────────────────────────────────────────────────────────────────
-function renderSidebar(filter='') {
-  const list = document.getElementById('prop-list');
-  document.getElementById('prop-count').textContent = properties.length;
-  const filtered = filter
-    ? properties.filter(p=>p.name.toLowerCase().includes(filter.toLowerCase()))
-    : properties;
-
-  if(!filtered.length) {
-    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);font-size:13px">No properties found</div>';
+// ─── PORTFOLIO SEARCH ─────────────────────────────────────────────────────────
+function filterPortfolio(val) {
+  const tbody = document.getElementById('portfolio-tbody');
+  if(!tbody) return;
+  const q = val.toLowerCase().trim();
+  // Show/hide group rows and property rows based on search
+  const groupRows = tbody.querySelectorAll('.ptbl-group-row');
+  const propRows = tbody.querySelectorAll('.ptbl-prop-row');
+  if(!q) {
+    // Restore group-based visibility
+    propRows.forEach(row => {
+      const pm = row.getAttribute('data-pm');
+      row.classList.toggle('hidden', !groupOpenState[pm]);
+    });
+    groupRows.forEach(row => row.style.display = '');
     return;
   }
-
-  // When filtering, show a flat list with no groups
-  if(filter) {
-    list.innerHTML = filtered.map(p => propItemHTML(p)).join('');
-    return;
-  }
-
-  // Group properties by PM, preserving a consistent group order
-  const GROUP_ORDER = ['Point Guard','Kouri','Arrow','RPME','Bender','J&M','Orange'];
-  const groups = {};
-  GROUP_ORDER.forEach(pm => groups[pm] = []);
-  filtered.forEach(p => {
-    const pm = PM_MAP[p.name] || 'Other';
-    if(!groups[pm]) groups[pm] = [];
-    groups[pm].push(p);
+  // Flat search — hide all group headers, show matching prop rows
+  groupRows.forEach(row => row.style.display = 'none');
+  propRows.forEach(row => {
+    const name = row.querySelector('td strong') ? row.querySelector('td strong').textContent.toLowerCase() : '';
+    row.classList.toggle('hidden', !name.includes(q));
+    row.style.display = '';
   });
-
-  let html = '';
-  GROUP_ORDER.forEach(pm => {
-    const props = groups[pm];
-    if(!props.length) return;
-    const isOpen = !!groupOpenState[pm]; // default collapsed
-    const chevron = isOpen ? 'open' : '';
-    // Status dot summary for the group header
-    const dots = props.map(p => getStatusDot(p.id));
-    const hasFlag = dots.some(d=>d==='dot-flag');
-    const hasWarn = dots.some(d=>d==='dot-warn');
-    const hasLoaded = dots.some(d=>d!=='dot-none');
-    const summaryDotClass = !hasLoaded ? 'dot-none' : hasFlag ? 'dot-flag' : hasWarn ? 'dot-warn' : 'dot-ok';
-    html += `
-      <div class="prop-group-header" onclick="toggleGroup('${pm}')">
-        <div class="prop-group-left">
-          <div class="prop-dot ${summaryDotClass}"></div>
-          <span class="prop-group-name">${pm}</span>
-          <span class="prop-group-count">${props.length}</span>
-        </div>
-        <span class="prop-group-chevron ${chevron}">▶</span>
-      </div>
-      <div class="prop-group-body ${isOpen ? 'open' : ''}">
-        ${props.map(p => propItemHTML(p)).join('')}
-      </div>`;
-  });
-  list.innerHTML = html;
 }
-
-function propItemHTML(p) {
-  const dot = getStatusDot(p.id);
-  const active = p.id === currentPropId ? 'active' : '';
-  return `<div class="prop-item ${active}" onclick="selectProp('${p.id}')">
-    <div class="prop-dot ${dot}"></div>
-    <div class="prop-info">
-      <div class="prop-name">${p.name}</div>
-      <div class="prop-meta">${p.units ? p.units+' units · ' : ''}${p.system==='buildium'?'Buildium':'Appfolio'}</div>
-    </div>
-    <div class="prop-sys-badge">${p.system==='buildium'?'BLD':'AFP'}</div>
-  </div>`;
-}
-
-function filterProps(val) { renderSidebar(val); }
 
 function getStatusDot(id) {
   const d = propData[id] || {};
@@ -662,18 +581,12 @@ function getStatusDot(id) {
 function selectProp(id) {
   currentPropId = id;
   const p = properties.find(x=>x.id===id);
-  // Ensure the property's PM group is open
-  const pm = PM_MAP[p.name];
-  if(pm && !groupOpenState[pm]) {
-    groupOpenState[pm] = true;
-    saveGroupState();
-  }
   showView('detail');
   document.getElementById('detail-prop-name').textContent = p.name;
+  document.getElementById('breadcrumb-prop-name').textContent = p.name;
   const pfYear = p.purchaseDate ? getProformaYear(p.purchaseDate) : null;
   const pfYearStr = pfYear ? ` · Proforma Year ${pfYear}` : ' · No purchase date set';
   document.getElementById('detail-prop-meta').textContent = `${p.system==='buildium'?'Buildium':'Appfolio'} · ${p.units||'?'} units${pfYearStr}`;
-  renderSidebar(document.getElementById('prop-search').value);
   renderUploadTab(p);
   updateDetailBadge();
   renderNotesTab();
@@ -686,7 +599,9 @@ function showView(view) {
   currentView = view;
   document.getElementById('portfolio-view').classList.toggle('active', view==='portfolio');
   document.getElementById('detail-view').classList.toggle('active', view==='detail');
-  if(view==='portfolio') { currentPropId=null; renderSidebar(); renderPortfolio(); }
+  document.getElementById('topbar-search').style.display = view==='portfolio' ? '' : 'none';
+  document.getElementById('topbar-breadcrumb').classList.toggle('visible', view==='detail');
+  if(view==='portfolio') { currentPropId=null; renderPortfolio(); }
 }
 
 function switchTab(name) {
@@ -716,7 +631,6 @@ function addProperty() {
   document.getElementById('modal-name').value='';
   document.getElementById('modal-units').value='';
   document.getElementById('modal-purchase-date').value='';
-  renderSidebar();
   renderPortfolio();
   selectProp(id);
 }
@@ -730,7 +644,6 @@ function deleteProperty() {
   save();
   currentPropId=null;
   showView('portfolio');
-  renderSidebar();
 }
 
 // ─── UPLOAD TAB ───────────────────────────────────────────────────────────────
@@ -863,7 +776,7 @@ function handleUpload(event, propId, fileKey) {
         updateDetailBadge();
         renderBenchmarkTab();
         renderPortfolio();
-        renderSidebar(document.getElementById('prop-search').value);
+        
         // refresh detail meta for purchase date
         selectProp(propId);
       } catch(err) {
@@ -908,7 +821,7 @@ function handleUpload(event, propId, fileKey) {
         const prop = properties.find(x=>x.id===propId);
         renderUploadTab(prop);
         renderRentProgressionTab();
-        renderSidebar(document.getElementById('prop-search').value);
+        
         return; // Early return — no standard parsed object needed
       } else if(fileKey==='proforma') {
         const sheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('traditional financing')) || wb.SheetNames[0];
@@ -950,7 +863,7 @@ function handleUpload(event, propId, fileKey) {
       renderRentRollTab();
       renderRentProgressionTab();
       renderPortfolio();
-      renderSidebar(document.getElementById('prop-search').value);
+      
       // Re-run auto-match if we now have both proforma and statement
       const pd2 = propData[propId]||{};
       if(pd2.proforma && pd2.statement && !pd2.pfMapping) {
@@ -2196,7 +2109,7 @@ function togglePortfolioGroup(pm) {
     row.classList.toggle('hidden', !isOpen);
   });
   // Also sync sidebar
-  renderSidebar(document.getElementById('prop-search').value);
+  
 }
 
 function renderPortfolio() {
