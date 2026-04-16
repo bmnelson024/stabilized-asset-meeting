@@ -387,11 +387,11 @@ const SEED_PROPERTIES = [
   {name:'Copperleaf',system:'buildium',units:88,purchaseDate:'2019-05-07',proforma:{income:713892,expense:376781,noi:337111,pfYear:7}},
   {name:'Cordes',system:'buildium',units:24,purchaseDate:'2020-02-21',proforma:{income:363082,expense:123868,noi:239214,pfYear:7}},
   {name:'Eagle Creek',system:'buildium',units:65,purchaseDate:'2021-08-11',proforma:{income:764537,expense:351899,noi:412638,pfYear:5}},
-  {name:'Judee Estates',system:'buildium',units:56,purchaseDate:'2023-04-28',proforma:{income:1128154,expense:402201,noi:725953,pfYear:4}},
+  {name:'Judee Estates',system:'buildium',units:56,purchaseDate:'2023-04-28',proforma:{income:1128154,expense:402201,noi:725953,pfYear:3}},
   {name:'Langston Apartments',system:'buildium',units:80,purchaseDate:'2021-08-01',proforma:{income:769166,expense:366789,noi:402377,pfYear:5}},
   {name:'Maple Park / The Enclave',system:'buildium',units:77,purchaseDate:'2020-09-02',proforma:{income:927433,expense:386542,noi:540891,pfYear:6}},
   {name:'Park Place',system:'buildium',units:262,purchaseDate:'2021-12-29',proforma:{income:2056738,expense:955749,noi:1100988,pfYear:5}},
-  {name:"Patrick's Place",system:'buildium',units:48,purchaseDate:'2021-04-16',proforma:{income:629117,expense:283427,noi:345690,pfYear:6}},
+  {name:"Patrick's Place",system:'buildium',units:48,purchaseDate:'2021-04-16',proforma:{income:629117,expense:283427,noi:345690,pfYear:5}},
   {name:'Sandra Ann',system:'buildium',units:26,purchaseDate:'2020-11-05',proforma:null},
   {name:'Tall Oaks',system:'buildium',units:52,purchaseDate:'2020-03-10',proforma:{income:610538,expense:218803,noi:391735,pfYear:7}},
   {name:'The Landmark on Dakota',system:'buildium',units:22,purchaseDate:'2022-03-28',proforma:{income:290025,expense:101449,noi:188576,pfYear:5}},
@@ -400,7 +400,7 @@ const SEED_PROPERTIES = [
   {name:'The Vincent',system:'buildium',units:48,purchaseDate:'2019-09-05',proforma:null},
   {name:'Venice',system:'buildium',units:11,purchaseDate:'2022-05-31',proforma:{income:113224,expense:43181,noi:70043,pfYear:4}},
   {name:'Villa Blanca',system:'buildium',units:24,purchaseDate:'2022-08-12',proforma:{income:245929,expense:89897,noi:156032,pfYear:4}},
-  {name:'60th Street Duplexes',system:'buildium',units:10,purchaseDate:'2024-06-08',proforma:{income:207000,expense:73330,noi:133670,pfYear:1}},
+  {name:'60th Street Duplexes',system:'buildium',units:10,purchaseDate:'2024-06-08',proforma:{income:207000,expense:73330,noi:133670,pfYear:2}},
   {name:'15th Street 9 Plex',system:'appfolio',units:9,purchaseDate:'2021-10-08',proforma:{income:71678,expense:27148,noi:44530,pfYear:5}},
   {name:'Adventureland',system:'appfolio',units:72,purchaseDate:'2024-08-30',proforma:{income:749903,expense:338404,noi:411499,pfYear:2}},
   {name:'Altoona Terrace',system:'appfolio',units:83,purchaseDate:'2024-08-30',proforma:{income:809773,expense:348363,noi:461410,pfYear:2}},
@@ -408,7 +408,7 @@ const SEED_PROPERTIES = [
   {name:'Boulder Ridge',system:'appfolio',units:46,purchaseDate:'2021-11-18',proforma:{income:692417,expense:326421,noi:365996,pfYear:5}},
   {name:'Capitol City Villas',system:'appfolio',units:67,purchaseDate:'2022-03-15',proforma:{income:710230,expense:301729,noi:408500,pfYear:5}},
   {name:'Champion Villas',system:'appfolio',units:81,purchaseDate:'2022-09-21',proforma:{income:1671093,expense:542960,noi:1128133,pfYear:4}},
-  {name:'Dakota Bend',system:'appfolio',units:56,purchaseDate:'2022-04-21',proforma:{income:526899,expense:235634,noi:291265,pfYear:5}},
+  {name:'Dakota Bend',system:'appfolio',units:56,purchaseDate:'2022-04-21',proforma:{income:526899,expense:235634,noi:291265,pfYear:4}},
   {name:'Dundee Village',system:'appfolio',units:20,purchaseDate:'2017-12-01',proforma:null},
   {name:'Franklin Court',system:'appfolio',units:172,purchaseDate:'2024-08-30',proforma:{income:1730898,expense:878989,noi:851909,pfYear:2}},
   {name:'Grandview',system:'appfolio',units:15,purchaseDate:'2022-07-15',proforma:{income:134021,expense:58221,noi:75799,pfYear:4}},
@@ -545,11 +545,16 @@ function init() {
     if(!existingPf || existingPf.system === 'proforma_seed' || existingPf.system === 'proforma_infosheet') {
       const noiTotal = p.proforma.noi;
       const noiCheck = existingPf && existingPf.rows && existingPf.rows.find(r=>r.isNOI);
-      // Re-seed if NOI total is missing/wrong OR pfYear is wrong
-      const pfYearCheck = existingPf && existingPf.pfYear;
-      if(!noiCheck || !noiCheck.total || noiCheck.total !== noiTotal || pfYearCheck !== p.proforma.pfYear) {
+      // Re-seed if NOI total is missing/wrong, or pfYear needs updating
+      const prop2 = properties.find(x=>x.id===id);
+      const expectedPfYear = (prop2 && prop2.purchaseDate) ? getProformaYear(prop2.purchaseDate) : p.proforma.pfYear;
+      const pfYearOk = existingPf && existingPf.pfYear === expectedPfYear;
+      if(!noiCheck || !noiCheck.total || noiCheck.total !== noiTotal || !pfYearOk) {
+        // Always calculate pfYear dynamically from purchase date — never trust the hardcoded value
+        const prop = properties.find(x=>x.id===id);
+        const dynamicPfYear = (prop && prop.purchaseDate) ? getProformaYear(prop.purchaseDate) : p.proforma.pfYear;
         propData[id].proforma = {
-          system:'proforma_seed', pfYear:p.proforma.pfYear,
+          system:'proforma_seed', pfYear:dynamicPfYear,
           months:Array(12).fill(''), propertyName:p.name,
           rows:[
             {label:'Operating Income',isNOI:false,isTotalIncome:true,isTotalExpense:false,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
@@ -560,7 +565,7 @@ function init() {
              total:noiTotal, values:Array(12).fill(noiTotal/12)},
           ]
         };
-        propData[id].proforma_filename = `Seeded — Year ${p.proforma.pfYear}`;
+        propData[id].proforma_filename = `Seeded — Year ${dynamicPfYear}`;
       }
     }
   });
