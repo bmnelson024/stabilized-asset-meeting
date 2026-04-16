@@ -238,7 +238,7 @@
           <thead>
             <tr>
               <th>Property</th><th>System</th><th>Status</th>
-              <th>Total income</th><th>Total expense</th><th>NOI</th>
+              <th>Total income</th><th>Total expense</th><th>NOI (ann.)</th>
               <th>vs Proforma NOI</th><th>Notes</th>
             </tr>
           </thead>
@@ -421,6 +421,7 @@ const SEED_PROPERTIES = [
 // Maps property id suffix to sheet name in the portfolio budget Excel file
 const BUILDIUM_BUDGET_SHEET_MAP = {
   '321 Townhomes':                '321 Townhomes',
+  '9447 J Street':                '9447 J Street',
   'Aksarben Villas':              'AksarbenLIV',
   'Bancroft Place':               'Bancroft',
   'Boulder Pointe':               'Boulder',
@@ -444,6 +445,7 @@ const BUILDIUM_BUDGET_SHEET_MAP = {
   'The Vincent':                  'Vincent',
   'Venice':                       'Venice',
   'Villa Blanca':                 'Villa Blanca',
+  '60th Street Duplexes':         '60th Street Duplexes',
 };
 
 // ─── PROPERTY MANAGER MAPPING ─────────────────────────────────────────────────
@@ -524,20 +526,27 @@ function init() {
       if(!p.proforma) return;
       const id = 'prop_seed_'+i;
       if(!propData[id]) propData[id]={};
-      if(!propData[id].proforma) {
-        propData[id].proforma = {
-          system:'proforma_seed', pfYear:p.proforma.pfYear,
-          months:Array(12).fill(''), propertyName:p.name,
-          rows:[
-            {label:'Operating Income',isNOI:false,isTotalIncome:true,isTotalExpense:false,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
-             total:p.proforma.income, values:Array(12).fill(p.proforma.income/12)},
-            {label:'Operating Expense',isNOI:false,isTotalIncome:false,isTotalExpense:true,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
-             total:p.proforma.expense, values:Array(12).fill(p.proforma.expense/12)},
-            {label:'Net Operating Income',isNOI:true,isTotalIncome:false,isTotalExpense:false,isTotal:false,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
-             total:p.proforma.noi, values:Array(12).fill(p.proforma.noi/12)},
-          ]
-        };
-        propData[id].proforma_filename = `Seeded — Year ${p.proforma.pfYear}`;
+      // Always re-seed proforma if it's a seeded one — ensures correct totals after code updates
+      const existingPf = propData[id].proforma;
+      if(!existingPf || existingPf.system === 'proforma_seed') {
+        const noiTotal = p.proforma.noi;
+        const noiCheck = existingPf && existingPf.rows && existingPf.rows.find(r=>r.isNOI);
+        // Skip if already seeded correctly (non-zero NOI total matches)
+        if(!noiCheck || noiCheck.total !== noiTotal) {
+          propData[id].proforma = {
+            system:'proforma_seed', pfYear:p.proforma.pfYear,
+            months:Array(12).fill(''), propertyName:p.name,
+            rows:[
+              {label:'Operating Income',isNOI:false,isTotalIncome:true,isTotalExpense:false,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
+               total:p.proforma.income, values:Array(12).fill(p.proforma.income/12)},
+              {label:'Operating Expense',isNOI:false,isTotalIncome:false,isTotalExpense:true,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
+               total:p.proforma.expense, values:Array(12).fill(p.proforma.expense/12)},
+              {label:'Net Operating Income',isNOI:true,isTotalIncome:false,isTotalExpense:false,isTotal:false,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
+               total:noiTotal, values:Array(12).fill(noiTotal/12)},
+            ]
+          };
+          propData[id].proforma_filename = `Seeded — Year ${p.proforma.pfYear}`;
+        }
       }
     });
     save();
@@ -556,10 +565,11 @@ function filterPortfolio(val) {
   const groupRows = tbody.querySelectorAll('.ptbl-group-row');
   const propRows = tbody.querySelectorAll('.ptbl-prop-row');
   if(!q) {
-    // Restore group-based visibility
+    // Restore group-based visibility — treat undefined as closed
     propRows.forEach(row => {
       const pm = row.getAttribute('data-pm');
       row.classList.toggle('hidden', !groupOpenState[pm]);
+      row.style.display = '';
     });
     groupRows.forEach(row => row.style.display = '');
     return;
@@ -576,15 +586,20 @@ function filterPortfolio(val) {
 function getStatusDot(id) {
   const d = propData[id] || {};
   if(!d.statement) return 'dot-none';
-  const noi = getKeyMetric(id, 'noi_total');
+  const stmt = d.statement;
+  const noiRow = stmt.rows.find(r=>r.isNOI);
   const proformaNoi = getKeyMetric(id, 'proforma_noi');
-  if(proformaNoi && noi !== null) {
-    const pct = (noi - proformaNoi) / Math.abs(proformaNoi);
-    if(pct >= -0.03) return 'dot-ok';
-    if(pct >= -0.10) return 'dot-warn';
-    return 'dot-flag';
-  }
-  return 'dot-none';
+  if(!proformaNoi || !noiRow) return 'dot-none';
+
+  // Annualize the statement NOI: avg monthly × 12
+  const monthsWithData = noiRow.values.filter(v => v !== 0).length || 1;
+  const avgMonthlyNoi = noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
+  const annualizedNoi = avgMonthlyNoi * 12;
+
+  const pct = (annualizedNoi - proformaNoi) / Math.abs(proformaNoi);
+  if(pct >= -0.03) return 'dot-ok';
+  if(pct >= -0.10) return 'dot-warn';
+  return 'dot-flag';
 }
 
 // ─── PROPERTY SELECTION ───────────────────────────────────────────────────────
@@ -592,6 +607,8 @@ function selectProp(id) {
   currentPropId = id;
   const p = properties.find(x=>x.id===id);
   showView('detail');
+  // Always reset to the Upload tab when switching properties
+  switchTab('upload');
   document.getElementById('detail-prop-name').textContent = p.name;
   document.getElementById('breadcrumb-prop-name').textContent = p.name;
   const pfYear = p.purchaseDate ? getProformaYear(p.purchaseDate) : null;
@@ -672,14 +689,28 @@ function renderUploadTab(p) {
   document.getElementById('benchmark-upload-grid').innerHTML = benchmarks.map(f=>uploadSlot(f,d,p.id,'benchmark')).join('');
 
   // Acquisition rent roll upload slot
-  const acqRrSlot = uploadSlot(
-    {key:'acqrentroll', label:'Acquisition rent roll', sub:'Upload historical rent roll from purchase date'},
-    d, p.id, 'acq'
-  );
-  document.getElementById('acq-rr-upload-grid').innerHTML = acqRrSlot;
+  const acqImported = !!d['acqrentroll_filename'];
+  const acqPending  = !!d._acqRawFilename;
+  const acqSlotSub  = acqPending ? 'File loaded — finish mapping below' :
+                      acqImported ? (d['acqrentroll_filename'] || 'File loaded') :
+                      'Upload any .xlsx/.xls — column mapper will appear';
+  const acqSlotHasFile = acqImported || acqPending;
+  const acqSlotIcon = acqPending ? '⚠' : acqImported ? '✓' : '↑';
+  const acqSlotBorderColor = acqPending ? 'var(--amber)' : acqImported ? 'var(--green)' : '';
+  const acqSlotBg = acqPending ? 'var(--amber-bg)' : acqImported ? 'var(--green-bg)' : '';
+  document.getElementById('acq-rr-upload-grid').innerHTML = `
+    <label class="upload-slot ${acqSlotHasFile?'has-file':''}" style="${acqPending?'border-color:var(--amber);background:var(--amber-bg)':''}">
+      <input type="file" accept=".xlsx,.xls" onchange="handleUpload(event,'${p.id}','acqrentroll')">
+      <div class="upload-slot-icon" style="${acqPending?'color:var(--amber)':''}">${acqSlotIcon}</div>
+      <div class="upload-slot-label" style="${acqPending?'color:var(--amber)':''}">Acquisition rent roll</div>
+      <div class="upload-slot-sub">${acqSlotSub}</div>
+    </label>`;
 
-  // Always render unit editor if we have a current rent roll
-  if(d.rentroll && d.rentroll.units && d.rentroll.units.length) {
+  // Always render unit editor / mapper if we have a current rent roll
+  if(d._acqRawData && d._acqRawFilename) {
+    // Restore pending mapper
+    showAcqColumnMapper(p.id, d._acqRawData, d._acqRawFilename, d._acqSheetNames||['Sheet1'], null);
+  } else if(d.rentroll && d.rentroll.units && d.rentroll.units.length) {
     renderAcqUnitEditor(p.id);
   } else {
     document.getElementById('acq-unit-editor').innerHTML = '';
@@ -851,28 +882,17 @@ function handleUpload(event, propId, fileKey) {
         const ws = wb.Sheets[wb.SheetNames[0]];
         parsed = parseRentRoll(ws, p.system);
       } else if(fileKey==='acqrentroll') {
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const acqRr = parseRentRoll(ws, p.system);
-        // Merge into per-unit acquisition data keyed by unit number
+        // Store raw workbook data and show column mapping UI — don't auto-parse
+        const allSheets = wb.SheetNames;
+        const ws = wb.Sheets[allSheets[0]];
+        const rawData = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
         if(!propData[propId]) propData[propId]={};
-        if(!propData[propId].acqUnits) propData[propId].acqUnits={};
-        acqRr.units.forEach(u=>{
-          if(!u.isVacant) {
-            propData[propId].acqUnits[u.unitNum] = {
-              marketRent: u.marketRent,
-              actualRent: u.actualRent,
-              unitType: u.unitType,
-              tier: u.tier,
-            };
-          }
-        });
-        propData[propId]['acqrentroll_filename'] = file.name;
+        propData[propId]._acqRawData = rawData;
+        propData[propId]._acqRawFilename = file.name;
+        propData[propId]._acqSheetNames = allSheets;
         save();
-        const prop = properties.find(x=>x.id===propId);
-        renderUploadTab(prop);
-        renderRentProgressionTab();
-        
-        return; // Early return — no standard parsed object needed
+        showAcqColumnMapper(propId, rawData, file.name, allSheets, wb);
+        return; // Early return — mapping UI handles the rest
       } else if(fileKey==='proforma') {
         const sheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('traditional financing')) || wb.SheetNames[0];
         const ws = wb.Sheets[sheetName];
@@ -1070,15 +1090,15 @@ function parseAppfolioRentRoll(data) {
     if(data[i] && data[i][0]==='Unit' && data[i][2]==='BD/BA') { headerRow=i; break; }
   }
   if(headerRow<0) throw new Error('Could not find rent roll header row in Appfolio file.');
-  const headers = data[headerRow].map(h=>h?h.toString().trim():'');
   const units = [];
   for(let i=headerRow+1;i<data.length;i++){
     const row = data[i];
     if(!row||!row[0]) continue;
-    const unitNum = row[0] ? row[0].toString().trim() : '';
-    // Stop at summary/total rows; skip blank unit numbers but don't break
+    const unitNum = row[0].toString().trim();
     if(!unitNum) continue;
-    if(unitNum.toLowerCase().includes('total') || unitNum.toLowerCase() === 'grand total') break;
+    const lcu = unitNum.toLowerCase();
+    // Stop at any totals/summary row
+    if(lcu.includes('total') || lcu === 'grand total' || lcu === 'totals') break;
     const bdba = row[2] ? row[2].toString().trim() : '';
     const unitType = normalizeUnitType(bdba, 'appfolio');
     const tags = row[1] ? row[1].toString() : '';
@@ -1104,14 +1124,17 @@ function parseBuildiumRentRoll(data) {
     const row = data[i];
     if(!row||!row[0]) continue;
     const unitNum = row[0].toString().trim();
+    if(!unitNum) continue;
     if(unitNum.toLowerCase().includes('total') || unitNum.toLowerCase().includes('grand')) break;
-    const tenants = row[1] ? row[1].toString() : '';
-    const isVacant = tenants.trim().toUpperCase()==='VACANT' || !tenants.trim();
+    // Skip property-name group header rows — they have text in col 0 but no Bed/Bath in col 4
     const bdba = row[4] ? row[4].toString().trim() : '';
+    if(!bdba) continue;
+    const tenants = row[1] ? row[1].toString().trim() : '';
+    const isVacant = !tenants || tenants.toUpperCase()==='VACANT' || tenants.toLowerCase()==='no tenant';
     const unitType = normalizeUnitType(bdba, 'buildium');
     const marketRent = parseFloat(row[7]) || 0;
     const actualRent = parseFloat(row[8]) || 0;
-    units.push({unitNum, unitType, tier:'unknown', isVacant, marketRent, actualRent, sqft:0, status: isVacant?'Vacant':'Current', tags:''});
+    units.push({unitNum, unitType, tier:'Classic', isVacant, marketRent, actualRent, sqft:0, status: isVacant?'Vacant':'Current', tags:''});
   }
   return {units, system:'buildium'};
 }
@@ -1654,13 +1677,20 @@ function renderBenchmarkTab() {
   const bg = d.budget;
   const hasPF = !!pf, hasBG = !!bg;
 
-  // Default to the previous calendar month; fall back to last month in file
+  // Default to the previous calendar month; fall back to current month, then last month in file
   function getPrevMonthIdx(months) {
     const now = new Date();
+    // Try previous month first
     const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const prevLabel = MONTH_NAMES[prevMonth.getMonth()] + ' ' + prevMonth.getFullYear();
-    const idx = months.indexOf(prevLabel);
-    return idx >= 0 ? idx : months.length - 1;
+    let idx = months.indexOf(prevLabel);
+    if(idx >= 0) return idx;
+    // Try current month
+    const curLabel = MONTH_NAMES[now.getMonth()] + ' ' + now.getFullYear();
+    idx = months.indexOf(curLabel);
+    if(idx >= 0) return idx;
+    // Fall back to last month in file
+    return months.length - 1;
   }
   const monthIdx = getPrevMonthIdx(stmt.months);
   const selMonth = stmt.months[monthIdx];
@@ -1693,18 +1723,23 @@ function renderBenchmarkTab() {
   const anchorNOI     = stmt.rows.find(r => r.isNOI);
   const anchorNet     = stmt.rows.find(r => r.isNetIncome);
 
-  // Collect detail rows for each bucket — individual line items only (not subtotals, not category headers)
-  const incomeSubs  = stmt.rows.filter(r => !r.isCategory && !r.isSubtotal && !r.isTotal && !r.isNOI && !r.isNetIncome && r.level > 0 && !isDebtService(r) && (() => {
-    // Must appear before the total income row in the statement
-    const ai = stmt.rows.indexOf(anchorIncome);
-    return ai < 0 || stmt.rows.indexOf(r) < ai;
-  })());
-  const expenseSubs = stmt.rows.filter(r => !r.isCategory && !r.isSubtotal && !r.isTotal && !r.isNOI && !r.isNetIncome && r.level > 0 && !isDebtService(r) && (() => {
-    const ai = stmt.rows.indexOf(anchorIncome);
-    const ae = stmt.rows.indexOf(anchorExpense);
-    const ri = stmt.rows.indexOf(r);
-    return ri > ai && (ae < 0 || ri < ae);
-  })());
+  // Pre-compute anchor indices for reliable bucketing
+  const idxIncome  = anchorIncome  ? stmt.rows.indexOf(anchorIncome)  : -1;
+  const idxExpense = anchorExpense ? stmt.rows.indexOf(anchorExpense) : -1;
+  const idxNOI     = anchorNOI     ? stmt.rows.indexOf(anchorNOI)     : -1;
+
+  // Collect detail rows for each bucket — individual line items only
+  const incomeSubs  = stmt.rows.filter((r, ri) =>
+    !r.isCategory && !r.isSubtotal && !r.isTotal && !r.isNOI && !r.isNetIncome &&
+    r.level > 0 && !isDebtService(r) &&
+    (idxIncome < 0 || ri < idxIncome)
+  );
+  const expenseSubs = stmt.rows.filter((r, ri) =>
+    !r.isCategory && !r.isSubtotal && !r.isTotal && !r.isNOI && !r.isNetIncome &&
+    r.level > 0 && !isDebtService(r) &&
+    (idxIncome < 0 || ri > idxIncome) &&
+    (idxExpense < 0 || ri < idxExpense)
+  );
   const debtSubs    = stmt.rows.filter(r => isDebtService(r));
 
   // If statement has no debt service rows, synthesize them from the override
@@ -1739,7 +1774,15 @@ function renderBenchmarkTab() {
     let pfAnnual = r._pfAnnual !== undefined ? r._pfAnnual : null;
     if(pfAnnual === null && hasPF) {
       let pfRow = null;
-      if(r.isNOI)               pfRow = pf.rows.find(x=>x.isNOI);
+      if(r.isNOI) {
+        pfRow = pf.rows.find(x=>x.isNOI);
+        // Fallback: derive NOI from income minus expense if NOI row total is zero/missing
+        if(!pfRow || !pfRow.total) {
+          const pfInc = pf.rows.find(x=>x.isTotalIncome);
+          const pfExp = pf.rows.find(x=>x.isTotalExpense);
+          if(pfInc && pfExp) pfAnnual = pfInc.total - pfExp.total;
+        }
+      }
       else if(r.isTotalIncome)  pfRow = pf.rows.find(x=>x.isTotalIncome);
       else if(r.isTotalExpense) pfRow = pf.rows.find(x=>x.isTotalExpense);
       else {
@@ -1753,7 +1796,7 @@ function renderBenchmarkTab() {
             pfAnnual = (dsOverride.interest||0) + (dsOverride.principal||0);
         }
       }
-      if(pfRow && pfAnnual === null) pfAnnual = pfRow.total;
+      if(pfRow && pfAnnual === null) pfAnnual = pfRow.total || null;
     }
     const bgRow = bgMap[r.label.toLowerCase()]
       || (hasBG && r.isNOI ? bg.rows.find(x=>x.isNOI) : null)
@@ -1786,8 +1829,8 @@ function renderBenchmarkTab() {
   // Build header columns
   const ncols = 1 + 1 + (hasPF?3:0) + (hasBG?3:0) + 3; // label + actual + pf cols + bg cols + t12avg + t12var + prior
   let cols = ['Account', `Actual (${selMonth})`];
-  if(hasPF) cols.push(pfYearLabel, 'Var $', 'Var %');
-  if(hasBG) cols.push('Budget / mo', 'Var $', 'Var %');
+  if(hasPF) cols.push(pfYearLabel+' / mo', 'PF Var $', 'PF Var %');
+  if(hasBG) cols.push('Budget / mo', 'Bud Var $', 'Bud Var %');
   cols.push('T12 avg', 'vs T12', 'Prior mo');
 
   // ── Build section HTML ─────────────────────────────────────────────────────
@@ -1878,6 +1921,7 @@ function renderRentRollTab() {
   const occPct = total ? (occupied/total*100).toFixed(1) : 0;
   const totalMarket = rr.units.reduce((a,u)=>a+u.marketRent,0);
   const totalActual = rr.units.filter(u=>!u.isVacant).reduce((a,u)=>a+u.actualRent,0);
+  const vacancyLoss = totalMarket - totalActual;
   let html = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
     <div class="kpi-card"><div class="kpi-label">Total units</div><div class="kpi-val">${total}</div></div>
     <div class="kpi-card"><div class="kpi-label">Occupancy</div><div class="kpi-val">${occPct}%</div></div>
@@ -1885,14 +1929,14 @@ function renderRentRollTab() {
     <div class="kpi-card"><div class="kpi-label">Actual rent collected</div><div class="kpi-val">${fmt(totalActual)}</div></div>
   </div>
   <div class="rr-wrap"><table class="rr-table">
-  <thead><tr><th>Unit</th><th>Type</th>${rr.system==='appfolio'?'<th>Tier</th>':''}${rr.system==='appfolio'?'<th>Status</th>':'<th>Tenant</th>'}<th>Market rent</th><th>Actual rent</th><th>Variance</th></tr></thead><tbody>`;
+  <thead><tr><th>Unit</th><th>Type</th>${rr.system==='appfolio'?'<th>Tier</th>':''}<th>Status</th><th>Market rent</th><th>Actual rent</th><th>vs Market</th></tr></thead><tbody>`;
   rr.units.forEach(u=>{
     const var_ = u.isVacant ? null : u.actualRent - u.marketRent;
     const varCls = var_===null?'':(var_>=0?'val-pos':'val-neg');
     const tierBadge = rr.system==='appfolio' ? `<td><span class="badge ${u.tier==='Full remodel'?'badge-ok':u.tier==='Partial remodel'?'badge-warn':'badge-neutral'}">${u.tier}</span></td>` : '';
     html+=`<tr ${u.isVacant?'style="color:var(--text3)"':''}>
       <td>${u.unitNum}</td><td>${u.unitType}</td>${tierBadge}
-      <td>${u.isVacant?'<span class="badge badge-flag">Vacant</span>':u.status||'Current'}</td>
+      <td>${u.isVacant?'<span class="badge badge-flag">Vacant</span>':'<span class="badge badge-ok">Occupied</span>'}</td>
       <td>${fmt(u.marketRent)}</td>
       <td>${u.isVacant?'—':fmt(u.actualRent)}</td>
       <td class="${varCls}">${var_!==null?fmtVar(var_):'—'}</td>
@@ -1900,6 +1944,309 @@ function renderRentRollTab() {
   });
   html+=`</tbody></table></div>`;
   container.innerHTML=html;
+}
+
+// ─── ACQUISITION RENT ROLL COLUMN MAPPER ─────────────────────────────────────
+function showAcqColumnMapper(propId, rawData, filename, sheetNames, wb) {
+  const el = document.getElementById('acq-unit-editor');
+  if(!el) return;
+
+  // ── Sheet selector ──────────────────────────────────────────────────────────
+  let currentSheet = 0;
+  let currentData = rawData;
+  let headerRowIdx = autoDetectHeaderRow(rawData);
+  let skipRows = headerRowIdx >= 0 ? headerRowIdx : 0;
+
+  function renderMapper() {
+    const previewRows = currentData.slice(skipRows, skipRows + 8);
+    const allCols = [];
+    // Gather all column indices that have any data in preview rows
+    previewRows.forEach(row => {
+      if(!row) return;
+      row.forEach((cell, ci) => { if(cell !== null && cell !== undefined && cell !== '') allCols[ci] = true; });
+    });
+    const colIndices = Object.keys(allCols).map(Number);
+    const numCols = colIndices.length ? Math.max(...colIndices) + 1 : 0;
+
+    // Auto-guess columns from header row
+    const headerRow = currentData[skipRows] || [];
+    const guess = autoGuessColumns(headerRow, currentData, skipRows);
+
+    // Build column options
+    const noneOpt = `<option value="-1">— skip —</option>`;
+    function colOpts(selected) {
+      return noneOpt + Array.from({length: numCols}, (_,i) => {
+        const hLabel = headerRow[i] ? String(headerRow[i]).trim().slice(0,30) : `Col ${i+1}`;
+        return `<option value="${i}" ${selected===i?'selected':''}>${String.fromCharCode(65+i)} — ${hLabel}</option>`;
+      }).join('');
+    }
+
+    // Build preview table (first 8 data rows after header skip)
+    const dataRows = currentData.slice(skipRows + 1, skipRows + 9);
+    const previewCols = Math.min(numCols, 12); // cap display at 12 cols
+    let previewHtml = `<div style="overflow:auto;max-height:200px;border:1px solid var(--border);border-radius:var(--radius);margin-bottom:14px">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:500px">
+        <thead><tr style="background:var(--bg2)">${Array.from({length:previewCols},(_,i)=>`<th style="padding:5px 8px;border-bottom:1px solid var(--border);color:var(--text2);font-weight:500;text-align:left">${String.fromCharCode(65+i)}</th>`).join('')}</tr>
+        <tr style="background:var(--bg3)">${(currentData[skipRows]||[]).slice(0,previewCols).map(h=>`<td style="padding:4px 8px;border-bottom:1px solid var(--border);color:var(--text3);font-size:10px">${h!==null&&h!==undefined?String(h).slice(0,20):''}</td>`).join('')}</tr>
+        </thead><tbody>`;
+    dataRows.forEach(row => {
+      if(!row) return;
+      previewHtml += `<tr>${Array.from({length:previewCols},(_,i)=>`<td style="padding:4px 8px;border-bottom:1px solid var(--border)">${row[i]!==null&&row[i]!==undefined?String(row[i]).slice(0,20):''}</td>`).join('')}</tr>`;
+    });
+    previewHtml += `</tbody></table></div>`;
+
+    const sheetOpts = (sheetNames||['Sheet1']).map((s,i)=>`<option value="${i}" ${i===currentSheet?'selected':''}>${s}</option>`).join('');
+    const sameRentChecked = guess.sameRent ? 'checked' : '';
+
+    el.innerHTML = `<div style="background:var(--bg);border:1px solid var(--blue);border-radius:var(--radius-lg);padding:16px;margin-top:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div>
+          <div style="font-size:13px;font-weight:500;color:var(--blue)">Map acquisition rent roll columns</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${filename}</div>
+        </div>
+        <button class="btn" style="font-size:12px" onclick="cancelAcqMapper('${propId}')">Cancel</button>
+      </div>
+
+      ${sheetNames && sheetNames.length > 1 ? `
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <label style="font-size:12px;color:var(--text2);white-space:nowrap">Sheet:</label>
+        <select id="acq-sheet-sel" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit"
+          onchange="acqSwitchSheet('${propId}','${filename}',this.value)">${sheetOpts}</select>
+      </div>` : ''}
+
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <label style="font-size:12px;color:var(--text2);white-space:nowrap">Skip header rows:</label>
+        <input type="number" id="acq-skip-rows" value="${skipRows}" min="0" max="20"
+          style="width:60px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;background:var(--bg);color:var(--text)"
+          onchange="acqUpdateSkip('${propId}','${filename}',this.value)">
+        <span style="font-size:11px;color:var(--text3)">Row ${skipRows+1} = header, data starts row ${skipRows+2}</span>
+      </div>
+
+      <div style="font-size:12px;font-weight:500;color:var(--text2);margin-bottom:8px">Preview (rows after header):</div>
+      ${previewHtml}
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:10px;margin-bottom:12px">
+        <div>
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Unit #*</div>
+          <select id="acq-col-unit" style="width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit">
+            ${colOpts(guess.unit)}</select>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Unit type</div>
+          <select id="acq-col-type" style="width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit">
+            ${colOpts(guess.unitType)}</select>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Market rent*</div>
+          <select id="acq-col-market" style="width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit">
+            ${colOpts(guess.marketRent)}</select>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Actual rent</div>
+          <select id="acq-col-actual" ${sameRentChecked?'style="width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit;opacity:0.4;pointer-events:none"':'style="width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit"'}
+            id="acq-col-actual">
+            ${colOpts(guess.actualRent)}</select>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Tenant/status</div>
+          <select id="acq-col-status" style="width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit">
+            ${colOpts(guess.status)}</select>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+        <input type="checkbox" id="acq-same-rent" ${sameRentChecked} onchange="acqToggleSameRent(this.checked)"
+          style="width:14px;height:14px;cursor:pointer">
+        <label for="acq-same-rent" style="font-size:12px;color:var(--text2);cursor:pointer">
+          Only one rent column — use market rent as actual rent too
+        </label>
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-primary" onclick="applyAcqMapping('${propId}','${filename}')" style="font-size:13px">
+          Import ${currentData.length - skipRows - 1} rows
+        </button>
+        <span style="font-size:11px;color:var(--text3)">* required — rows with no unit number or no rent value will be skipped</span>
+      </div>
+    </div>`;
+  }
+
+  // Expose state to global scope for event handlers
+  window._acqMapperState = window._acqMapperState || {};
+  window._acqMapperState[propId] = { rawData, skipRows, sheetNames, wb, currentSheet, currentData, filename };
+
+  renderMapper();
+
+  // Store renderMapper for re-use by child handlers
+  window._acqMapperState[propId].render = renderMapper;
+}
+
+function autoDetectHeaderRow(data) {
+  // Look for a row that has text in multiple cells (likely the header)
+  for(let i = 0; i < Math.min(15, data.length); i++) {
+    const row = data[i];
+    if(!row) continue;
+    const textCells = row.filter(c => c !== null && c !== undefined && isNaN(parseFloat(c)) && String(c).trim().length > 0);
+    if(textCells.length >= 2) return i;
+  }
+  return 0;
+}
+
+function autoGuessColumns(headerRow, data, skipRows) {
+  // Guess column indices from header labels
+  const guess = { unit: -1, unitType: -1, marketRent: -1, actualRent: -1, status: -1, sameRent: false };
+  const UNIT_KEYS    = ['unit','unit no','unit #','unit number','apt','apartment'];
+  const TYPE_KEYS    = ['bed','bath','bd/ba','type','unit type','floorplan','floor plan'];
+  const MARKET_KEYS  = ['market','market rent','asking','list','scheduled','charges'];
+  const ACTUAL_KEYS  = ['actual','current rent','rent amount','monthly rent','lease','contract','current charge'];
+  const STATUS_KEYS  = ['status','tenant','resident','occupan','name'];
+
+  headerRow.forEach((h, i) => {
+    if(!h) return;
+    const lc = String(h).toLowerCase().trim();
+    if(guess.unit < 0    && UNIT_KEYS.some(k => lc.includes(k)))    guess.unit = i;
+    else if(guess.unitType < 0  && TYPE_KEYS.some(k => lc.includes(k)))   guess.unitType = i;
+    else if(guess.marketRent < 0 && MARKET_KEYS.some(k => lc.includes(k))) guess.marketRent = i;
+    else if(guess.actualRent < 0 && ACTUAL_KEYS.some(k => lc.includes(k))) guess.actualRent = i;
+    else if(guess.status < 0    && STATUS_KEYS.some(k => lc.includes(k)))  guess.status = i;
+  });
+
+  // If only one rent column found, flag as sameRent
+  if(guess.marketRent >= 0 && guess.actualRent < 0) guess.sameRent = true;
+
+  // Fallback: scan data rows for dollar-ish values if no rent columns identified
+  if(guess.marketRent < 0) {
+    const sampleRow = data[skipRows + 1] || [];
+    const dollarCols = sampleRow.map((v,i) => ({i, v: parseFloat(String(v).replace(/[$,]/g,''))}))
+      .filter(x => !isNaN(x.v) && x.v > 100 && x.v < 10000);
+    if(dollarCols.length >= 1) guess.marketRent = dollarCols[0].i;
+    if(dollarCols.length >= 2) guess.actualRent  = dollarCols[1].i;
+    else if(dollarCols.length === 1) guess.sameRent = true;
+  }
+
+  return guess;
+}
+
+function acqToggleSameRent(checked) {
+  const el = document.getElementById('acq-col-actual');
+  if(!el) return;
+  el.style.opacity = checked ? '0.4' : '1';
+  el.style.pointerEvents = checked ? 'none' : '';
+}
+
+function acqSwitchSheet(propId, filename, sheetIdx) {
+  const state = window._acqMapperState && window._acqMapperState[propId];
+  if(!state || !state.wb) return;
+  const idx = parseInt(sheetIdx);
+  const ws = state.wb.Sheets[state.sheetNames[idx]];
+  state.currentData = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  state.currentSheet = idx;
+  state.skipRows = autoDetectHeaderRow(state.currentData);
+  // Re-show the mapper with updated data
+  showAcqColumnMapper(propId, state.currentData, filename, state.sheetNames, state.wb);
+}
+
+function acqUpdateSkip(propId, filename, val) {
+  const state = window._acqMapperState && window._acqMapperState[propId];
+  if(!state) return;
+  state.skipRows = Math.max(0, parseInt(val) || 0);
+  showAcqColumnMapper(propId, state.currentData, filename, state.sheetNames, state.wb);
+}
+
+function cancelAcqMapper(propId) {
+  // Clean up temp raw data
+  if(propData[propId]) {
+    delete propData[propId]._acqRawData;
+    delete propData[propId]._acqRawFilename;
+  }
+  save();
+  const el = document.getElementById('acq-unit-editor');
+  if(el) el.innerHTML = '';
+  const d = propData[propId]||{};
+  if(d.rentroll && d.rentroll.units && d.rentroll.units.length) {
+    renderAcqUnitEditor(propId);
+  }
+}
+
+function applyAcqMapping(propId, filename) {
+  const state = window._acqMapperState && window._acqMapperState[propId];
+  if(!state) return;
+
+  const unitCol    = parseInt(document.getElementById('acq-col-unit').value);
+  const typeCol    = parseInt(document.getElementById('acq-col-type').value);
+  const marketCol  = parseInt(document.getElementById('acq-col-market').value);
+  const actualCol  = parseInt(document.getElementById('acq-col-actual').value);
+  const statusCol  = parseInt(document.getElementById('acq-col-status').value);
+  const sameRent   = document.getElementById('acq-same-rent').checked;
+
+  if(unitCol < 0)   { alert('Please select the Unit # column.'); return; }
+  if(marketCol < 0) { alert('Please select the Market rent column.'); return; }
+
+  const data = state.currentData;
+  const skipRows = state.skipRows;
+  const dataRows = data.slice(skipRows + 1); // skip header row too
+
+  if(!propData[propId]) propData[propId]={};
+  if(!propData[propId].acqUnits) propData[propId].acqUnits={};
+
+  let imported = 0, skipped = 0;
+
+  dataRows.forEach(row => {
+    if(!row) { skipped++; return; }
+    const unitRaw = row[unitCol];
+    if(unitRaw === null || unitRaw === undefined || String(unitRaw).trim() === '') { skipped++; return; }
+    const unitNum = String(unitRaw).trim();
+
+    // Stop at total/summary rows
+    const lcu = unitNum.toLowerCase();
+    if(lcu.includes('total') || lcu.includes('grand') || lcu.includes('subtotal')) return;
+
+    const marketRaw = row[marketCol];
+    const marketRent = parseFloat(String(marketRaw || '').replace(/[$, ]/g,'')) || 0;
+    if(!marketRent) { skipped++; return; }
+
+    const actualRent = sameRent ? marketRent :
+      (actualCol >= 0 ? parseFloat(String(row[actualCol] || '').replace(/[$, ]/g,'')) || marketRent : marketRent);
+
+    const unitType = typeCol >= 0 && row[typeCol] ? normalizeUnitType(String(row[typeCol]).trim(), 'buildium') : 'Unknown';
+
+    // Detect vacant from status column
+    let isVacant = false;
+    if(statusCol >= 0 && row[statusCol]) {
+      const st = String(row[statusCol]).toLowerCase();
+      isVacant = st.includes('vacant') || st.includes('available') || st.trim() === '';
+    }
+
+    propData[propId].acqUnits[unitNum] = {
+      marketRent,
+      actualRent: isVacant ? 0 : actualRent,
+      unitType,
+      tier: 'Classic',
+    };
+    imported++;
+  });
+
+  // Clean up temp state
+  delete propData[propId]._acqRawData;
+  delete propData[propId]._acqRawFilename;
+  propData[propId]['acqrentroll_filename'] = filename;
+  save();
+
+  if(window._acqMapperState) delete window._acqMapperState[propId];
+
+  const prop = properties.find(x=>x.id===propId);
+  renderUploadTab(prop);
+  renderRentProgressionTab();
+
+  // Show summary
+  const el = document.getElementById('acq-unit-editor');
+  if(el) {
+    const banner = document.createElement('div');
+    banner.style.cssText = 'background:var(--green-bg);border:1px solid var(--green);border-radius:var(--radius);padding:10px 14px;font-size:13px;color:var(--green);margin-bottom:12px';
+    banner.textContent = `✓ Imported ${imported} units (${skipped} rows skipped — blank unit# or zero rent)`;
+    el.prepend(banner);
+    setTimeout(() => banner.remove(), 5000);
+  }
 }
 
 // ─── ACQUISITION UNIT EDITOR ──────────────────────────────────────────────────
@@ -1954,12 +2301,12 @@ function renderAcqUnitEditor(propId) {
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">${u.isVacant?'—':fmt(u.actualRent)}</td>
       <td style="padding:4px 6px;border-bottom:1px solid var(--border)">
         <input type="number" value="${acq.marketRent||''}" placeholder="e.g. 750"
-          style="width:100%;padding:4px 6px;border:1px solid ${hasAcq?'var(--green)':'var(--border)'};border-radius:4px;font-size:12px;font-family:inherit;text-align:right;background:${hasAcq?'var(--green-bg)':'var(--bg)'}"
+          style="width:100%;padding:4px 6px;border:1px solid ${hasAcq?'var(--green)':'var(--border)'};border-radius:4px;font-size:12px;font-family:inherit;text-align:right;background:${hasAcq?'var(--green-bg)':'var(--bg)'};color:var(--text)"
           onchange="saveAcqUnit('${propId}','${u.unitNum}','marketRent',this.value,'${u.unitType}','${u.tier||''}')">
       </td>
       <td style="padding:4px 6px;border-bottom:1px solid var(--border)">
         <input type="number" value="${acq.actualRent||''}" placeholder="e.g. 700"
-          style="width:100%;padding:4px 6px;border:1px solid ${hasAcq?'var(--green)':'var(--border)'};border-radius:4px;font-size:12px;font-family:inherit;text-align:right;background:${hasAcq?'var(--green-bg)':'var(--bg)'}"
+          style="width:100%;padding:4px 6px;border:1px solid ${hasAcq?'var(--green)':'var(--border)'};border-radius:4px;font-size:12px;font-family:inherit;text-align:right;background:${hasAcq?'var(--green-bg)':'var(--bg)'};color:var(--text)"
           onchange="saveAcqUnit('${propId}','${u.unitNum}','actualRent',this.value,'${u.unitType}','${u.tier||''}')">
       </td>
     </tr>`;
@@ -2103,14 +2450,15 @@ function renderNotesTab() {
   const p = properties.find(x=>x.id===currentPropId);
   document.getElementById('notes-prop-label').textContent = `Notes for ${p?p.name:'this property'}`;
   const list = document.getElementById('notes-list');
+  // Backfill missing timestamps on legacy notes so deleteNote always works
+  notes.forEach((n,i) => { if(!n.ts) n.ts = Date.now() + i; });
   const propNotes = notes.filter(n=>n.propId===currentPropId);
   list.innerHTML = propNotes.length ? propNotes.map((n)=>{
-    const globalIdx = notes.indexOf(n);
     return `
     <div class="note-item">
       <span class="flag-chip ${n.type==='action'?'flag-action':n.type==='concern'?'flag-concern':'flag-ok'}">${n.type==='action'?'Action':n.type==='concern'?'Concern':'Note'}</span>
       <div class="note-text">${n.text}</div>
-      <span class="note-delete" onclick="deleteNote(${globalIdx})">✕</span>
+      <span class="note-delete" onclick="deleteNote(${n.ts})">✕</span>
     </div>`;
   }).join('') : '<div style="color:var(--text3);font-size:13px;padding:12px 0">No notes yet for this property.</div>';
 }
@@ -2124,8 +2472,8 @@ function addNote(type) {
   renderNotesTab();
 }
 
-function deleteNote(idx) {
-  notes.splice(idx,1);
+function deleteNote(ts) {
+  notes = notes.filter(n => n.ts !== ts);
   save();
   renderNotesTab();
 }
@@ -2143,15 +2491,28 @@ function updateDetailBadge() {
 // ─── PORTFOLIO VIEW ───────────────────────────────────────────────────────────
 function portfolioPropRow(p) {
   const dot = getStatusDot(p.id);
-  const noi = getKeyMetric(p.id,'noi_total');
+  const d = propData[p.id]||{};
+  const stmt = d.statement;
   const income = getKeyMetric(p.id,'income_total');
   const expense = getKeyMetric(p.id,'expense_total');
   const pfNoi = getKeyMetric(p.id,'proforma_noi');
   const propNoteCount = notes.filter(n=>n.propId===p.id).length;
-  const varHTML = pfNoi&&noi!==null ? (() => {
+
+  // Compute annualized NOI for fair proforma comparison
+  let annualizedNoi = null;
+  if(stmt) {
+    const noiRow = stmt.rows.find(r=>r.isNOI);
+    if(noiRow) {
+      const monthsWithData = noiRow.values.filter(v=>v!==0).length || 1;
+      annualizedNoi = (noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData) * 12;
+    }
+  }
+  const noi = annualizedNoi; // shown in NOI column (annualized)
+
+  const varHTML = pfNoi && noi !== null ? (() => {
     const pct = (noi - pfNoi) / Math.abs(pfNoi) * 100;
     const cls = pct>=0?'val-pos':'val-neg';
-    return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}% vs proforma</span>`;
+    return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}% annualized</span>`;
   })() : '—';
   const statusBadge = dot==='dot-none'?'<span class="badge badge-neutral">No data</span>':
     dot==='dot-ok'?'<span class="badge badge-ok">On track</span>':
@@ -2185,8 +2546,6 @@ function togglePortfolioGroup(pm) {
   tbody.querySelectorAll(`.ptbl-prop-row[data-pm="${CSS.escape(pm)}"]`).forEach(row => {
     row.classList.toggle('hidden', !isOpen);
   });
-  // Also sync sidebar
-  
 }
 
 function renderPortfolio() {
@@ -2220,8 +2579,16 @@ function renderPortfolio() {
     const hasWarn = dots.some(d=>d==='dot-warn');
     const hasLoaded = dots.some(d=>d!=='dot-none');
     const summaryDotClass = !hasLoaded ? 'dot-none' : hasFlag ? 'dot-flag' : hasWarn ? 'dot-warn' : 'dot-ok';
-    // Group NOI totals
-    const groupNoi = props.reduce((sum,p)=>{ const n=getKeyMetric(p.id,'noi_total'); return sum+(n||0); }, 0);
+    // Group NOI totals — use annualized NOI to match per-property row logic
+    function getAnnualizedNoi(propId) {
+      const stmt = (propData[propId]||{}).statement;
+      if(!stmt) return 0;
+      const noiRow = stmt.rows.find(r=>r.isNOI);
+      if(!noiRow) return 0;
+      const monthsWithData = noiRow.values.filter(v=>v!==0).length || 1;
+      return (noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData) * 12;
+    }
+    const groupNoi = props.reduce((sum,p)=>sum+getAnnualizedNoi(p.id), 0);
     const groupPfNoi = props.reduce((sum,p)=>{ const n=getKeyMetric(p.id,'proforma_noi'); return sum+(n||0); }, 0);
     const groupLoaded = props.filter(p=>propData[p.id]&&propData[p.id].statement).length;
     const groupNoteCount = props.reduce((sum,p)=>sum+notes.filter(n=>n.propId===p.id).length,0);
@@ -2262,28 +2629,43 @@ function renderPortfolio() {
 // ─── EXPORT NOTES ─────────────────────────────────────────────────────────────
 function exportNotes() {
   if(!notes.length) { alert('No notes to export.'); return; }
+  const now = new Date();
   const lines = ['STABILIZED ASSET MEETING — NOTES EXPORT'];
-  lines.push(new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}));
+  lines.push(now.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}));
   lines.push('');
-  const byProp = {};
-  notes.forEach(n=>{
-    if(!byProp[n.propId]) byProp[n.propId]=[];
-    byProp[n.propId].push(n);
+
+  const GROUP_ORDER = ['Point Guard','Kouri','Arrow','RPME','Bender','J&M','Orange'];
+
+  // Build list of properties in portfolio order
+  const orderedProps = [];
+  GROUP_ORDER.forEach(pm => {
+    properties.forEach(p => {
+      if((PM_MAP[p.name]||'Other') === pm) orderedProps.push(p);
+    });
   });
-  Object.keys(byProp).forEach(pid=>{
-    const p = properties.find(x=>x.id===pid);
-    lines.push((p?p.name:'Unknown property').toUpperCase());
+  // Catch any properties not in group order
+  properties.forEach(p => { if(!orderedProps.find(x=>x.id===p.id)) orderedProps.push(p); });
+
+  let hasContent = false;
+  orderedProps.forEach(p => {
+    const propNotes = notes.filter(n=>n.propId===p.id);
+    if(!propNotes.length) return;
+    hasContent = true;
+    lines.push(p.name.toUpperCase());
     lines.push('─'.repeat(40));
-    byProp[pid].forEach(n=>{
+    propNotes.forEach(n=>{
       const label = n.type==='action'?'[ACTION]':n.type==='concern'?'[CONCERN]':'[NOTE]';
       lines.push(`${label} ${n.text}`);
     });
     lines.push('');
   });
+
+  if(!hasContent) { alert('No notes to export.'); return; }
+
   const blob = new Blob([lines.join('\n')],{type:'text/plain'});
   const a = document.createElement('a');
   a.href=URL.createObjectURL(blob);
-  a.download='meeting-notes-'+new Date().toISOString().slice(0,10)+'.txt';
+  a.download='meeting-notes-'+now.toISOString().slice(0,10)+'.txt';
   a.click();
 }
 
