@@ -744,10 +744,10 @@ function renderUploadTab(p) {
     const effectiveExpRow = expRow;
     const effectiveNOIRow = noiRow && noiRow.total ? noiRow
       : (incRow && expRow ? {total: incRow.total - expRow.total, values: Array(12).fill((incRow.total - expRow.total)/12)} : null);
-    const isSeeded = pf.system === 'proforma_seed' || pf.system === 'proforma_infosheet';
-    // For seeded proformas recalculate pfYear dynamically from purchase date
-    const pfYear = (isSeeded && p.purchaseDate) ? (getProformaYear(p.purchaseDate)||pf.pfYear||'—') : (pf.pfYear||'—');
-    const source = pf.system === 'proforma_infosheet' ? 'Info sheet (formulas)' : isSeeded ? 'Built in' : (d.proforma_filename || 'Uploaded');
+    // Always recalculate pfYear dynamically from purchase date
+    const pfYear = p.purchaseDate ? (getProformaYear(p.purchaseDate) || pf.pfYear || '—') : (pf.pfYear || '—');
+    const isSeededPf = pf.system === 'proforma_seed' || pf.system === 'proforma_infosheet';
+    const source = pf.system === 'proforma_infosheet' ? 'Info sheet (formulas)' : isSeededPf ? 'Built in' : (d.proforma_filename || 'Uploaded');
     const lineItems = pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine);
     const hasLineItems = lineItems.length > 0;
 
@@ -1472,7 +1472,8 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system) {
 
 function getProformaYear(purchaseDate) {
   if(!purchaseDate) return null;
-  const purchased = new Date(purchaseDate);
+  // Use T12:00:00 to avoid UTC midnight parsing into the prior day in US timezones
+  const purchased = new Date(purchaseDate + 'T12:00:00');
   const now = new Date();
   const monthsDiff = (now.getFullYear() - purchased.getFullYear()) * 12 + (now.getMonth() - purchased.getMonth());
   return Math.max(1, Math.ceil(monthsDiff / 12) || 1);
@@ -2215,10 +2216,8 @@ function renderBenchmarkTab() {
   const bgMap = buildLookup(bg);
 
   const p = properties.find(x=>x.id===currentPropId);
-  const isSeeded = pf && (pf.system === 'proforma_seed' || pf.system === 'proforma_infosheet');
-  // For seeded proformas always recalculate from purchase date — stored pfYear can be stale
-  const pfYear = pf ? (isSeeded ? (getProformaYear(p.purchaseDate) || pf.pfYear || 1)
-                                : (pf.pfYear || getProformaYear(p.purchaseDate) || 1)) : null;
+  // Always recalculate pfYear dynamically from purchase date — never trust the stored value
+  const pfYear = pf ? (getProformaYear(p.purchaseDate) || pf.pfYear || 1) : null;
   const pfYearLabel = pfYear ? `Proforma Yr ${pfYear}` : 'Proforma';
 
   // ── Classify statement rows into four buckets ──────────────────────────────
