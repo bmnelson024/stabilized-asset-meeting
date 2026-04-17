@@ -1173,6 +1173,7 @@ function parseAppfolioRentRoll(data) {
     const unitNum = row[0].toString().trim();
     if(!unitNum) continue;
     const lcu = unitNum.toLowerCase();
+    if(lcu === 'unit') continue; // skip stray header rows
     // Stop at any totals/summary row
     if(lcu.includes('total') || lcu === 'grand total' || lcu === 'totals') break;
     const bdba = row[2] ? row[2].toString().trim() : '';
@@ -1202,7 +1203,7 @@ function parseBuildiumRentRoll(data) {
     const unitNum = row[0].toString().trim();
     if(!unitNum) continue;
     if(unitNum.toLowerCase().includes('total') || unitNum.toLowerCase().includes('grand')) break;
-    // Skip property-name group header rows — they have text in col 0 but no Bed/Bath in col 4
+    if(unitNum.toLowerCase() === 'unit') continue; // skip stray header rows
     const bdba = row[4] ? row[4].toString().trim() : '';
     if(!bdba) continue;
     const tenants = row[1] ? row[1].toString().trim() : '';
