@@ -722,7 +722,7 @@ function renderUploadTab(p) {
 
   // Proforma summary card
   const pfEl = document.getElementById('proforma-summary-card');
-  const pf = d.proforma;
+  const pf = d.proforma ? rehydrateProforma(d.proforma, p.purchaseDate) : null;
   if(pf && pf.rows) {
     // Pick best row from multiple candidates with the same flag:
     // Prefer rows whose label contains "annual" (larger totals = annual figures),
@@ -1489,7 +1489,33 @@ function parseProforma(ws, purchaseDate) {
   }
   if(yearRow<0) throw new Error('Could not find year header row in proforma. Expected row with "1" in column C.');
 
-  const targetCol = 2 + (pfYear - 1) * 2;
+  // Detect how many years are in the file and their column positions
+  // Year header row has values like 1,2,2,3,3,4,4... — find all unique years and their first (non-zero) column
+  const yearCols = {}; // yearNum -> colIndex with actual data
+  const headerRow = data[yearRow];
+  for(let ci=2; ci<headerRow.length; ci++) {
+    const h = headerRow[ci];
+    if(h === null || h === undefined) continue;
+    const yr = parseInt(h);
+    if(isNaN(yr) || yr < 1 || yr > 20) continue;
+    if(!(yr in yearCols)) yearCols[yr] = ci; // first column for this year (often zero — see below)
+  }
+  // For each year, find which of its two columns has actual data (non-zero in row 11 or first data row)
+  // Strategy: for each year, check both columns and prefer the one with non-zero values
+  const yearDataCols = {};
+  Object.keys(yearCols).forEach(yr => {
+    const baseCol = yearCols[yr];
+    // Check if this column or the next one has data in the first few data rows
+    let col = baseCol;
+    for(let i=yearRow+1; i<Math.min(yearRow+15, data.length); i++) {
+      const row = data[i];
+      if(!row || !row[1]) continue;
+      const v0 = parseFloat(row[baseCol]) || 0;
+      const v1 = parseFloat(row[baseCol+1]) || 0;
+      if(v0 !== 0 || v1 !== 0) { col = v0 !== 0 ? baseCol : baseCol+1; break; }
+    }
+    yearDataCols[yr] = col;
+  });
 
   // Section tracking — are we in income or expense?
   let inExpenseSection = false;
@@ -1512,10 +1538,11 @@ function parseProforma(ws, purchaseDate) {
     if(!row || !row[1]) continue;
     const rawLabel = row[1].toString().trim();
     if(!rawLabel) continue;
-    // Skip rows where label is itself a formula reference (starts with =)
     if(rawLabel.startsWith('=')) continue;
     const lc = rawLabel.toLowerCase();
-    // Parse value — expenses in some proformas are stored negative; take absolute value
+
+    // Use current pfYear column for determining if row has data / is key row
+    const targetCol = yearDataCols[pfYear] || (2 + (pfYear-1)*2);
     const rawVal = parseFloat(row[targetCol]) || 0;
     const val = Math.abs(rawVal);
     const isKeyLabel = KEY_LABEL_PATTERNS.some(k => lc.includes(k));
@@ -1544,11 +1571,16 @@ function parseProforma(ws, purchaseDate) {
     const isTotal = isTotalIncome || isTotalExpense;
     const isLineItem = !isNOI && !isTotal && !isMonthlyIncomeTotal && !isMonthlyExpenseTotal && !isDebtService && !isNetIncome;
 
-    // Annual vs monthly: totals/NOI/net income are annual; monthly subtotals × 12; line items × 12
-    // Debt service rows are annual in this proforma format
-    const annualVal = (isNOI || isTotal || isNetIncome || isDebtService)
-      ? val
-      : val * 12;
+    // Build yearlyTotals — annualized value for each year in the file
+    const yearlyTotals = {};
+    Object.keys(yearDataCols).forEach(yr => {
+      const col = yearDataCols[yr];
+      const v = Math.abs(parseFloat(row[col]) || 0);
+      const annualized = (isNOI || isTotal || isNetIncome || isDebtService) ? v : v * 12;
+      yearlyTotals[yr] = annualized;
+    });
+
+    const annualVal = yearlyTotals[pfYear] || 0;
 
     rows.push({
       label: rawLabel, isNOI, isTotalIncome, isTotalExpense, isTotal, isNetIncome,
@@ -1557,11 +1589,27 @@ function parseProforma(ws, purchaseDate) {
       level: (isTotal || isNOI || isNetIncome || isDebtService) ? 0 : 1,
       isExpenseLine: inExpenseSection && isLineItem,
       isIncomeLine: !inExpenseSection && isLineItem && !pastNOI,
+      yearlyTotals,  // store all years for dynamic year selection
       total: annualVal,
       values: Array(12).fill(annualVal / 12),
     });
   }
-  return {rows, pfYear, system:'proforma', months: Array(12).fill(''), propertyName:''};
+  return {rows, pfYear, yearDataCols, system:'proforma', months: Array(12).fill(''), propertyName:''};
+}
+
+function rehydrateProforma(pf, purchaseDate) {
+  // Recompute each row's total/values from yearlyTotals using the current pfYear.
+  // This means the proforma never goes stale as the property ages through years.
+  if(!pf || !pf.rows) return pf;
+  const pfYear = getProformaYear(purchaseDate) || pf.pfYear || 1;
+  pf.rows.forEach(r => {
+    if(!r.yearlyTotals) return; // seeded/CSV proformas don't have yearlyTotals — leave as-is
+    const annual = r.yearlyTotals[pfYear] || r.yearlyTotals[Math.max(...Object.keys(r.yearlyTotals).map(Number))] || 0;
+    r.total = annual;
+    r.values = Array(12).fill(annual / 12);
+  });
+  pf.pfYear = pfYear;
+  return pf;
 }
 
 function parseProformaInfoSheet(ws, purchaseDate) {
@@ -2184,7 +2232,7 @@ function renderBenchmarkTab() {
     return;
   }
 
-  const pf = d.proforma;
+  const pf = d.proforma ? rehydrateProforma(d.proforma, p.purchaseDate) : null;
   const bg = d.budget;
   const hasPF = !!pf, hasBG = !!bg;
 
