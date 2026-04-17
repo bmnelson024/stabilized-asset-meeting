@@ -262,6 +262,7 @@
       <div class="tabs">
         <div class="tab active" onclick="switchTab('benchmarks')">Benchmarks</div>
         <div class="tab" onclick="switchTab('statement')">Income / Cash flow</div>
+        <div class="tab" onclick="switchTab('proforma')">Proforma</div>
         <div class="tab" onclick="switchTab('rentroll')">Rent roll</div>
         <div class="tab" onclick="switchTab('rentprog')">Rent progression</div>
         <div class="tab" onclick="switchTab('notes')">Notes</div>
@@ -284,6 +285,16 @@
           <div class="upload-section-title">Acquisition rent roll (set once — used for rent progression)</div>
           <div class="upload-grid" id="acq-rr-upload-grid"></div>
           <div id="acq-unit-editor" style="margin-top:12px"></div>
+        </div>
+      </div>
+
+      <!-- PROFORMA TAB -->
+      <div class="tab-content" id="tab-proforma">
+        <div id="pf-container">
+          <div class="upload-notice">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12h6M9 16h6M5 20h14a2 2 0 0 0 2-2V8l-5-5H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg>
+            <p>Upload a proforma file on the Upload tab to view it here.</p>
+          </div>
         </div>
       </div>
 
@@ -625,6 +636,7 @@ function selectProp(id) {
   renderBenchmarkTab();
   renderRentRollTab();
   renderRentProgressionTab();
+  renderProformaTab();
 }
 
 function showView(view) {
@@ -643,6 +655,7 @@ function switchTab(name) {
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='rentprog') renderRentProgressionTab();
+  if(name==='proforma') renderProformaTab();
 }
 
 // ─── ADD / DELETE PROPERTY ────────────────────────────────────────────────────
@@ -2026,7 +2039,128 @@ function renderStatementTable(monthIdx) {
   tbl.innerHTML = `<thead>${thead}</thead><tbody>${rows_html}</tbody>`;
 }
 
-// ─── DEBT SERVICE OVERRIDE ────────────────────────────────────────────────────
+// ─── PROFORMA TAB ─────────────────────────────────────────────────────────────
+function renderProformaTab() {
+  if(!currentPropId) return;
+  const d = propData[currentPropId]||{};
+  const p = properties.find(x=>x.id===currentPropId);
+  const container = document.getElementById('pf-container');
+  if(!container) return;
+
+  const rawPf = d.proforma;
+  if(!rawPf || !rawPf.rows) {
+    container.innerHTML = `<div class="upload-notice"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12h6M9 16h6M5 20h14a2 2 0 0 0 2-2V8l-5-5H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg><p>Upload a proforma file on the Upload tab to view it here.</p></div>`;
+    return;
+  }
+
+  // Rehydrate to current year
+  const pf = rehydrateProforma(rawPf, p.purchaseDate);
+  const pfYear = getProformaYear(p.purchaseDate) || pf.pfYear || 1;
+  const hasAllYears = pf.rows.some(r => r.yearlyTotals && Object.keys(r.yearlyTotals).length > 1);
+  const allYears = hasAllYears
+    ? [...new Set(pf.rows.flatMap(r => r.yearlyTotals ? Object.keys(r.yearlyTotals).map(Number) : []))].sort((a,b)=>a-b)
+    : null;
+
+  // ── Current year summary card ─────────────────────────────────────────────
+  const incRow  = pf.rows.filter(r=>r.isTotalIncome).find(r=>r.total) || pf.rows.filter(r=>r.isTotalIncome).pop();
+  const expRow  = pf.rows.filter(r=>r.isTotalExpense).find(r=>r.total) || pf.rows.filter(r=>r.isTotalExpense).pop();
+  const noiRow  = pf.rows.filter(r=>r.isNOI).find(r=>r.total) || pf.rows.filter(r=>r.isNOI).pop();
+  const netRow  = pf.rows.filter(r=>r.isNetIncome).find(r=>r.total) || null;
+  const dsRows  = pf.rows.filter(r=>r.isDebtService);
+  const dsTotal = dsRows.reduce((s,r)=>s+r.total,0) || null;
+
+  const source = rawPf.system === 'proforma_infosheet' ? 'Info sheet' :
+                 rawPf.system === 'proforma_csv'        ? 'CSV'        :
+                 rawPf.system === 'proforma_seed'       ? 'Built-in'   : (d.proforma_filename || 'Uploaded');
+
+  let html = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div>
+        <div style="font-size:15px;font-weight:500">Proforma — Year ${pfYear}</div>
+        <div style="font-size:12px;color:var(--text3);margin-top:2px">Source: ${source}${p.purchaseDate?' · Purchased '+new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):''}</div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:20px">
+      <div class="kpi-card">
+        <div class="kpi-label">Annual income</div>
+        <div style="font-size:18px;font-weight:500">${incRow?fmt(incRow.total):'—'}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${incRow?fmt(incRow.total/12)+' / mo':'—'}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Annual expense</div>
+        <div style="font-size:18px;font-weight:500">${expRow?fmt(expRow.total):'—'}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${expRow?fmt(expRow.total/12)+' / mo':'—'}</div>
+      </div>
+      <div class="kpi-card" style="border-color:var(--green)">
+        <div class="kpi-label">Annual NOI</div>
+        <div style="font-size:18px;font-weight:500;color:var(--green)">${noiRow?fmt(noiRow.total):'—'}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${noiRow?fmt(noiRow.total/12)+' / mo':'—'}</div>
+      </div>
+      ${dsTotal?`<div class="kpi-card">
+        <div class="kpi-label">Annual debt service</div>
+        <div style="font-size:18px;font-weight:500">${fmt(dsTotal)}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${fmt(dsTotal/12)} / mo</div>
+      </div>`:''}
+      ${netRow?`<div class="kpi-card" style="border-color:var(--blue)">
+        <div class="kpi-label">Annual cash flow</div>
+        <div style="font-size:18px;font-weight:500;color:var(--blue)">${fmt(netRow.total)}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${fmt(netRow.total/12)} / mo</div>
+      </div>`:''}
+    </div>`;
+
+  // ── Current year line items table ─────────────────────────────────────────
+  const lineItems = pf.rows.filter(r => !r.isCategory);
+  if(lineItems.length) {
+    html += `
+    <div style="margin-bottom:20px">
+      <div class="bench-title" style="margin-bottom:10px">Year ${pfYear} detail</div>
+      <div class="bench-wrap"><table class="bench-table">
+      <thead><tr>
+        <th style="text-align:left">Line item</th>
+        <th>Annual</th>
+        <th>Monthly</th>
+      </tr></thead><tbody>`;
+    lineItems.forEach(r => {
+      const cls = r.isNOI ? 'row-noi' : (r.isTotal||r.isNetIncome) ? 'row-total' : r.isDebtService ? 'row-subtotal' : '';
+      const indent = r.level > 0 ? 'padding-left:28px' : '';
+      html += `<tr class="${cls}">
+        <td style="${indent}">${r.label}</td>
+        <td>${fmt(r.total)}</td>
+        <td>${fmt(r.total/12)}</td>
+      </tr>`;
+    });
+    html += `</tbody></table></div></div>`;
+  }
+
+  // ── All years table ───────────────────────────────────────────────────────
+  if(hasAllYears && allYears) {
+    html += `
+    <div>
+      <div class="bench-title" style="margin-bottom:10px">All years</div>
+      <div class="stmt-wrap"><table class="stmt-table">
+      <thead><tr>
+        <th style="text-align:left;position:sticky;left:0;background:var(--bg2);z-index:3">Line item</th>
+        ${allYears.map(yr=>`<th style="${yr===pfYear?'color:var(--text);font-weight:600':''}">${yr===pfYear?'▶ ':''} Yr ${yr}</th>`).join('')}
+      </tr></thead><tbody>`;
+
+    lineItems.forEach(r => {
+      const cls = r.isNOI ? 'row-noi' : (r.isTotal||r.isNetIncome) ? 'row-total' : r.isDebtService ? 'row-subtotal' : '';
+      const indent = r.level > 0 ? 'padding-left:28px!important' : '';
+      const yearCells = allYears.map(yr => {
+        const annual = r.yearlyTotals ? (r.yearlyTotals[yr] || 0) : (yr === pfYear ? r.total : 0);
+        const isCurrent = yr === pfYear;
+        return `<td style="${isCurrent?'font-weight:600':'color:var(--text2)'}">${annual ? fmt(annual) : '—'}</td>`;
+      }).join('');
+      html += `<tr class="${cls}"><td class="indent-${r.level}" style="${indent}">${r.label}</td>${yearCells}</tr>`;
+    });
+
+    html += `</tbody></table></div></div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+
 function saveDebtServiceOverride(propId, field, val) {
   if(!propData[propId]) propData[propId]={};
   if(!propData[propId].debtServiceOverride) propData[propId].debtServiceOverride={};
