@@ -375,46 +375,46 @@
 <script>
 // ─── SEED DATA ────────────────────────────────────────────────────────────────
 const SEED_PROPERTIES = [
-  {name:'321 Townhomes',system:'buildium',units:18,purchaseDate:'2021-11-12',proforma:{income:233333,expense:83600,noi:149733,pfYear:5}},
-  {name:'9447 J Street',system:'buildium',units:2,purchaseDate:'2022-07-15',proforma:{income:285518,expense:110233,noi:175285,pfYear:4}},
-  {name:'Aksarben Villas',system:'buildium',units:24,purchaseDate:'2024-06-28',proforma:{income:426104,expense:140834,noi:285270,pfYear:2}},
-  {name:'Bancroft Place',system:'buildium',units:52,purchaseDate:'2023-12-15',proforma:{income:909593,expense:341615,noi:567979,pfYear:3}},
-  {name:'Boulder Pointe',system:'buildium',units:52,purchaseDate:'2023-12-15',proforma:{income:1107673,expense:427224,noi:680449,pfYear:3}},
-  {name:'Brent Village',system:'buildium',units:180,purchaseDate:'2025-06-17',proforma:{income:2378459,expense:1381783,noi:996677,pfYear:1}},
-  {name:'Carter Place (1003-1005 Ave K)',system:'buildium',units:20,purchaseDate:'2022-08-11',proforma:{income:289904,expense:119813,noi:170091,pfYear:4}},
+  {name:'321 Townhomes',system:'buildium',units:18,purchaseDate:'2021-11-12',proforma:null},
+  {name:'9447 J Street',system:'buildium',units:2,purchaseDate:'2022-07-15',proforma:null},
+  {name:'Aksarben Villas',system:'buildium',units:24,purchaseDate:'2024-06-28',proforma:null},
+  {name:'Bancroft Place',system:'buildium',units:52,purchaseDate:'2023-12-15',proforma:null},
+  {name:'Boulder Pointe',system:'buildium',units:52,purchaseDate:'2023-12-15',proforma:null},
+  {name:'Brent Village',system:'buildium',units:180,purchaseDate:'2025-06-17',proforma:null},
+  {name:'Carter Place (1003-1005 Ave K)',system:'buildium',units:20,purchaseDate:'2022-08-11',proforma:null},
   {name:'Cedar Haven',system:'buildium',units:34,purchaseDate:'2025-02-12',proforma:null},
-  {name:'College Heights',system:'buildium',units:22,purchaseDate:'2023-05-26',proforma:{income:220484,expense:98018,noi:122466,pfYear:3}},
-  {name:'Copperleaf',system:'buildium',units:88,purchaseDate:'2019-05-07',proforma:{income:713892,expense:376781,noi:337111,pfYear:7}},
-  {name:'Cordes',system:'buildium',units:24,purchaseDate:'2020-02-21',proforma:{income:363082,expense:123868,noi:239214,pfYear:7}},
-  {name:'Eagle Creek',system:'buildium',units:65,purchaseDate:'2021-08-11',proforma:{income:764537,expense:351899,noi:412638,pfYear:5}},
-  {name:'Judee Estates',system:'buildium',units:56,purchaseDate:'2023-04-28',proforma:{income:1128154,expense:402201,noi:725953,pfYear:3}},
-  {name:'Langston Apartments',system:'buildium',units:80,purchaseDate:'2021-08-01',proforma:{income:769166,expense:366789,noi:402377,pfYear:5}},
-  {name:'Maple Park / The Enclave',system:'buildium',units:77,purchaseDate:'2020-09-02',proforma:{income:927433,expense:386542,noi:540891,pfYear:6}},
-  {name:'Park Place',system:'buildium',units:262,purchaseDate:'2021-12-29',proforma:{income:2056738,expense:955749,noi:1100988,pfYear:5}},
-  {name:"Patrick's Place",system:'buildium',units:48,purchaseDate:'2021-04-16',proforma:{income:629117,expense:283427,noi:345690,pfYear:5}},
+  {name:'College Heights',system:'buildium',units:22,purchaseDate:'2023-05-26',proforma:null},
+  {name:'Copperleaf',system:'buildium',units:88,purchaseDate:'2019-05-07',proforma:null},
+  {name:'Cordes',system:'buildium',units:24,purchaseDate:'2020-02-21',proforma:null},
+  {name:'Eagle Creek',system:'buildium',units:65,purchaseDate:'2021-08-11',proforma:null},
+  {name:'Judee Estates',system:'buildium',units:56,purchaseDate:'2023-04-28',proforma:null},
+  {name:'Langston Apartments',system:'buildium',units:80,purchaseDate:'2021-08-01',proforma:null},
+  {name:'Maple Park / The Enclave',system:'buildium',units:77,purchaseDate:'2020-09-02',proforma:null},
+  {name:'Park Place',system:'buildium',units:262,purchaseDate:'2021-12-29',proforma:null},
+  {name:"Patrick's Place",system:'buildium',units:48,purchaseDate:'2021-04-16',proforma:null},
   {name:'Sandra Ann',system:'buildium',units:26,purchaseDate:'2020-11-05',proforma:null},
-  {name:'Tall Oaks',system:'buildium',units:52,purchaseDate:'2020-03-10',proforma:{income:610538,expense:218803,noi:391735,pfYear:7}},
-  {name:'The Landmark on Dakota',system:'buildium',units:22,purchaseDate:'2022-03-28',proforma:{income:290025,expense:101449,noi:188576,pfYear:5}},
-  {name:'The Preserve',system:'buildium',units:72,purchaseDate:'2020-12-15',proforma:{income:900166,expense:352926,noi:547240,pfYear:6}},
-  {name:'The Todd',system:'buildium',units:22,purchaseDate:'2022-07-15',proforma:{income:234725,expense:105449,noi:129276,pfYear:4}},
+  {name:'Tall Oaks',system:'buildium',units:52,purchaseDate:'2020-03-10',proforma:null},
+  {name:'The Landmark on Dakota',system:'buildium',units:22,purchaseDate:'2022-03-28',proforma:null},
+  {name:'The Preserve',system:'buildium',units:72,purchaseDate:'2020-12-15',proforma:null},
+  {name:'The Todd',system:'buildium',units:22,purchaseDate:'2022-07-15',proforma:null},
   {name:'The Vincent',system:'buildium',units:48,purchaseDate:'2019-09-05',proforma:null},
-  {name:'Venice',system:'buildium',units:11,purchaseDate:'2022-05-31',proforma:{income:113224,expense:43181,noi:70043,pfYear:4}},
-  {name:'Villa Blanca',system:'buildium',units:24,purchaseDate:'2022-08-12',proforma:{income:245929,expense:89897,noi:156032,pfYear:4}},
-  {name:'60th Street Duplexes',system:'buildium',units:10,purchaseDate:'2024-06-08',proforma:{income:207000,expense:73330,noi:133670,pfYear:2}},
-  {name:'15th Street 9 Plex',system:'appfolio',units:9,purchaseDate:'2021-10-08',proforma:{income:71678,expense:27148,noi:44530,pfYear:5}},
-  {name:'Adventureland',system:'appfolio',units:72,purchaseDate:'2024-08-30',proforma:{income:749903,expense:338404,noi:411499,pfYear:2}},
-  {name:'Altoona Terrace',system:'appfolio',units:83,purchaseDate:'2024-08-30',proforma:{income:809773,expense:348363,noi:461410,pfYear:2}},
-  {name:'BG Flats',system:'appfolio',units:42,purchaseDate:'2022-08-10',proforma:{income:904987,expense:302790,noi:602197,pfYear:4}},
-  {name:'Boulder Ridge',system:'appfolio',units:46,purchaseDate:'2021-11-18',proforma:{income:692417,expense:326421,noi:365996,pfYear:5}},
-  {name:'Capitol City Villas',system:'appfolio',units:67,purchaseDate:'2022-03-15',proforma:{income:710230,expense:301729,noi:408500,pfYear:5}},
-  {name:'Champion Villas',system:'appfolio',units:81,purchaseDate:'2022-09-21',proforma:{income:1671093,expense:542960,noi:1128133,pfYear:4}},
-  {name:'Dakota Bend',system:'appfolio',units:56,purchaseDate:'2022-04-21',proforma:{income:526899,expense:235634,noi:291265,pfYear:4}},
+  {name:'Venice',system:'buildium',units:11,purchaseDate:'2022-05-31',proforma:null},
+  {name:'Villa Blanca',system:'buildium',units:24,purchaseDate:'2022-08-12',proforma:null},
+  {name:'60th Street Duplexes',system:'buildium',units:10,purchaseDate:'2024-06-08',proforma:null},
+  {name:'15th Street 9 Plex',system:'appfolio',units:9,purchaseDate:'2021-10-08',proforma:null},
+  {name:'Adventureland',system:'appfolio',units:72,purchaseDate:'2024-08-30',proforma:null},
+  {name:'Altoona Terrace',system:'appfolio',units:83,purchaseDate:'2024-08-30',proforma:null},
+  {name:'BG Flats',system:'appfolio',units:42,purchaseDate:'2022-08-10',proforma:null},
+  {name:'Boulder Ridge',system:'appfolio',units:46,purchaseDate:'2021-11-18',proforma:null},
+  {name:'Capitol City Villas',system:'appfolio',units:67,purchaseDate:'2022-03-15',proforma:null},
+  {name:'Champion Villas',system:'appfolio',units:81,purchaseDate:'2022-09-21',proforma:null},
+  {name:'Dakota Bend',system:'appfolio',units:56,purchaseDate:'2022-04-21',proforma:null},
   {name:'Dundee Village',system:'appfolio',units:20,purchaseDate:'2017-12-01',proforma:null},
-  {name:'Franklin Court',system:'appfolio',units:172,purchaseDate:'2024-08-30',proforma:{income:1730898,expense:878989,noi:851909,pfYear:2}},
-  {name:'Grandview',system:'appfolio',units:15,purchaseDate:'2022-07-15',proforma:{income:134021,expense:58221,noi:75799,pfYear:4}},
-  {name:'Lions Gate',system:'appfolio',units:38,purchaseDate:'2022-11-10',proforma:{income:654815,expense:218959,noi:435856,pfYear:4}},
-  {name:'The Whitney',system:'appfolio',units:28,purchaseDate:'2021-12-19',proforma:{income:297156,expense:140213,noi:156943,pfYear:5}},
-  {name:'Uptown Flats',system:'appfolio',units:19,purchaseDate:'2021-12-19',proforma:{income:182128,expense:85937,noi:96191,pfYear:5}},
+  {name:'Franklin Court',system:'appfolio',units:172,purchaseDate:'2024-08-30',proforma:null},
+  {name:'Grandview',system:'appfolio',units:15,purchaseDate:'2022-07-15',proforma:null},
+  {name:'Lions Gate',system:'appfolio',units:38,purchaseDate:'2022-11-10',proforma:null},
+  {name:'The Whitney',system:'appfolio',units:28,purchaseDate:'2021-12-19',proforma:null},
+  {name:'Uptown Flats',system:'appfolio',units:19,purchaseDate:'2021-12-19',proforma:null},
 ];
 
 // ─── BUILDIUM BUDGET SHEET MAPPING ───────────────────────────────────────────
@@ -528,44 +528,21 @@ function init() {
     const id = 'prop_seed_'+i;
     const existing = properties.find(x=>x.id===id);
     if(existing) {
-      // Patch any missing/stale fields from seed data
       if(!existing.purchaseDate && p.purchaseDate) existing.purchaseDate = p.purchaseDate;
       if(!existing.units && p.units) existing.units = p.units;
-      if(existing.name !== p.name) existing.name = p.name; // in case name ever changes in seed
+      if(existing.name !== p.name) existing.name = p.name;
     }
   });
 
-  // Always re-seed seeded proformas — runs every init to self-heal stale localStorage data
+  // One-time purge: remove any seeded proformas left in localStorage from previous versions
   SEED_PROPERTIES.forEach((p,i)=>{
-    if(!p.proforma) return;
     const id = 'prop_seed_'+i;
-    if(!propData[id]) propData[id]={};
-    const existingPf = propData[id].proforma;
-    // Only touch seeded proformas — never overwrite a user-uploaded proforma
-    if(!existingPf || existingPf.system === 'proforma_seed' || existingPf.system === 'proforma_infosheet') {
-      const noiTotal = p.proforma.noi;
-      const noiCheck = existingPf && existingPf.rows && existingPf.rows.find(r=>r.isNOI);
-      // Re-seed if NOI total is missing/wrong, or pfYear needs updating
-      const prop2 = properties.find(x=>x.id===id);
-      const expectedPfYear = (prop2 && prop2.purchaseDate) ? getProformaYear(prop2.purchaseDate) : p.proforma.pfYear;
-      const pfYearOk = existingPf && existingPf.pfYear === expectedPfYear;
-      if(!noiCheck || !noiCheck.total || noiCheck.total !== noiTotal || !pfYearOk) {
-        // Always calculate pfYear dynamically from purchase date — never trust the hardcoded value
-        const prop = properties.find(x=>x.id===id);
-        const dynamicPfYear = (prop && prop.purchaseDate) ? getProformaYear(prop.purchaseDate) : p.proforma.pfYear;
-        propData[id].proforma = {
-          system:'proforma_seed', pfYear:dynamicPfYear,
-          months:Array(12).fill(''), propertyName:p.name,
-          rows:[
-            {label:'Operating Income',isNOI:false,isTotalIncome:true,isTotalExpense:false,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
-             total:p.proforma.income, values:Array(12).fill(p.proforma.income/12)},
-            {label:'Operating Expense',isNOI:false,isTotalIncome:false,isTotalExpense:true,isTotal:true,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
-             total:p.proforma.expense, values:Array(12).fill(p.proforma.expense/12)},
-            {label:'Net Operating Income',isNOI:true,isTotalIncome:false,isTotalExpense:false,isTotal:false,isNetIncome:false,isCategory:false,isSubtotal:false,level:0,
-             total:noiTotal, values:Array(12).fill(noiTotal/12)},
-          ]
-        };
-        propData[id].proforma_filename = `Seeded — Year ${dynamicPfYear}`;
+    if(propData[id] && propData[id].proforma) {
+      const sys = propData[id].proforma.system;
+      if(sys === 'proforma_seed' || sys === 'proforma_infosheet') {
+        delete propData[id].proforma;
+        delete propData[id].proforma_filename;
+        delete propData[id].pfMapping;
       }
     }
   });
@@ -2385,9 +2362,82 @@ function renderBenchmarkTab() {
     <thead><tr>${cols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
     <tbody>`;
 
+  function debtDetailRows(rows, key) {
+    if(!rows.length) return '';
+    const isOpen = !!benchOpenState[currentPropId+'|'+key];
+    let out = rows.map(r => `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
+      <td style="padding-left:28px">${r.label}</td>${rowCells(r, monthIdx)}
+    </tr>`).join('');
+
+    // Only add subtotal if there are 2+ rows (single row doesn't need totaling)
+    if(rows.length < 2) return out;
+
+    // Sum actual for selected month
+    const totalActual = rows.reduce((s,r) => s + r.values[monthIdx], 0);
+    // Sum T12 avg
+    const totalT12 = rows.reduce((s,r) => s + r.values.reduce((a,b)=>a+b,0)/r.values.length, 0);
+
+    // Sum budget
+    let totalBgAnnual = null;
+    if(hasBG) {
+      let allFound = true;
+      let bgSum = 0;
+      rows.forEach(r => {
+        const bgRow = bgMap[r.label.toLowerCase()] || null;
+        if(bgRow && bgRow.total) bgSum += bgRow.total;
+        else allFound = false;
+      });
+      // Fallback: use net income derived from budget if individual rows not found
+      if(!allFound) {
+        const bgNOI = bg.rows.find(x=>x.isNOI);
+        const bgNet = bg.rows.find(x=>x.isNetIncome);
+        if(bgNOI && bgNet) totalBgAnnual = bgNOI.total - bgNet.total;
+        else if(bgSum) totalBgAnnual = bgSum;
+      } else {
+        totalBgAnnual = bgSum || null;
+      }
+    }
+
+    // Sum proforma debt service
+    let totalPfAnnual = null;
+    if(hasPF) {
+      const pfDSRows = pf.rows.filter(x=>x.isDebtService);
+      if(pfDSRows.length) {
+        totalPfAnnual = pfDSRows.reduce((s,r)=>s+r.total, 0);
+      }
+      if(!totalPfAnnual) {
+        totalPfAnnual = (dsOverride.interest||0) + (dsOverride.principal||0) || null;
+      }
+    }
+
+    // Build subtotal cells (debt service is expense — lower is better)
+    const varGoodDS = v => v <= 0;
+    let subtotalCells = `<td style="font-weight:500">${fmt(totalActual)}</td>`;
+    if(hasBG) {
+      const bgMonth = totalBgAnnual !== null ? totalBgAnnual/12 : null;
+      const varD = bgMonth !== null ? totalActual - bgMonth : null;
+      const varPct = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
+      const vCls = varD !== null ? (varGoodDS(varD)?'val-pos':'val-neg') : '';
+      subtotalCells += `<td style="font-weight:500">${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}" style="font-weight:500">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}" style="font-weight:500">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
+    }
+    subtotalCells += `<td style="font-weight:500">${fmt(totalT12)}</td>`;
+    if(hasPF) {
+      const pfMonth = totalPfAnnual !== null ? totalPfAnnual/12 : null;
+      const t12VsPf = (pfMonth !== null) ? totalT12 - pfMonth : null;
+      const t12VsPct = (t12VsPf !== null && pfMonth) ? t12VsPf/Math.abs(pfMonth)*100 : null;
+      const vCls = t12VsPf !== null ? (varGoodDS(t12VsPf)?'val-pos':'val-neg') : '';
+      subtotalCells += `<td style="font-weight:500">${pfMonth!==null?fmt(pfMonth):'—'}</td><td class="${vCls}" style="font-weight:500">${t12VsPf!==null?fmtVar(t12VsPf):'—'}</td><td class="${vCls}" style="font-weight:500">${t12VsPct!==null?t12VsPct.toFixed(1)+'%':'—'}</td>`;
+    }
+
+    out += `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}" style="border-top:1px solid var(--border2)">
+      <td style="padding-left:28px;color:var(--text2)">Total Debt Service</td>${subtotalCells}
+    </tr>`;
+    return out;
+  }
+
   if(anchorIncome)  html += summaryRow(anchorIncome,  'income',  'row-total',   incomeSubs.length>0,          'Total Operating Income')  + detailRows(incomeSubs,          'income');
   if(anchorExpense) html += summaryRow(anchorExpense, 'expense', 'row-total',   expenseSubs.length>0,         'Total Operating Expense') + detailRows(expenseSubs,         'expense');
-  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',     effectiveDebtSubs.length>0,   'Net Operating Income')    + detailRows(effectiveDebtSubs,   'noi');
+  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',     effectiveDebtSubs.length>0,   'Net Operating Income')    + debtDetailRows(effectiveDebtSubs,'noi');
   if(anchorNet)     html += summaryRow(anchorNet,     'net',     'row-net',     false,                        'Net Income / Cash Flow');
 
   html += `</tbody></table></div></div>`;
