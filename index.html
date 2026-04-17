@@ -1227,6 +1227,9 @@ function parseBuildiumRentRoll(data) {
     if(unitNum.toLowerCase() === 'unit') continue; // skip stray header rows
     const bdba = row[4] ? row[4].toString().trim() : '';
     if(!bdba) continue;
+    // Additional guard: skip rows where the unit number looks like a property name
+    // (contains letters and dashes but no numbers, typical of Buildium group headers)
+    if(!/\d/.test(unitNum)) continue;
     const tenants = row[1] ? row[1].toString().trim() : '';
     const isVacant = !tenants || tenants.toUpperCase()==='VACANT' || tenants.toLowerCase()==='no tenant';
     const unitType = normalizeUnitType(bdba, 'buildium');
@@ -3299,7 +3302,12 @@ function renderRentProgressionTab() {
     return;
   }
 
+  // Filter out any phantom header rows that slipped through the parser (no digits in unit number)
+  const validUnits = rr.units.filter(u => /\d/.test(u.unitNum));
+
   const hasAnyAcq = Object.keys(acqUnits).length > 0;
+  // Only show market rent columns if at least one unit has acq market rent data
+  const hasAnyAcqMarket = Object.values(acqUnits).some(u => u.marketRent);
 
   // Unit-level table
   let html = `<div class="bench-section">
@@ -3311,17 +3319,16 @@ function renderRentProgressionTab() {
         <th style="padding:8px 10px;text-align:left;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Unit</th>
         <th style="padding:8px 10px;text-align:left;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Type</th>
         ${p.system==='appfolio'?'<th style="padding:8px 10px;text-align:left;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Tier</th>':''}
+        ${hasAnyAcqMarket?`
         <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Acq. market</th>
         <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Current market</th>
-        <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Market Δ</th>
+        <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Market Δ</th>`:''}
         <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Acq. actual</th>
         <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Current actual</th>
         <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Actual Δ</th>
       </tr></thead><tbody>`;
 
-  rr.units.forEach(u => {
-    const acq = acqUnits[u.unitNum] || {};
-    const acqMarket = acq.marketRent || null;
+  validUnits.forEach(u => {
     const acqActual = acq.actualRent || null;
     const curMarket = u.marketRent;
     const curActual = u.isVacant ? null : u.actualRent;
@@ -3335,10 +3342,11 @@ function renderRentProgressionTab() {
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-weight:500">${u.unitNum}</td>
       <td style="padding:6px 10px;border-bottom:1px solid var(--border)">${u.unitType}</td>
       ${tierCell}
+      ${hasAnyAcqMarket?`
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">${acqMarket?fmt(acqMarket):'<span style="color:var(--text3)">—</span>'}</td>
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">${fmt(curMarket)}</td>
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right" class="${mktPct!==null?(mktPct>=0?'val-pos':'val-neg'):''}">
-        ${mktPct!==null?`${mktPct>=0?'+':''}${mktPct.toFixed(1)}%`:'—'}</td>
+        ${mktPct!==null?`${mktPct>=0?'+':''}${mktPct.toFixed(1)}%`:'—'}</td>`:''}
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">${acqActual?fmt(acqActual):'<span style="color:var(--text3)">—</span>'}</td>
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">${curActual!==null?fmt(curActual):'<span style="color:var(--text3)">Vacant</span>'}</td>
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right" class="${actPct!==null?(actPct>=0?'val-pos':'val-neg'):''}">
@@ -3350,8 +3358,7 @@ function renderRentProgressionTab() {
   // Grouped summary (only when we have acquisition data)
   if(hasAnyAcq) {
     const groups = {};
-    rr.units.forEach(u=>{
-      const key = p.system==='appfolio' ? `${u.unitType}||${u.tier}` : u.unitType;
+    validUnits.forEach(u=>{
       if(!groups[key]) groups[key]={unitType:u.unitType, tier:u.tier, units:[]};
       groups[key].units.push(u);
     });
@@ -3362,7 +3369,7 @@ function renderRentProgressionTab() {
         <th style="text-align:left">Unit type</th>
         ${p.system==='appfolio'?'<th style="text-align:left">Tier</th>':''}
         <th>Units</th><th>Occupancy</th>
-        <th>Avg acq. market</th><th>Avg current market</th><th>Market growth</th>
+        ${hasAnyAcqMarket?'<th>Avg acq. market</th><th>Avg current market</th><th>Market growth</th>':''}
         <th>Avg acq. actual</th><th>Avg current actual</th><th>Actual growth</th>
       </tr></thead><tbody>`;
     Object.keys(groups).sort().forEach(key=>{
@@ -3381,8 +3388,9 @@ function renderRentProgressionTab() {
       html+=`<tr>
         <td style="font-weight:500">${g.unitType}</td>${tierBadge}
         <td>${g.units.length}</td><td>${occPct}</td>
+        ${hasAnyAcqMarket?`
         <td>${avgAcqMarket?fmt(avgAcqMarket):'—'}</td><td>${fmt(avgCurMarket)}</td>
-        <td class="${mktGrowth!==null?(mktGrowth>=0?'val-pos':'val-neg'):''}">${mktGrowth!==null?(mktGrowth>=0?'+':'')+mktGrowth.toFixed(1)+'%':'—'}</td>
+        <td class="${mktGrowth!==null?(mktGrowth>=0?'val-pos':'val-neg'):''}">${mktGrowth!==null?(mktGrowth>=0?'+':'')+mktGrowth.toFixed(1)+'%':'—'}</td>`:''}
         <td>${avgAcqActual?fmt(avgAcqActual):'—'}</td><td>${occupied.length?fmt(avgCurActual):'—'}</td>
         <td class="${actGrowth!==null?(actGrowth>=0?'val-pos':'val-neg'):''}">${actGrowth!==null?(actGrowth>=0?'+':'')+actGrowth.toFixed(1)+'%':'—'}</td>
       </tr>`;
