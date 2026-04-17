@@ -239,7 +239,7 @@
             <tr>
               <th>Property</th><th>System</th><th>Status</th>
               <th>Total income</th><th>Total expense</th><th>NOI (ann.)</th>
-              <th>vs Proforma NOI</th><th>Notes</th>
+              <th>vs Budget NOI</th><th>Notes</th>
             </tr>
           </thead>
           <tbody id="portfolio-tbody"></tbody>
@@ -603,15 +603,15 @@ function getStatusDot(id) {
   if(!d.statement) return 'dot-none';
   const stmt = d.statement;
   const noiRow = stmt.rows.find(r=>r.isNOI);
-  const proformaNoi = getKeyMetric(id, 'proforma_noi');
-  if(!proformaNoi || !noiRow) return 'dot-none';
+  const budgetNoi = getKeyMetric(id, 'budget_noi');
+  if(!budgetNoi || !noiRow) return 'dot-none';
 
-  // Annualize the statement NOI: avg monthly × 12
-  const monthsWithData = noiRow.values.filter(v => v !== 0).length || 1;
-  const avgMonthlyNoi = noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
-  const annualizedNoi = avgMonthlyNoi * 12;
+  // Use the most recent month's actual NOI vs budget/mo
+  const lastMonthIdx = noiRow.values.map((v,i)=>v!==0?i:-1).filter(i=>i>=0).pop() ?? noiRow.values.length - 1;
+  const currentMonthNoi = noiRow.values[lastMonthIdx];
+  const budgetMonthlyNoi = budgetNoi / 12;
 
-  const pct = (annualizedNoi - proformaNoi) / Math.abs(proformaNoi);
+  const pct = (currentMonthNoi - budgetMonthlyNoi) / Math.abs(budgetMonthlyNoi);
   if(pct >= -0.03) return 'dot-ok';
   if(pct >= -0.10) return 'dot-warn';
   return 'dot-flag';
@@ -3359,6 +3359,7 @@ function renderRentProgressionTab() {
   if(hasAnyAcq) {
     const groups = {};
     validUnits.forEach(u=>{
+      const key = p.system==='appfolio' ? `${u.unitType}||${u.tier}` : u.unitType;
       if(!groups[key]) groups[key]={unitType:u.unitType, tier:u.tier, units:[]};
       groups[key].units.push(u);
     });
@@ -3449,28 +3450,34 @@ function portfolioPropRow(p) {
   const dot = getStatusDot(p.id);
   const d = propData[p.id]||{};
   const stmt = d.statement;
-  const pfNoi = getKeyMetric(p.id,'proforma_noi');
+  const budgetNoi = getKeyMetric(p.id,'budget_noi');
   const propNoteCount = notes.filter(n=>n.propId===p.id).length;
 
-  // Compute annualized NOI, income, and expense for fair proforma comparison
+  // Compute annualized NOI, income, and expense for display
   let annualizedNoi = null;
   let annualizedIncome = null;
   let annualizedExpense = null;
+  let currentMonthNoi = null;
   if(stmt) {
     const noiRow = stmt.rows.find(r=>r.isNOI);
     const incRow = stmt.rows.find(r=>r.isTotalIncome);
     const expRow = stmt.rows.find(r=>r.isTotalExpense);
     const monthsWithData = noiRow ? (noiRow.values.filter(v=>v!==0).length || 1) : 1;
-    if(noiRow) annualizedNoi = (noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData) * 12;
+    if(noiRow) {
+      annualizedNoi = (noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData) * 12;
+      const lastIdx = noiRow.values.map((v,i)=>v!==0?i:-1).filter(i=>i>=0).pop() ?? noiRow.values.length-1;
+      currentMonthNoi = noiRow.values[lastIdx];
+    }
     if(incRow) annualizedIncome = (incRow.values.reduce((a,b)=>a+b,0) / monthsWithData) * 12;
     if(expRow) annualizedExpense = (expRow.values.reduce((a,b)=>a+b,0) / monthsWithData) * 12;
   }
   const noi = annualizedNoi;
 
-  const varHTML = pfNoi && noi !== null ? (() => {
-    const pct = (noi - pfNoi) / Math.abs(pfNoi) * 100;
+  const varHTML = budgetNoi && currentMonthNoi !== null ? (() => {
+    const budgetMonthly = budgetNoi / 12;
+    const pct = (currentMonthNoi - budgetMonthly) / Math.abs(budgetMonthly) * 100;
     const cls = pct>=0?'val-pos':'val-neg';
-    return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}% annualized</span>`;
+    return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}% cur mo</span>`;
   })() : '—';
   const statusBadge = dot==='dot-none'?'<span class="badge badge-neutral">No data</span>':
     dot==='dot-ok'?'<span class="badge badge-ok">On track</span>':
@@ -3555,11 +3562,11 @@ function renderPortfolio() {
       return (noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData) * 12;
     }
     const groupNoi = props.reduce((sum,p)=>sum+getAnnualizedNoi(p.id), 0);
-    const groupPfNoi = props.reduce((sum,p)=>{ const n=getKeyMetric(p.id,'proforma_noi'); return sum+(n||0); }, 0);
+    const groupBgNoi = props.reduce((sum,p)=>{ const n=getKeyMetric(p.id,'budget_noi'); return sum+(n||0); }, 0);
     const groupLoaded = props.filter(p=>propData[p.id]&&propData[p.id].statement).length;
     const groupNoteCount = props.reduce((sum,p)=>sum+notes.filter(n=>n.propId===p.id).length,0);
-    const noiVar = groupNoi&&groupPfNoi ? (() => {
-      const pct = (groupNoi-groupPfNoi)/Math.abs(groupPfNoi)*100;
+    const noiVar = groupNoi&&groupBgNoi ? (() => {
+      const pct = (groupNoi-groupBgNoi)/Math.abs(groupBgNoi)*100;
       return `<span class="${pct>=0?'val-pos':'val-neg'}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
     })() : '—';
 
