@@ -3327,6 +3327,8 @@ function renderRentProgressionTab() {
       </tr></thead><tbody>`;
 
   validUnits.forEach(u => {
+    const acq = acqUnits[u.unitNum] || {};
+    const acqMarket = acq.marketRent || null;
     const acqActual = acq.actualRent || null;
     const curMarket = u.marketRent;
     const curActual = u.isVacant ? null : u.actualRent;
