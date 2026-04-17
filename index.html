@@ -1573,7 +1573,8 @@ function parseProforma(ws, purchaseDate) {
                        || lc.includes('total annual expense') || lc.includes('monthly operating expense');
     const isMonthlyExpenseTotal = lc.includes('monthly operating expense') && i > yearRow + 5;
     const isMonthlyIncomeTotal  = lc === 'gross monthly operating income' || lc === 'total operating income' || lc === 'total annual income';
-    const isDebtService = lc.includes('annual interest') || lc.includes('annual principal') || lc.includes('total annual debt service');
+    const isDebtService = lc.includes('annual interest') || lc.includes('annual principal') || lc.includes('total annual debt service') || lc.includes('monthly mortgage');
+    const isMonthlyDebtService = lc.includes('monthly mortgage'); // monthly value, needs × 12
     const isNetIncome   = !isNOI && !isDebtService && (
       lc.includes('total annual cash flow') || lc.includes('total monthly cash flow') ||
       lc.includes('net income') || (lc.includes('cash flow') && !lc.includes('operating'))
@@ -1588,11 +1589,12 @@ function parseProforma(ws, purchaseDate) {
     const isLineItem = !isNOI && !isTotal && !isMonthlyIncomeTotal && !isMonthlyExpenseTotal && !isDebtService && !isNetIncome;
 
     // Build yearlyTotals — annualized value for each year in the file
+    // Debt service rows are annual EXCEPT 'monthly mortgage' which is monthly and needs × 12
     const yearlyTotals = {};
     Object.keys(yearDataCols).forEach(yr => {
       const col = yearDataCols[yr];
       const v = Math.abs(parseFloat(row[col]) || 0);
-      const annualized = (isNOI || isTotal || isNetIncome || isDebtService) ? v : v * 12;
+      const annualized = (isNOI || isTotal || isNetIncome || (isDebtService && !isMonthlyDebtService)) ? v : v * 12;
       yearlyTotals[yr] = annualized;
     });
 
