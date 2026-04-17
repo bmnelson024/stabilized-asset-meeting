@@ -514,6 +514,7 @@ let notes = JSON.parse(localStorage.getItem('sam_notes') || '[]');
 let currentPropId = null;
 
 const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const GROUP_ORDER = ['Point Guard','Kouri','Arrow','RPME','Bender','J&M','Orange'];
 
 function save() {
   localStorage.setItem('sam_properties', JSON.stringify(properties));
@@ -713,8 +714,6 @@ function renderUploadTab(p) {
                       'Upload any .xlsx/.xls — column mapper will appear';
   const acqSlotHasFile = acqImported || acqPending;
   const acqSlotIcon = acqPending ? '⚠' : acqImported ? '✓' : '↑';
-  const acqSlotBorderColor = acqPending ? 'var(--amber)' : acqImported ? 'var(--green)' : '';
-  const acqSlotBg = acqPending ? 'var(--amber-bg)' : acqImported ? 'var(--green-bg)' : '';
   document.getElementById('acq-rr-upload-grid').innerHTML = `
     <label class="upload-slot ${acqSlotHasFile?'has-file':''}" style="${acqPending?'border-color:var(--amber);background:var(--amber-bg)':''}">
       <input type="file" accept=".xlsx,.xls" onchange="handleUpload(event,'${p.id}','acqrentroll')">
@@ -740,18 +739,12 @@ function renderUploadTab(p) {
     // Pick best row from multiple candidates with the same flag:
     // Prefer rows whose label contains "annual" (larger totals = annual figures),
     // then fall back to first non-zero, then last.
-    function bestPfAnchor(rows) {
-      if(!rows.length) return null;
-      const annual = rows.filter(r=>r.label.toLowerCase().includes('annual') && r.total);
-      if(annual.length) return annual[annual.length-1];
-      return rows.find(r=>r.total) || rows[rows.length-1];
-    }
     const allNOI  = pf.rows.filter(r=>r.isNOI);
     const allInc  = pf.rows.filter(r=>r.isTotalIncome);
     const allExp  = pf.rows.filter(r=>r.isTotalExpense);
-    const noiRow  = bestPfAnchor(allNOI);
-    const incRow  = bestPfAnchor(allInc);
-    const expRow  = bestPfAnchor(allExp);
+    const noiRow  = bestRow(allNOI);
+    const incRow  = bestRow(allInc);
+    const expRow  = bestRow(allExp);
     // Fallback: derive NOI from income - expense if NOI row is missing or zero
     // effectiveExpRow/NOIRow already resolved to best non-zero rows above
     const effectiveExpRow = expRow;
@@ -891,18 +884,15 @@ function handleUpload(event, propId, fileKey) {
         renderUploadTab(prop);
         updateDetailBadge();
         renderBenchmarkTab();
+        renderProformaTab();
         renderPortfolio();
-        
-        // Refresh detail meta for purchase date without resetting tab
-        const prop2 = properties.find(x=>x.id===propId);
-        if(prop2) {
-          document.getElementById('detail-prop-name').textContent = prop2.name;
-          document.getElementById('breadcrumb-prop-name').textContent = prop2.name;
-          const pfYear2 = prop2.purchaseDate ? getProformaYear(prop2.purchaseDate) : null;
+        // Refresh detail meta in case purchase date was updated
+        if(prop) {
+          document.getElementById('detail-prop-name').textContent = prop.name;
+          document.getElementById('breadcrumb-prop-name').textContent = prop.name;
+          const pfYear2 = prop.purchaseDate ? getProformaYear(prop.purchaseDate) : null;
           const pfYearStr2 = pfYear2 ? ` · Proforma Year ${pfYear2}` : ' · No purchase date set';
-          document.getElementById('detail-prop-meta').textContent = `${prop2.system==='buildium'?'Buildium':'Appfolio'} · ${prop2.units||'?'} units${pfYearStr2}`;
-          renderUploadTab(prop2);
-          updateDetailBadge();
+          document.getElementById('detail-prop-meta').textContent = `${prop.system==='buildium'?'Buildium':'Appfolio'} · ${prop.units||'?'} units${pfYearStr2}`;
         }
       } catch(err) {
         alert('Error parsing CSV proforma: '+err.message);
@@ -1407,7 +1397,7 @@ const BUILDIUM_DEFAULT_MAPPING = {
   mortgage:      ['Mortgage Interest', 'Mortgage Principal'],
 };
 
-// Legacy keyword list kept for getMatchGroup (used elsewhere)
+// Legacy keyword list — fallback for getStmtMatchGroup
 const MATCH_KEYWORDS = [
   {keys:['water','sewer'],                group:'water'},
   {keys:['garbage','trash','recycling'],  group:'garbage'},
@@ -1429,19 +1419,6 @@ const MATCH_KEYWORDS = [
   {keys:['parking'],                      group:'parking'},
   {keys:['late fee'],                     group:'late_fee'},
 ];
-
-function getMatchGroup(label) {
-  const lc = label.toLowerCase();
-  // Check PF_LINE_ITEMS first for precise matching
-  for(const item of PF_LINE_ITEMS) {
-    if(item.pfKeys.some(k => lc.includes(k))) return item.group;
-  }
-  // Fall back to legacy list
-  for(const {keys, group} of MATCH_KEYWORDS) {
-    if(keys.some(k=>lc.includes(k))) return group;
-  }
-  return null;
-}
 
 function getStmtMatchGroup(label) {
   const lc = label.toLowerCase();
@@ -1617,17 +1594,17 @@ function parseProforma(ws, purchaseDate) {
 
 function rehydrateProforma(pf, purchaseDate) {
   // Recompute each row's total/values from yearlyTotals using the current pfYear.
-  // This means the proforma never goes stale as the property ages through years.
+  // Works on a shallow copy of rows to avoid mutating stored localStorage data.
   if(!pf || !pf.rows) return pf;
   const pfYear = getProformaYear(purchaseDate) || pf.pfYear || 1;
-  pf.rows.forEach(r => {
-    if(!r.yearlyTotals) return; // seeded/CSV proformas don't have yearlyTotals — leave as-is
+  if(pf.pfYear === pfYear && pf.rows.every(r => !r.yearlyTotals)) return pf; // nothing to rehydrate
+  const rows = pf.rows.map(r => {
+    if(!r.yearlyTotals) return r; // seeded/CSV rows — leave as-is
     const annual = r.yearlyTotals[pfYear] || r.yearlyTotals[Math.max(...Object.keys(r.yearlyTotals).map(Number))] || 0;
-    r.total = annual;
-    r.values = Array(12).fill(annual / 12);
+    if(r.total === annual) return r; // already correct — no copy needed
+    return {...r, total: annual, values: Array(12).fill(annual / 12)};
   });
-  pf.pfYear = pfYear;
-  return pf;
+  return {...pf, rows, pfYear};
 }
 
 function parseProformaInfoSheet(ws, purchaseDate) {
@@ -1742,7 +1719,7 @@ function parseProformaInfoSheet(ws, purchaseDate) {
   // Always recalculate pfYear from purchase date — don't trust stored value
   const correctPfYear = getProformaYear(purchaseDate) || pfYear;
   return {rows, pfYear: correctPfYear, system:'proforma_infosheet',
-          months:Array(12).fill(''), propertyName:'', _fromInfoSheet: true};
+          months:Array(12).fill(''), propertyName:''};
 }
 
 function parseProformaCsv(text, purchaseDate) {
@@ -1961,7 +1938,8 @@ function getKeyMetric(propId, metric) {
     return row ? row.total : null;
   }
   if(metric==='proforma_noi') {
-    const pf = d.proforma;
+    const prop = properties.find(x=>x.id===propId);
+    const pf = d.proforma ? rehydrateProforma(d.proforma, prop?.purchaseDate) : null;
     if(!pf) return null;
     const rows = pf.rows.filter(r=>r.isNOI);
     const annual = rows.filter(r=>r.label.toLowerCase().includes('annual') && r.total);
@@ -2306,11 +2284,6 @@ function renderMappingEditor(propId) {
 }
 
 
-function savePfMapping(propId, pfLabel, stmtLabel) {
-  // Legacy — kept for compatibility
-  savePfMappingByGroup(propId, pfLabel, stmtLabel);
-}
-
 function savePfMappingByGroup(propId, group, stmtLabel) {
   // Single-value setter (used by legacy code and auto-match)
   if(!propData[propId]) propData[propId]={};
@@ -2338,6 +2311,16 @@ function resetPfMapping(propId) {
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─── SHARED UTILITY ───────────────────────────────────────────────────────────
+// Pick the best matching row from a filtered list:
+// prefer rows whose label contains "annual" with non-zero total, then first non-zero, then last.
+function bestRow(rows) {
+  if(!rows.length) return null;
+  const annual = rows.filter(r => r.label.toLowerCase().includes('annual') && r.total);
+  if(annual.length) return annual[annual.length-1];
+  return rows.find(r => r.total) || rows[rows.length-1];
 }
 
 // ─── BENCHMARK TAB ────────────────────────────────────────────────────────────
@@ -2458,44 +2441,30 @@ function renderBenchmarkTab() {
   const effectiveDebtSubs = debtSubs.length ? debtSubs : syntheticDebtSubs;
 
   // Helper: build the data cells for one row
-  const isExpenseRow = (r) => r.isTotalExpense || isDebtService(r) || r.isDebtService;
   function rowCells(r, mi) {
-    const actual = r._synthetic ? r.values[mi] : r.values[mi];
-    const prevActual = (!r._synthetic && mi > 0) ? r.values[mi-1] : null;
+    const actual = r.values[mi];
     const t12Avg = r.values.reduce((a,b)=>a+b,0) / r.values.length;
     const t12Var = actual - t12Avg;
-    const isExp = isExpenseRow(r);
+    const isExp = r.isTotalExpense || r.isDebtService;
     const varGood = v => isExp ? v <= 0 : v >= 0;
 
     let pfAnnual = r._pfAnnual !== undefined ? r._pfAnnual : null;
     if(pfAnnual === null && hasPF) {
       let pfRow = null;
-      // Helper: pick best matching proforma row —
-      // prefer annual-labeled rows, then first non-zero, then last
-      function bestPfRow(pred) {
-        const matches = pf.rows.filter(pred);
-        if(!matches.length) return null;
-        const annual = matches.filter(r=>r.label.toLowerCase().includes('annual') && r.total);
-        if(annual.length) return annual[annual.length-1];
-        return matches.find(r=>r.total) || matches[matches.length-1];
-      }
       if(r.isNOI) {
-        pfRow = bestPfRow(x=>x.isNOI);
-        // Fallback: derive NOI from income minus expense if NOI row total is zero/missing
+        pfRow = bestRow(pf.rows.filter(x=>x.isNOI));
         if(!pfRow || !pfRow.total) {
-          const pfInc = bestPfRow(x=>x.isTotalIncome);
-          const pfExp = bestPfRow(x=>x.isTotalExpense);
+          const pfInc = bestRow(pf.rows.filter(x=>x.isTotalIncome));
+          const pfExp = bestRow(pf.rows.filter(x=>x.isTotalExpense));
           if(pfInc && pfExp) pfAnnual = pfInc.total - pfExp.total;
         }
       }
-      else if(r.isTotalIncome)  pfRow = bestPfRow(x=>x.isTotalIncome);
-      else if(r.isTotalExpense) pfRow = bestPfRow(x=>x.isTotalExpense);
+      else if(r.isTotalIncome)  pfRow = bestRow(pf.rows.filter(x=>x.isTotalIncome));
+      else if(r.isTotalExpense) pfRow = bestRow(pf.rows.filter(x=>x.isTotalExpense));
       else if(r.isNetIncome) {
-        // Net income = NOI minus debt service — prefer annual cash flow rows
-        pfRow = bestPfRow(x=>x.isNetIncome);
+        pfRow = bestRow(pf.rows.filter(x=>x.isNetIncome));
         if(!pfRow || !pfRow.total) {
-          // Derive: annual NOI minus total annual debt service
-          const pfNOIRow = bestPfRow(x=>x.isNOI);
+          const pfNOIRow = bestRow(pf.rows.filter(x=>x.isNOI));
           const pfDSRows = pf.rows.filter(x=>x.isDebtService);
           const pfDS = pfDSRows.reduce((s,x)=>s+x.total, 0)
                     || (dsOverride.interest||0) + (dsOverride.principal||0);
@@ -2516,18 +2485,10 @@ function renderBenchmarkTab() {
       }
       if(pfRow && pfAnnual === null) pfAnnual = pfRow.total || null;
     }
-    // Budget row lookup — handle all anchor types including net income
-    function bestBgRow(pred) {
-      if(!hasBG) return null;
-      const matches = bg.rows.filter(pred);
-      if(!matches.length) return null;
-      const annual = matches.filter(r=>r.label.toLowerCase().includes('annual') && r.total);
-      return (annual.length ? annual[annual.length-1] : null) || matches.find(r=>r.total) || matches[matches.length-1];
-    }
-    const bgRow = (hasBG && r.isNOI        ? bestBgRow(x=>x.isNOI)        : null)
-               || (hasBG && r.isTotalIncome ? bestBgRow(x=>x.isTotalIncome) : null)
-               || (hasBG && r.isTotalExpense? bestBgRow(x=>x.isTotalExpense): null)
-               || (hasBG && r.isNetIncome   ? bestBgRow(x=>x.isNetIncome)   : null)
+    const bgRow = (hasBG && r.isNOI        ? bestRow(bg.rows.filter(x=>x.isNOI))        : null)
+               || (hasBG && r.isTotalIncome ? bestRow(bg.rows.filter(x=>x.isTotalIncome)) : null)
+               || (hasBG && r.isTotalExpense? bestRow(bg.rows.filter(x=>x.isTotalExpense)): null)
+               || (hasBG && r.isNetIncome   ? bestRow(bg.rows.filter(x=>x.isNetIncome))   : null)
                || bgMap[r.label.toLowerCase()]
                || null;
     const bgAnnual = bgRow ? bgRow.total : null;
@@ -2555,7 +2516,6 @@ function renderBenchmarkTab() {
   }
 
   // Build header columns
-  const ncols = 1 + 1 + (hasBG?3:0) + 1 + (hasPF?3:0); // label + actual + bg cols + t12 avg + pf cols
   let cols = ['Account', `Actual (${selMonth})`];
   if(hasBG) cols.push('Budget / mo', 'Bud Var $', 'Bud Var %');
   cols.push('T12 avg');
@@ -2807,26 +2767,17 @@ function renderBenchmarkTab() {
       }
       const bgYTD = bgAnnual !== null ? bgAnnual * monthsInYTD / 12 : null;
 
-      // Proforma YTD — prorate annual proforma by months elapsed
       let pfAnnual = null;
       if(hasPF) {
-        function bestPfYTD(pred) {
-          const matches = pf.rows.filter(pred);
-          if(!matches.length) return null;
-          const annual = matches.filter(r=>r.label.toLowerCase().includes('annual') && r.total);
-          if(annual.length) return annual[annual.length-1];
-          return matches.find(r=>r.total) || matches[matches.length-1];
-        }
         let pfRow = null;
-        if(r.isNOI)          pfRow = bestPfYTD(x=>x.isNOI);
-        else if(r.isTotalIncome)  pfRow = bestPfYTD(x=>x.isTotalIncome);
-        else if(r.isTotalExpense) pfRow = bestPfYTD(x=>x.isTotalExpense);
-        else if(r.isNetIncome)    pfRow = bestPfYTD(x=>x.isNetIncome);
+        if(r.isNOI)               pfRow = bestRow(pf.rows.filter(x=>x.isNOI));
+        else if(r.isTotalIncome)  pfRow = bestRow(pf.rows.filter(x=>x.isTotalIncome));
+        else if(r.isTotalExpense) pfRow = bestRow(pf.rows.filter(x=>x.isTotalExpense));
+        else if(r.isNetIncome)    pfRow = bestRow(pf.rows.filter(x=>x.isNetIncome));
         if(pfRow) pfAnnual = pfRow.total;
-        // Derive NOI if missing
         if(r.isNOI && (!pfRow || !pfAnnual)) {
-          const pfInc = bestPfYTD(x=>x.isTotalIncome);
-          const pfExp = bestPfYTD(x=>x.isTotalExpense);
+          const pfInc = bestRow(pf.rows.filter(x=>x.isTotalIncome));
+          const pfExp = bestRow(pf.rows.filter(x=>x.isTotalExpense));
           if(pfInc && pfExp) pfAnnual = pfInc.total - pfExp.total;
         }
       }
@@ -2864,12 +2815,12 @@ function renderRentRollTab() {
     container.innerHTML = `<div class="upload-notice"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg><p>Upload a rent roll file on the Upload tab to view unit-level data here.</p></div>`;
     return;
   }
-  const occupied = rr.units.filter(u=>!u.isVacant).length;
-  const total = rr.units.length;
+  const rrUnits = rr.units.filter(u => !(u.unitType === 'Unknown' && u.marketRent === 0 && u.actualRent === 0));
+  const occupied = rrUnits.filter(u=>!u.isVacant).length;
+  const total = rrUnits.length;
   const occPct = total ? (occupied/total*100).toFixed(1) : 0;
-  const totalMarket = rr.units.reduce((a,u)=>a+u.marketRent,0);
-  const totalActual = rr.units.filter(u=>!u.isVacant).reduce((a,u)=>a+u.actualRent,0);
-  const vacancyLoss = totalMarket - totalActual;
+  const totalMarket = rrUnits.reduce((a,u)=>a+u.marketRent,0);
+  const totalActual = rrUnits.filter(u=>!u.isVacant).reduce((a,u)=>a+u.actualRent,0);
   let html = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
     <div class="kpi-card"><div class="kpi-label">Total units</div><div class="kpi-val">${total}</div></div>
     <div class="kpi-card"><div class="kpi-label">Occupancy</div><div class="kpi-val">${occPct}%</div></div>
@@ -2878,7 +2829,7 @@ function renderRentRollTab() {
   </div>
   <div class="rr-wrap"><table class="rr-table">
   <thead><tr><th>Unit</th><th>Type</th>${rr.system==='appfolio'?'<th>Tier</th>':''}<th>Status</th><th>Market rent</th><th>Actual rent</th><th>vs Market</th></tr></thead><tbody>`;
-  rr.units.forEach(u=>{
+  rrUnits.forEach(u=>{
     const var_ = u.isVacant ? null : u.actualRent - u.marketRent;
     const varCls = var_===null?'':(var_>=0?'val-pos':'val-neg');
     const tierBadge = rr.system==='appfolio' ? `<td><span class="badge ${u.tier==='Full remodel'?'badge-ok':u.tier==='Partial remodel'?'badge-warn':'badge-neutral'}">${u.tier}</span></td>` : '';
@@ -3547,7 +3498,7 @@ function renderPortfolio() {
     else if(dot==='dot-flag') flag++;
   });
 
-  const GROUP_ORDER = ['Point Guard','Kouri','Arrow','RPME','Bender','J&M','Orange'];
+
   const groups = {};
   GROUP_ORDER.forEach(pm => groups[pm] = []);
   properties.forEach(p => {
@@ -3622,7 +3573,7 @@ function exportNotes() {
   lines.push(now.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}));
   lines.push('');
 
-  const GROUP_ORDER = ['Point Guard','Kouri','Arrow','RPME','Bender','J&M','Orange'];
+
 
   // Build list of properties in portfolio order
   const orderedProps = [];
