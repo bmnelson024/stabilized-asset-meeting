@@ -2333,13 +2333,7 @@ function renderBenchmarkTab() {
     const bgAnnual = bgRow ? bgRow.total : null;
 
     let cells = `<td>${r._synthetic ? fmt(actual)+' <span style="font-size:10px;color:var(--text3)">(est)</span>' : fmt(actual)}</td>`;
-    if(hasPF) {
-      const pfMonth = pfAnnual !== null ? pfAnnual/12 : null;
-      const varD = pfMonth !== null ? actual - pfMonth : null;
-      const varPct = pfMonth ? varD/Math.abs(pfMonth)*100 : null;
-      const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
-      cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
-    }
+    // Budget columns
     if(hasBG) {
       const bgMonth = bgAnnual !== null ? bgAnnual/12 : null;
       const varD = bgMonth !== null ? actual - bgMonth : null;
@@ -2347,19 +2341,29 @@ function renderBenchmarkTab() {
       const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
       cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
     }
+    // T12 columns
     const t12Cls = !r._synthetic ? (varGood(t12Var) ? 'val-pos' : 'val-neg') : '';
+    const t12VarPct = (!r._synthetic && t12Avg) ? t12Var/Math.abs(t12Avg)*100 : null;
     cells += `<td class="${t12Cls}">${!r._synthetic?fmt(t12Avg):'—'}</td>`;
     cells += `<td class="${t12Cls}">${!r._synthetic?fmtVar(t12Var):'—'}</td>`;
-    cells += `<td>${prevActual!==null?fmt(prevActual):'—'}</td>`;
+    cells += `<td class="${t12Cls}">${t12VarPct!==null?t12VarPct.toFixed(1)+'%':'—'}</td>`;
+    // Proforma columns
+    if(hasPF) {
+      const pfMonth = pfAnnual !== null ? pfAnnual/12 : null;
+      const varD = pfMonth !== null ? actual - pfMonth : null;
+      const varPct = pfMonth ? varD/Math.abs(pfMonth)*100 : null;
+      const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
+      cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
+    }
     return cells;
   }
 
   // Build header columns
-  const ncols = 1 + 1 + (hasPF?3:0) + (hasBG?3:0) + 3; // label + actual + pf cols + bg cols + t12avg + t12var + prior
+  const ncols = 1 + 1 + (hasBG?3:0) + 3 + (hasPF?3:0); // label + actual + bg cols + t12 cols + pf cols
   let cols = ['Account', `Actual (${selMonth})`];
-  if(hasPF) cols.push(pfYearLabel+' / mo', 'PF Var $', 'PF Var %');
   if(hasBG) cols.push('Budget / mo', 'Bud Var $', 'Bud Var %');
-  cols.push('T12 avg', 'vs T12', 'Prior mo');
+  cols.push('T12 avg', 'T12 Var $', 'T12 Var %');
+  if(hasPF) cols.push(pfYearLabel+' / mo', 'PF Var $', 'PF Var %');
 
   // ── Build section HTML ─────────────────────────────────────────────────────
   function summaryRow(r, key, rowClass, hasSubs, label) {
@@ -2426,8 +2430,8 @@ function renderBenchmarkTab() {
         <thead><tr>
           <th style="text-align:left">Line item</th>
           <th>Actual (${selMonth})</th>
+          <th>T12 avg</th>
           ${hasPF?`<th>${pfYearLabel} / mo</th><th>PF Var $</th><th>PF Var %</th>`:''}
-          <th>T12 avg</th><th>Prior mo</th>
         </tr></thead><tbody>`;
 
       // Helper: get mapped statement labels as array (handles legacy single string)
@@ -2460,8 +2464,8 @@ function renderBenchmarkTab() {
           html += `<tr style="font-weight:500">
             <td>DSCR</td>
             <td class="${dscrCls}">${actualDSCR}x</td>
+            <td>—</td>
             ${hasPF?`<td>${pfDSCR !== '—' ? pfDSCR+'x' : '—'}</td><td>—</td><td>—</td>`:''}
-            <td>—</td><td>—</td>
           </tr>`;
           return;
         }
@@ -2495,11 +2499,10 @@ function renderBenchmarkTab() {
         html += `<tr>
           <td style="padding-left:4px">${item.label}${rowNote}</td>
           <td>${fmt(actual)}</td>
+          <td>${fmt(t12Avg)}</td>
           ${hasPF?`<td>${pfMonth!==null?fmt(pfMonth):'—'}</td>
             <td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td>
             <td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`:''}
-          <td>${fmt(t12Avg)}</td>
-          <td>${prevActual!==null?fmt(prevActual):'—'}</td>
         </tr>`;
       });
 
