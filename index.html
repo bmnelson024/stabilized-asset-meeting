@@ -2203,7 +2203,7 @@ function renderBenchmarkTab() {
   // For seeded proformas always recalculate from purchase date — stored pfYear can be stale
   const pfYear = pf ? (isSeeded ? (getProformaYear(p.purchaseDate) || pf.pfYear || 1)
                                 : (pf.pfYear || getProformaYear(p.purchaseDate) || 1)) : null;
-  const pfYearLabel = pfYear ? `Proforma Year ${pfYear}${isSeeded?' (built-in)':' (monthly avg)'}` : 'Proforma (monthly avg)';
+  const pfYearLabel = pfYear ? `Proforma Yr ${pfYear}` : 'Proforma';
 
   // ── Classify statement rows into four buckets ──────────────────────────────
   // Debt service labels (below NOI in income statement)
@@ -2344,7 +2344,7 @@ function renderBenchmarkTab() {
     // T12 columns
     const t12Cls = !r._synthetic ? (varGood(t12Var) ? 'val-pos' : 'val-neg') : '';
     const t12VarPct = (!r._synthetic && t12Avg) ? t12Var/Math.abs(t12Avg)*100 : null;
-    cells += `<td class="${t12Cls}">${!r._synthetic?fmt(t12Avg):'—'}</td>`;
+    cells += `<td>${!r._synthetic?fmt(t12Avg):'—'}</td>`;
     cells += `<td class="${t12Cls}">${!r._synthetic?fmtVar(t12Var):'—'}</td>`;
     cells += `<td class="${t12Cls}">${t12VarPct!==null?t12VarPct.toFixed(1)+'%':'—'}</td>`;
     // Proforma columns
