@@ -2537,73 +2537,93 @@ function renderBenchmarkTab() {
 
   html += `</tbody></table></div></div>`;
 
-  // ── DSCR row (shown below main table if we have enough data) ─────────────────
-  if(hasPF && d.pfMapping && effectiveDebtSubs.length && anchorNOI) {
-    const actualNOI = anchorNOI.values[monthIdx];
-    const pfNOIRows = pf.rows.filter(r => r.isNOI);
-    const pfNOIRowBest = pfNOIRows.filter(r=>r.label.toLowerCase().includes('annual')&&r.total).pop()
-                      || pfNOIRows.find(r=>r.total) || pfNOIRows[pfNOIRows.length-1] || null;
-    const pfNOI = pfNOIRowBest ? pfNOIRowBest.total / 12 : null;
-    const dsRow = { values: effectiveDebtSubs.reduce((acc,r)=>acc.map((v,i)=>v+r.values[i]), Array(12).fill(0)) };
-    const monthlyDS = dsRow.values[monthIdx];
-    if(monthlyDS) {
-      const actualDSCR = (actualNOI / monthlyDS).toFixed(2);
-      const pfDSCR = pfNOI ? (pfNOI / monthlyDS).toFixed(2) : null;
-      const dscrCls = parseFloat(actualDSCR) >= 1.25 ? 'val-pos' : 'val-neg';
-      const ncols2 = 1 + 1 + (hasBG?3:0) + 1 + (hasPF?3:0);
-      html += `<div class="bench-section">
-        <div class="bench-wrap"><table class="bench-table"><tbody>
-        <tr style="font-weight:500">
-          <td style="min-width:220px">DSCR</td>
-          <td class="${dscrCls}">${actualDSCR}x</td>
-          ${hasBG?`<td>—</td><td>—</td><td>—</td>`:''}
-          <td>—</td>
-          ${hasPF?`<td>${pfDSCR?pfDSCR+'x':'—'}</td><td>—</td><td>—</td>`:''}
-        </tr>
-        </tbody></table></div></div>`;
-    }
-  }
 
-  // ── YTD vs annual budget (kept as-is, collapsed sections not needed here) ──
-  if(hasBG) {
+
+  // ── YTD vs budget and proforma ────────────────────────────────────────────────
+  if(hasBG || hasPF) {
+    const monthsInYTD = monthIdx + 1;
     const KEY_LABELS = ['total operating income','total income','total budgeted operating income',
       'total operating expense','total expense','total budgeted operating expense',
       'total operating expe','noi - net operating income','net operating income',
       'net income','total budgeted income'];
-    const hasPriorYear = bg.rows.some(r=>r.priorActual!==null&&r.priorActual!==undefined);
+
+    // Build header
+    let ytdCols = ['Account', `YTD Actual (${stmt.months[0]} – ${selMonth})`];
+    if(hasBG) ytdCols.push('Budget YTD', 'Bud Var $', 'Bud Var %');
+    if(hasPF) ytdCols.push(`Proforma YTD`, 'PF Var $', 'PF Var %');
+
     html += `<div class="bench-section">
-      <div class="bench-title">YTD actual vs annual budget (${stmt.months[0]} – ${selMonth})</div>
+      <div class="bench-title">YTD actual vs budget &amp; proforma (${stmt.months[0]} – ${selMonth})</div>
       <div class="bench-wrap"><table class="bench-table">
-      <thead><tr><th>Account</th><th>YTD Actual</th><th>Annual Budget</th><th>Budget used %</th><th>Remaining</th>${hasPriorYear?'<th>Prior year actual</th>':''}</tr></thead><tbody>`;
+      <thead><tr>${ytdCols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead><tbody>`;
+
     stmt.rows.forEach(r=>{
       if(r.isCategory) return;
       const lc = r.label.toLowerCase();
       const isKey = KEY_LABELS.some(k=>lc===k||lc.includes(k));
       if(!isKey && !r.isNOI && !r.isTotal) return;
-      const ytd = r.values.slice(0, monthIdx+1).reduce((a,b)=>a+b,0);
-      function ytdBestBg(pred) {
-        const m = bg.rows.filter(pred);
-        return m.find(r=>r.total) || m[m.length-1] || null;
-      }
-      const bgRow = bgMap[lc]
-                 || (r.isNOI ? ytdBestBg(x=>x.isNOI) : null)
-                 || (r.isTotalIncome ? ytdBestBg(x=>x.isTotalIncome) : null)
-                 || (r.isTotalExpense ? ytdBestBg(x=>x.isTotalExpense) : null);
-      const bgAnnual = bgRow ? bgRow.total : null;
-      const pct = bgAnnual ? ytd/bgAnnual*100 : null;
-      const rem = bgAnnual !== null ? bgAnnual - ytd : null;
+
+      const ytd = r.values.slice(0, monthsInYTD).reduce((a,b)=>a+b,0);
       const cls = r.isNOI?'row-noi':r.isTotal?'row-total':'row-subtotal';
       const isExp = r.isTotalExpense || (!r.isTotalIncome && !r.isNOI && lc.includes('expense'));
-      const pctCls = pct!==null ? (isExp?(pct>100?'val-neg':'val-pos'):(pct>100?'val-pos':'val-neg')) : '';
-      const remCls = rem!==null ? (isExp?(rem>=0?'val-pos':'val-neg'):(rem>=0?'val-neg':'val-pos')) : '';
-      const priorActual = bgRow ? bgRow.priorActual : null;
-      html += `<tr class="${cls}">
-        <td>${r.label}</td><td>${fmt(ytd)}</td>
-        <td>${bgAnnual!==null?fmt(bgAnnual):'—'}</td>
-        <td class="${pctCls}">${pct!==null?pct.toFixed(1)+'%':'—'}</td>
-        <td class="${remCls}">${rem!==null?fmtVar(rem):'—'}</td>
-        ${hasPriorYear?`<td>${priorActual!==null?fmt(priorActual):'—'}</td>`:''}
-      </tr>`;
+      const vg = v => isExp ? v <= 0 : v >= 0;
+
+      // Budget YTD — prorate annual budget by months elapsed
+      function ytdBestBg(pred) {
+        const m = bg ? bg.rows.filter(pred) : [];
+        return m.find(r=>r.total) || m[m.length-1] || null;
+      }
+      let bgAnnual = null;
+      if(hasBG) {
+        const bgRow = bgMap[lc]
+                   || (r.isNOI         ? ytdBestBg(x=>x.isNOI)         : null)
+                   || (r.isTotalIncome  ? ytdBestBg(x=>x.isTotalIncome)  : null)
+                   || (r.isTotalExpense ? ytdBestBg(x=>x.isTotalExpense) : null)
+                   || (r.isNetIncome    ? ytdBestBg(x=>x.isNetIncome)    : null);
+        bgAnnual = bgRow ? bgRow.total : null;
+      }
+      const bgYTD = bgAnnual !== null ? bgAnnual * monthsInYTD / 12 : null;
+
+      // Proforma YTD — prorate annual proforma by months elapsed
+      let pfAnnual = null;
+      if(hasPF) {
+        function bestPfYTD(pred) {
+          const matches = pf.rows.filter(pred);
+          if(!matches.length) return null;
+          const annual = matches.filter(r=>r.label.toLowerCase().includes('annual') && r.total);
+          if(annual.length) return annual[annual.length-1];
+          return matches.find(r=>r.total) || matches[matches.length-1];
+        }
+        let pfRow = null;
+        if(r.isNOI)          pfRow = bestPfYTD(x=>x.isNOI);
+        else if(r.isTotalIncome)  pfRow = bestPfYTD(x=>x.isTotalIncome);
+        else if(r.isTotalExpense) pfRow = bestPfYTD(x=>x.isTotalExpense);
+        else if(r.isNetIncome)    pfRow = bestPfYTD(x=>x.isNetIncome);
+        if(pfRow) pfAnnual = pfRow.total;
+        // Derive NOI if missing
+        if(r.isNOI && (!pfRow || !pfAnnual)) {
+          const pfInc = bestPfYTD(x=>x.isTotalIncome);
+          const pfExp = bestPfYTD(x=>x.isTotalExpense);
+          if(pfInc && pfExp) pfAnnual = pfInc.total - pfExp.total;
+        }
+      }
+      const pfYTD = pfAnnual !== null ? pfAnnual * monthsInYTD / 12 : null;
+
+      let rowHtml = `<td>${fmt(ytd)}</td>`;
+      if(hasBG) {
+        const varD = bgYTD !== null ? ytd - bgYTD : null;
+        const varPct = bgYTD ? varD/Math.abs(bgYTD)*100 : null;
+        const vCls = varD !== null ? (vg(varD)?'val-pos':'val-neg') : '';
+        rowHtml += `<td>${bgYTD!==null?fmt(bgYTD):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
+      }
+      if(hasPF) {
+        const varD = pfYTD !== null ? ytd - pfYTD : null;
+        const varPct = pfYTD ? varD/Math.abs(pfYTD)*100 : null;
+        const vCls = varD !== null ? (vg(varD)?'val-pos':'val-neg') : '';
+        rowHtml += `<td>${pfYTD!==null?fmt(pfYTD):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
+      }
+
+      html += `<tr class="${cls}"><td>${r.label}</td>${rowHtml}</tr>`;
     });
     html += `</tbody></table></div></div>`;
   }
