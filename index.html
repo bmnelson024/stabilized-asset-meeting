@@ -2333,7 +2333,7 @@ function renderBenchmarkTab() {
     const bgAnnual = bgRow ? bgRow.total : null;
 
     let cells = `<td>${r._synthetic ? fmt(actual)+' <span style="font-size:10px;color:var(--text3)">(est)</span>' : fmt(actual)}</td>`;
-    // Budget columns
+    // Budget columns — compare current month actual vs budget/mo
     if(hasBG) {
       const bgMonth = bgAnnual !== null ? bgAnnual/12 : null;
       const varD = bgMonth !== null ? actual - bgMonth : null;
@@ -2341,28 +2341,24 @@ function renderBenchmarkTab() {
       const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
       cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
     }
-    // T12 columns
-    const t12Cls = !r._synthetic ? (varGood(t12Var) ? 'val-pos' : 'val-neg') : '';
-    const t12VarPct = (!r._synthetic && t12Avg) ? t12Var/Math.abs(t12Avg)*100 : null;
+    // T12 avg — plain value, no variance coloring
     cells += `<td>${!r._synthetic?fmt(t12Avg):'—'}</td>`;
-    cells += `<td class="${t12Cls}">${!r._synthetic?fmtVar(t12Var):'—'}</td>`;
-    cells += `<td class="${t12Cls}">${t12VarPct!==null?t12VarPct.toFixed(1)+'%':'—'}</td>`;
-    // Proforma columns
+    // Proforma columns — compare T12 avg vs proforma/mo
     if(hasPF) {
       const pfMonth = pfAnnual !== null ? pfAnnual/12 : null;
-      const varD = pfMonth !== null ? actual - pfMonth : null;
-      const varPct = pfMonth ? varD/Math.abs(pfMonth)*100 : null;
-      const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
-      cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
+      const t12VsProforma = (!r._synthetic && pfMonth !== null) ? t12Avg - pfMonth : null;
+      const t12VsPct = (t12VsProforma !== null && pfMonth) ? t12VsProforma/Math.abs(pfMonth)*100 : null;
+      const vCls = t12VsProforma !== null ? (varGood(t12VsProforma)?'val-pos':'val-neg') : '';
+      cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td><td class="${vCls}">${t12VsProforma!==null?fmtVar(t12VsProforma):'—'}</td><td class="${vCls}">${t12VsPct!==null?t12VsPct.toFixed(1)+'%':'—'}</td>`;
     }
     return cells;
   }
 
   // Build header columns
-  const ncols = 1 + 1 + (hasBG?3:0) + 3 + (hasPF?3:0); // label + actual + bg cols + t12 cols + pf cols
+  const ncols = 1 + 1 + (hasBG?3:0) + 1 + (hasPF?3:0); // label + actual + bg cols + t12 avg + pf cols
   let cols = ['Account', `Actual (${selMonth})`];
   if(hasBG) cols.push('Budget / mo', 'Bud Var $', 'Bud Var %');
-  cols.push('T12 avg', 'T12 Var $', 'T12 Var %');
+  cols.push('T12 avg');
   if(hasPF) cols.push(pfYearLabel+' / mo', 'PF Var $', 'PF Var %');
 
   // ── Build section HTML ─────────────────────────────────────────────────────
@@ -2491,18 +2487,18 @@ function renderBenchmarkTab() {
         const pfMonth = pfAnnual !== null ? pfAnnual / 12 : null;
 
         const isExp = !item.isIncome;
-        const varGood = v => isExp ? v <= 0 : v >= 0;
-        const varD = pfMonth !== null ? actual - pfMonth : null;
-        const varPct = pfMonth ? varD/Math.abs(pfMonth)*100 : null;
-        const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
+        const varGoodLI = v => isExp ? v <= 0 : v >= 0;
+        const t12VsProforma = pfMonth !== null ? t12Avg - pfMonth : null;
+        const t12VsPct = (t12VsProforma !== null && pfMonth) ? t12VsProforma/Math.abs(pfMonth)*100 : null;
+        const vCls = t12VsProforma !== null ? (varGoodLI(t12VsProforma)?'val-pos':'val-neg') : '';
 
         html += `<tr>
           <td style="padding-left:4px">${item.label}${rowNote}</td>
           <td>${fmt(actual)}</td>
           <td>${fmt(t12Avg)}</td>
           ${hasPF?`<td>${pfMonth!==null?fmt(pfMonth):'—'}</td>
-            <td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td>
-            <td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`:''}
+            <td class="${vCls}">${t12VsProforma!==null?fmtVar(t12VsProforma):'—'}</td>
+            <td class="${vCls}">${t12VsPct!==null?t12VsPct.toFixed(1)+'%':'—'}</td>`:''}
         </tr>`;
       });
 
