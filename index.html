@@ -239,7 +239,7 @@
             <tr>
               <th>Property</th><th>System</th><th>Status</th>
               <th>Total income / mo</th><th>Total expense / mo</th><th>NOI / mo</th>
-              <th>vs Budget NOI</th><th>Notes</th>
+              <th>NOI vs Budget</th><th>Notes</th>
             </tr>
           </thead>
           <tbody id="portfolio-tbody"></tbody>
@@ -3477,7 +3477,7 @@ function portfolioPropRow(p) {
     const budgetMonthly = budgetNoi / 12;
     const pct = (currentMonthNoi - budgetMonthly) / Math.abs(budgetMonthly) * 100;
     const cls = pct>=0?'val-pos':'val-neg';
-    return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}% cur mo</span>`;
+    return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
   })() : '—';
   const statusBadge = dot==='dot-none'?'<span class="badge badge-neutral">No data</span>':
     dot==='dot-ok'?'<span class="badge badge-ok">On track</span>':
