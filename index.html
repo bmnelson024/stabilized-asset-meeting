@@ -1226,10 +1226,7 @@ function parseBuildiumRentRoll(data) {
     if(unitNum.toLowerCase().includes('total') || unitNum.toLowerCase().includes('grand')) break;
     if(unitNum.toLowerCase() === 'unit') continue; // skip stray header rows
     const bdba = row[4] ? row[4].toString().trim() : '';
-    if(!bdba) continue;
-    // Additional guard: skip rows where the unit number looks like a property name
-    // (contains letters and dashes but no numbers, typical of Buildium group headers)
-    if(!/\d/.test(unitNum)) continue;
+    if(!bdba) continue; // skip property-name group header rows — no Bed/Bath means not a unit
     const tenants = row[1] ? row[1].toString().trim() : '';
     const isVacant = !tenants || tenants.toUpperCase()==='VACANT' || tenants.toLowerCase()==='no tenant';
     const unitType = normalizeUnitType(bdba, 'buildium');
@@ -3302,8 +3299,9 @@ function renderRentProgressionTab() {
     return;
   }
 
-  // Filter out any phantom header rows that slipped through the parser (no digits in unit number)
-  const validUnits = rr.units.filter(u => /\d/.test(u.unitNum));
+  // Filter out phantom header rows that slipped through old parser versions:
+  // real header rows have no rent data at all and an Unknown unit type
+  const validUnits = rr.units.filter(u => !(u.unitType === 'Unknown' && u.marketRent === 0 && u.actualRent === 0));
 
   const hasAnyAcq = Object.keys(acqUnits).length > 0;
   // Only show market rent columns if at least one unit has acq market rent data
