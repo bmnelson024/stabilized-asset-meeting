@@ -238,7 +238,7 @@
           <thead>
             <tr>
               <th>Property</th><th>System</th><th>Status</th>
-              <th>Total income</th><th>Total expense</th><th>NOI (ann.)</th>
+              <th>Total income / mo</th><th>Total expense / mo</th><th>NOI / mo</th>
               <th>vs Budget NOI</th><th>Notes</th>
             </tr>
           </thead>
@@ -3453,7 +3453,7 @@ function portfolioPropRow(p) {
   const budgetNoi = getKeyMetric(p.id,'budget_noi');
   const propNoteCount = notes.filter(n=>n.propId===p.id).length;
 
-  // Compute annualized NOI, income, and expense for display
+  // Compute average monthly NOI, income, and expense
   let annualizedNoi = null;
   let annualizedIncome = null;
   let annualizedExpense = null;
@@ -3464,12 +3464,12 @@ function portfolioPropRow(p) {
     const expRow = stmt.rows.find(r=>r.isTotalExpense);
     const monthsWithData = noiRow ? (noiRow.values.filter(v=>v!==0).length || 1) : 1;
     if(noiRow) {
-      annualizedNoi = (noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData) * 12;
+      annualizedNoi = noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
       const lastIdx = noiRow.values.map((v,i)=>v!==0?i:-1).filter(i=>i>=0).pop() ?? noiRow.values.length-1;
       currentMonthNoi = noiRow.values[lastIdx];
     }
-    if(incRow) annualizedIncome = (incRow.values.reduce((a,b)=>a+b,0) / monthsWithData) * 12;
-    if(expRow) annualizedExpense = (expRow.values.reduce((a,b)=>a+b,0) / monthsWithData) * 12;
+    if(incRow) annualizedIncome = incRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
+    if(expRow) annualizedExpense = expRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
   }
   const noi = annualizedNoi;
 
@@ -3553,16 +3553,16 @@ function renderPortfolio() {
     const hasLoaded = dots.some(d=>d!=='dot-none');
     const summaryDotClass = !hasLoaded ? 'dot-none' : hasFlag ? 'dot-flag' : hasWarn ? 'dot-warn' : 'dot-ok';
     // Group NOI totals — use annualized NOI to match per-property row logic
-    function getAnnualizedNoi(propId) {
+    function getAvgMonthlyNoi(propId) {
       const stmt = (propData[propId]||{}).statement;
       if(!stmt) return 0;
       const noiRow = stmt.rows.find(r=>r.isNOI);
       if(!noiRow) return 0;
       const monthsWithData = noiRow.values.filter(v=>v!==0).length || 1;
-      return (noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData) * 12;
+      return noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
     }
-    const groupNoi = props.reduce((sum,p)=>sum+getAnnualizedNoi(p.id), 0);
-    const groupBgNoi = props.reduce((sum,p)=>{ const n=getKeyMetric(p.id,'budget_noi'); return sum+(n||0); }, 0);
+    const groupNoi = props.reduce((sum,p)=>sum+getAvgMonthlyNoi(p.id), 0);
+    const groupBgNoi = props.reduce((sum,p)=>{ const n=getKeyMetric(p.id,'budget_noi'); return sum+(n?n/12:0); }, 0);
     const groupLoaded = props.filter(p=>propData[p.id]&&propData[p.id].statement).length;
     const groupNoteCount = props.reduce((sum,p)=>sum+notes.filter(n=>n.propId===p.id).length,0);
     const noiVar = groupNoi&&groupBgNoi ? (() => {
