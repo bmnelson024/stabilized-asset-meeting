@@ -938,9 +938,12 @@ function handleUpload(event, propId, fileKey) {
         showAcqColumnMapper(propId, rawData, file.name, allSheets, wb);
         return; // Early return — mapping UI handles the rest
       } else if(fileKey==='proforma') {
-        const sheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('traditional financing')) || wb.SheetNames[0];
+        const sheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('traditional financing'))
+                       || wb.SheetNames.find(s=>s.toLowerCase().includes('pro forma'))
+                       || wb.SheetNames.find(s=>s.toLowerCase().includes('proforma'))
+                       || wb.SheetNames[0];
         const ws = wb.Sheets[sheetName];
-        if(!ws) throw new Error('Could not find "Traditional Financing" sheet in proforma file.');
+        if(!ws) throw new Error('Could not find a proforma sheet in this file.');
         parsed = parseProforma(ws, p.purchaseDate);
         // If all key values are zero (cross-sheet formula refs SheetJS can't evaluate),
         // fall back to parsing the Information Sheet directly
