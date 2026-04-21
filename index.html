@@ -214,7 +214,7 @@
 <body>
 
 <!-- LOGIN SCREEN -->
-<div class="login-screen active" id="login-screen">
+<div class="login-screen" id="login-screen">
   <div class="login-box">
     <h2>Stabilized Asset Meeting</h2>
     <p>Enter your @leavenwealth.com email to receive a sign-in link.</p>
@@ -569,28 +569,44 @@ async function signOut() {
 
 // ─── DATA LAYER ───────────────────────────────────────────────────────────────
 async function save(propId=null) {
-  // Save meta (properties, notes, groupState) always
-  const upserts = [
-    {key:'properties', value:properties},
-    {key:'notes', value:notes},
-    {key:'groups', value:groupOpenState},
-  ];
-  await sb.from('sam_meta').upsert(upserts, {onConflict:'key'});
+  try {
+    // Save meta (properties, notes, groupState) always
+    const upserts = [
+      {key:'properties', value:properties},
+      {key:'notes', value:notes},
+      {key:'groups', value:groupOpenState},
+    ];
+    const {error: metaErr} = await sb.from('sam_meta').upsert(upserts, {onConflict:'key'});
+    if(metaErr) throw metaErr;
 
-  // Save propData — per-property if propId given, otherwise all
-  if(propId) {
-    await sb.from('sam_propdata').upsert(
-      {prop_id:propId, data:propData[propId]||{}},
-      {onConflict:'prop_id'}
-    );
-  } else {
-    const rows = Object.entries(propData).map(([prop_id,data])=>({prop_id,data}));
-    if(rows.length) await sb.from('sam_propdata').upsert(rows, {onConflict:'prop_id'});
+    // Save propData — per-property if propId given, otherwise all
+    if(propId) {
+      const {error: pdErr} = await sb.from('sam_propdata').upsert(
+        {prop_id:propId, data:propData[propId]||{}},
+        {onConflict:'prop_id'}
+      );
+      if(pdErr) throw pdErr;
+    } else {
+      const rows = Object.entries(propData).map(([prop_id,data])=>({prop_id,data}));
+      if(rows.length) {
+        const {error: pdErr} = await sb.from('sam_propdata').upsert(rows, {onConflict:'prop_id'});
+        if(pdErr) throw pdErr;
+      }
+    }
+  } catch(err) {
+    console.error('Save failed:', err);
+    showSaveError();
   }
 }
 
+// Fix #9 - saveGroupState just calls save() with no propId for the meta upsert only
 async function saveGroupState() {
-  await sb.from('sam_meta').upsert({key:'groups', value:groupOpenState},{onConflict:'key'});
+  try {
+    const {error} = await sb.from('sam_meta').upsert({key:'groups', value:groupOpenState},{onConflict:'key'});
+    if(error) throw error;
+  } catch(err) {
+    console.error('saveGroupState failed:', err);
+  }
 }
 
 async function loadFromSupabase() {
@@ -598,6 +614,10 @@ async function loadFromSupabase() {
     sb.from('sam_meta').select('key,value'),
     sb.from('sam_propdata').select('prop_id,data'),
   ]);
+
+  // Fix #5 - check for load errors
+  if(metaRes.error) throw new Error('Failed to load meta: ' + metaRes.error.message);
+  if(pdRes.error) throw new Error('Failed to load property data: ' + pdRes.error.message);
 
   // Unpack meta
   if(metaRes.data) {
@@ -614,41 +634,75 @@ async function loadFromSupabase() {
   }
 }
 
+function showSaveError() {
+  // Show a brief non-blocking toast if a save fails
+  let toast = document.getElementById('save-error-toast');
+  if(!toast) {
+    toast = document.createElement('div');
+    toast.id = 'save-error-toast';
+    toast.style.cssText = 'position:fixed;bottom:20px;right:20px;background:var(--red-bg);border:1px solid var(--red);color:var(--red);padding:10px 16px;border-radius:var(--radius);font-size:13px;z-index:500';
+    toast.textContent = '⚠ Save failed — check your connection';
+    document.body.appendChild(toast);
+  }
+  toast.style.display = 'block';
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => { toast.style.display = 'none'; }, 4000);
+}
+
 // ─── INIT ─────────────────────────────────────────────────────────────────────
+let _loadAndRenderRunning = false; // Fix #2 - prevent double load
+
 async function init() {
-  // Handle magic link token in URL (Supabase puts it in the hash)
-  const hash = window.location.hash;
-  if(hash && (hash.includes('access_token') || hash.includes('error'))) {
-    const {data:{session}, error} = await sb.auth.getSession();
-    if(session) {
-      // Clean the URL so the token doesn't show
-      history.replaceState(null,'',window.location.pathname);
+  // Fix #1 - register auth listener unconditionally BEFORE checking session,
+  // so magic link redirects are handled even on a cold page load
+  sb.auth.onAuthStateChange(async (event, session) => {
+    if(event === 'SIGNED_IN') {
+      document.getElementById('login-screen').classList.remove('active');
+      if(!_loadAndRenderRunning) await loadAndRender();
+    } else if(event === 'SIGNED_OUT') {
+      // Fix #3 - clear in-memory state on sign-out
+      properties = null;
+      propData = {};
+      notes = [];
+      groupOpenState = {};
+      currentPropId = null;
+      document.getElementById('login-screen').classList.add('active');
     }
+  });
+
+  // Handle magic link token in URL hash — Supabase exchanges it automatically
+  // via onAuthStateChange above; just clean the URL if a token is present
+  const hash = window.location.hash;
+  if(hash && hash.includes('access_token')) {
+    history.replaceState(null, '', window.location.pathname);
+    // onAuthStateChange will fire SIGNED_IN and call loadAndRender — return here
+    return;
   }
 
-  // Check auth state
+  // Check for existing session
   const {data:{session}} = await sb.auth.getSession();
   if(!session) {
     document.getElementById('login-screen').classList.add('active');
     return;
   }
+
   document.getElementById('login-screen').classList.remove('active');
-
-  // Listen for auth changes (sign in / sign out)
-  sb.auth.onAuthStateChange(async (event, session) => {
-    if(event === 'SIGNED_IN') {
-      document.getElementById('login-screen').classList.remove('active');
-      await loadAndRender();
-    } else if(event === 'SIGNED_OUT') {
-      document.getElementById('login-screen').classList.add('active');
-    }
-  });
-
   await loadAndRender();
 }
 
 async function loadAndRender() {
-  await loadFromSupabase();
+  _loadAndRenderRunning = true;
+  try {
+    await loadFromSupabase();
+  } catch(err) {
+    // Fix #5 - surface load errors instead of silently seeding fresh data
+    console.error('Load failed:', err);
+    alert('Failed to load data from Supabase: ' + err.message + '\n\nPlease refresh the page.');
+    _loadAndRenderRunning = false;
+    return;
+  }
+
+  let dirty = false; // Fix #10 - only write back if cleanup actually changed something
 
   if(!properties) {
     properties = SEED_PROPERTIES.map((p,i)=>({
@@ -658,6 +712,7 @@ async function loadAndRender() {
       units: p.units||null,
       purchaseDate: p.purchaseDate||null,
     }));
+    dirty = true;
   }
 
   // Always sync seeded property metadata (purchaseDate, units) — self-heals stale data
@@ -665,9 +720,9 @@ async function loadAndRender() {
     const id = 'prop_seed_'+i;
     const existing = properties.find(x=>x.id===id);
     if(existing) {
-      if(!existing.purchaseDate && p.purchaseDate) existing.purchaseDate = p.purchaseDate;
-      if(!existing.units && p.units) existing.units = p.units;
-      if(existing.name !== p.name) existing.name = p.name;
+      if(!existing.purchaseDate && p.purchaseDate) { existing.purchaseDate = p.purchaseDate; dirty = true; }
+      if(!existing.units && p.units) { existing.units = p.units; dirty = true; }
+      if(existing.name !== p.name) { existing.name = p.name; dirty = true; }
     }
   });
 
@@ -680,23 +735,28 @@ async function loadAndRender() {
         delete propData[id].proforma;
         delete propData[id].proforma_filename;
         delete propData[id].pfMapping;
+        dirty = true;
       }
     }
   });
 
-  // Clean up any abandoned acq rent roll raw data
+  // Fix #12 - clean up abandoned acq rent roll raw data (don't persist large intermediate data)
   Object.keys(propData).forEach(id => {
     if(propData[id]._acqRawData || propData[id]._acqRawFilename || propData[id]._acqSheetNames) {
       delete propData[id]._acqRawData;
       delete propData[id]._acqRawFilename;
       delete propData[id]._acqSheetNames;
+      dirty = true;
     }
   });
 
-  await save();
+  // Fix #10 - only write back if something actually changed
+  if(dirty) await save();
+
   const now = new Date();
   document.getElementById('meeting-month').textContent = now.toLocaleDateString('en-US',{month:'long',year:'numeric'});
   renderPortfolio();
+  _loadAndRenderRunning = false;
 }
 
 // ─── PORTFOLIO SEARCH ─────────────────────────────────────────────────────────
@@ -814,9 +874,10 @@ function deleteProperty() {
   properties = properties.filter(x=>x.id!==deletedId);
   delete propData[deletedId];
   notes = notes.filter(n=>n.propId!==deletedId);
-  // Delete from Supabase propdata table and save meta
-  sb.from('sam_propdata').delete().eq('prop_id', deletedId);
-  save(); // fire-and-forget
+  // Fix #6 - delete from Supabase with error handling
+  sb.from('sam_propdata').delete().eq('prop_id', deletedId)
+    .then(({error}) => { if(error) console.error('Failed to delete property data:', error); });
+  save(); // fire-and-forget (saves updated properties + notes meta)
   currentPropId=null;
   showView('portfolio');
 }
@@ -1003,13 +1064,12 @@ function handleUpload(event, propId, fileKey) {
         if(!propData[propId]) propData[propId]={};
         propData[propId][fileKey] = parsed;
         propData[propId][fileKey+'_filename'] = file.name;
-        save(propId); // fire-and-forget
-        // Auto-match proforma to statement if both now present
+        // Fix #7 - auto-match before saving so we only save once
         const pd0 = propData[propId];
         if(pd0.proforma && pd0.statement && !pd0.pfMapping) {
-          propData[propId].pfMapping = autoMatchProformaToStatement(pd0.proforma.rows, pd0.statement.rows, properties.find(x=>x.id===propId)?.system);
-          save(propId); // fire-and-forget
+          propData[propId].pfMapping = autoMatchProformaToStatement(pd0.proforma.rows, pd0.statement.rows, p?.system);
         }
+        save(propId); // fire-and-forget
         const prop = properties.find(x=>x.id===propId);
         renderUploadTab(prop);
         updateDetailBadge();
@@ -1046,7 +1106,8 @@ function handleUpload(event, propId, fileKey) {
         const ws = wb.Sheets[wb.SheetNames[0]];
         parsed = parseRentRoll(ws, p.system);
       } else if(fileKey==='acqrentroll') {
-        // Store raw workbook data and show column mapping UI — don't auto-parse
+        // Store raw workbook data in memory only — don't persist to Supabase
+        // (large intermediate data, cleaned up after mapping is applied)
         const allSheets = wb.SheetNames;
         const ws = wb.Sheets[allSheets[0]];
         const rawData = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
@@ -1054,7 +1115,7 @@ function handleUpload(event, propId, fileKey) {
         propData[propId]._acqRawData = rawData;
         propData[propId]._acqRawFilename = file.name;
         propData[propId]._acqSheetNames = allSheets;
-        save(propId); // fire-and-forget
+        // Fix #12 - intentionally NOT saving here; raw data stays in memory only
         showAcqColumnMapper(propId, rawData, file.name, allSheets, wb);
         return; // Early return — mapping UI handles the rest
       } else if(fileKey==='proforma') {
@@ -1102,23 +1163,20 @@ function handleUpload(event, propId, fileKey) {
       if(!propData[propId]) propData[propId]={};
       propData[propId][fileKey] = parsed;
       propData[propId][fileKey+'_filename'] = file.name;
+      // Fix #7 - auto-match before saving so we only save once
+      const pd2 = propData[propId];
+      if(pd2.proforma && pd2.statement && !pd2.pfMapping) {
+        propData[propId].pfMapping = autoMatchProformaToStatement(pd2.proforma.rows, pd2.statement.rows, p?.system); // Fix #8 - reuse existing p
+      }
       save(propId); // fire-and-forget
-      const prop = properties.find(x=>x.id===propId);
-      renderUploadTab(prop);
+      renderUploadTab(p);
       updateDetailBadge();
       renderStatementTab();
       renderBenchmarkTab();
       renderRentRollTab();
       renderRentProgressionTab();
       renderPortfolio();
-      
-      // Re-run auto-match if we now have both proforma and statement
-      const pd2 = propData[propId]||{};
-      if(pd2.proforma && pd2.statement && !pd2.pfMapping) {
-        propData[propId].pfMapping = autoMatchProformaToStatement(pd2.proforma.rows, pd2.statement.rows, properties.find(x=>x.id===propId)?.system);
-        save(propId); // fire-and-forget
-        renderMappingEditor(propId);
-      } else if(pd2.proforma && pd2.statement) {
+      if(pd2.proforma && pd2.statement) {
         renderMappingEditor(propId);
       }
     } catch(err) {
@@ -3183,13 +3241,13 @@ function acqUpdateSkip(propId, filename, val) {
 }
 
 function cancelAcqMapper(propId) {
-  // Clean up temp raw data (large — don't leave it in Supabase between sessions)
+  // Clean up temp raw data (in-memory only — was never persisted to Supabase)
   if(propData[propId]) {
     delete propData[propId]._acqRawData;
     delete propData[propId]._acqRawFilename;
     delete propData[propId]._acqSheetNames;
   }
-  save(propId); // fire-and-forget
+  // No save needed — raw data was never persisted
   const el = document.getElementById('acq-unit-editor');
   if(el) el.innerHTML = '';
   const d = propData[propId]||{};
