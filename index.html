@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Stabilized Asset Meeting</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   :root{
@@ -192,6 +193,18 @@
   ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 
+  /* LOGIN SCREEN */
+  .login-screen{display:none;position:fixed;inset:0;background:var(--bg);z-index:999;align-items:center;justify-content:center;flex-direction:column}
+  .login-screen.active{display:flex}
+  .login-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:36px;max-width:380px;width:90%;text-align:center}
+  .login-box h2{font-size:18px;font-weight:500;margin-bottom:6px}
+  .login-box p{font-size:13px;color:var(--text3);margin-bottom:24px}
+  .login-input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px;font-family:inherit;background:var(--bg);color:var(--text);margin-bottom:10px;outline:none}
+  .login-input:focus{border-color:var(--blue)}
+  .login-status{font-size:12px;margin-top:10px;min-height:18px}
+  .login-status.ok{color:var(--green)}
+  .login-status.err{color:var(--red)}
+
   /* RENT PROGRESSION */
   .rp-tier-full{background:var(--green-bg);color:var(--green)}
   .rp-tier-partial{background:var(--amber-bg);color:var(--amber)}
@@ -199,6 +212,17 @@
 </style>
 </head>
 <body>
+
+<!-- LOGIN SCREEN -->
+<div class="login-screen active" id="login-screen">
+  <div class="login-box">
+    <h2>Stabilized Asset Meeting</h2>
+    <p>Enter your @leavenwealth.com email to receive a sign-in link.</p>
+    <input class="login-input" type="email" id="login-email" placeholder="you@leavenwealth.com" autocomplete="email">
+    <button class="btn btn-primary" style="width:100%;padding:9px" onclick="sendMagicLink()">Send sign-in link</button>
+    <div class="login-status" id="login-status"></div>
+  </div>
+</div>
 
 <div class="topbar">
   <div class="topbar-left">
@@ -216,6 +240,7 @@
   <div class="topbar-right">
     <button class="btn" onclick="openAddProperty()">+ Add property</button>
     <button class="btn btn-primary" onclick="exportNotes()">Export notes</button>
+    <button class="btn" onclick="signOut()" style="color:var(--text3)">Sign out</button>
   </div>
 </div>
 
@@ -505,25 +530,126 @@ const PM_MAP = {
   'Dundee Village':               'Orange',
 };
 
-// Group open state — persisted in localStorage
-let groupOpenState = JSON.parse(localStorage.getItem('sam_groups') || '{}');
-function saveGroupState() { localStorage.setItem('sam_groups', JSON.stringify(groupOpenState)); }
-let properties = JSON.parse(localStorage.getItem('sam_properties') || 'null');
-let propData = JSON.parse(localStorage.getItem('sam_propdata') || '{}');
-let notes = JSON.parse(localStorage.getItem('sam_notes') || '[]');
+// ─── SUPABASE SETUP ───────────────────────────────────────────────────────────
+const SUPABASE_URL = 'https://beoquaazkkxjisxnmrmg.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJlb3F1YWF6a2t4amlzeG5tcm1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3MTI3MzgsImV4cCI6MjA5MjI4ODczOH0.Cskq3HwXi9qydh0jBV9FerFTcAH1V6IhgHZmYlehdJY';
+const ALLOWED_DOMAIN = 'leavenwealth.com';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let groupOpenState = {};
+let properties = null;
+let propData = {};
+let notes = [];
 let currentPropId = null;
 
 const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const GROUP_ORDER = ['Point Guard','Kouri','Arrow','RPME','Bender','J&M','Orange'];
 
-function save() {
-  localStorage.setItem('sam_properties', JSON.stringify(properties));
-  localStorage.setItem('sam_propdata', JSON.stringify(propData));
-  localStorage.setItem('sam_notes', JSON.stringify(notes));
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+async function sendMagicLink() {
+  const email = document.getElementById('login-email').value.trim().toLowerCase();
+  const status = document.getElementById('login-status');
+  if(!email) { status.className='login-status err'; status.textContent='Please enter your email.'; return; }
+  if(!email.endsWith('@'+ALLOWED_DOMAIN)) {
+    status.className='login-status err';
+    status.textContent='Only @'+ALLOWED_DOMAIN+' email addresses are allowed.';
+    return;
+  }
+  status.className='login-status'; status.textContent='Sending…';
+  const {error} = await sb.auth.signInWithOtp({email, options:{shouldCreateUser:true}});
+  if(error) { status.className='login-status err'; status.textContent='Error: '+error.message; return; }
+  status.className='login-status ok';
+  status.textContent='Check your email for a sign-in link!';
+}
+
+async function signOut() {
+  await sb.auth.signOut();
+  document.getElementById('login-screen').classList.add('active');
+}
+
+// ─── DATA LAYER ───────────────────────────────────────────────────────────────
+async function save(propId=null) {
+  // Save meta (properties, notes, groupState) always
+  const upserts = [
+    {key:'properties', value:properties},
+    {key:'notes', value:notes},
+    {key:'groups', value:groupOpenState},
+  ];
+  await sb.from('sam_meta').upsert(upserts, {onConflict:'key'});
+
+  // Save propData — per-property if propId given, otherwise all
+  if(propId) {
+    await sb.from('sam_propdata').upsert(
+      {prop_id:propId, data:propData[propId]||{}},
+      {onConflict:'prop_id'}
+    );
+  } else {
+    const rows = Object.entries(propData).map(([prop_id,data])=>({prop_id,data}));
+    if(rows.length) await sb.from('sam_propdata').upsert(rows, {onConflict:'prop_id'});
+  }
+}
+
+async function saveGroupState() {
+  await sb.from('sam_meta').upsert({key:'groups', value:groupOpenState},{onConflict:'key'});
+}
+
+async function loadFromSupabase() {
+  const [metaRes, pdRes] = await Promise.all([
+    sb.from('sam_meta').select('key,value'),
+    sb.from('sam_propdata').select('prop_id,data'),
+  ]);
+
+  // Unpack meta
+  if(metaRes.data) {
+    metaRes.data.forEach(row => {
+      if(row.key==='properties') properties = row.value;
+      else if(row.key==='notes') notes = row.value || [];
+      else if(row.key==='groups') groupOpenState = row.value || {};
+    });
+  }
+
+  // Unpack propData
+  if(pdRes.data) {
+    pdRes.data.forEach(row => { propData[row.prop_id] = row.data; });
+  }
 }
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
-function init() {
+async function init() {
+  // Handle magic link token in URL (Supabase puts it in the hash)
+  const hash = window.location.hash;
+  if(hash && (hash.includes('access_token') || hash.includes('error'))) {
+    const {data:{session}, error} = await sb.auth.getSession();
+    if(session) {
+      // Clean the URL so the token doesn't show
+      history.replaceState(null,'',window.location.pathname);
+    }
+  }
+
+  // Check auth state
+  const {data:{session}} = await sb.auth.getSession();
+  if(!session) {
+    document.getElementById('login-screen').classList.add('active');
+    return;
+  }
+  document.getElementById('login-screen').classList.remove('active');
+
+  // Listen for auth changes (sign in / sign out)
+  sb.auth.onAuthStateChange(async (event, session) => {
+    if(event === 'SIGNED_IN') {
+      document.getElementById('login-screen').classList.remove('active');
+      await loadAndRender();
+    } else if(event === 'SIGNED_OUT') {
+      document.getElementById('login-screen').classList.add('active');
+    }
+  });
+
+  await loadAndRender();
+}
+
+async function loadAndRender() {
+  await loadFromSupabase();
+
   if(!properties) {
     properties = SEED_PROPERTIES.map((p,i)=>({
       id: 'prop_seed_'+i,
@@ -534,7 +660,7 @@ function init() {
     }));
   }
 
-  // Always sync seeded property metadata (purchaseDate, units) — self-heals stale localStorage
+  // Always sync seeded property metadata (purchaseDate, units) — self-heals stale data
   SEED_PROPERTIES.forEach((p,i)=>{
     const id = 'prop_seed_'+i;
     const existing = properties.find(x=>x.id===id);
@@ -545,7 +671,7 @@ function init() {
     }
   });
 
-  // One-time purge: remove any seeded proformas left in localStorage from previous versions
+  // One-time purge: remove any seeded proformas from previous versions
   SEED_PROPERTIES.forEach((p,i)=>{
     const id = 'prop_seed_'+i;
     if(propData[id] && propData[id].proforma) {
@@ -558,7 +684,7 @@ function init() {
     }
   });
 
-  // Clean up any abandoned acq rent roll raw data (left if tab was closed mid-mapping)
+  // Clean up any abandoned acq rent roll raw data
   Object.keys(propData).forEach(id => {
     if(propData[id]._acqRawData || propData[id]._acqRawFilename || propData[id]._acqSheetNames) {
       delete propData[id]._acqRawData;
@@ -566,7 +692,8 @@ function init() {
       delete propData[id]._acqSheetNames;
     }
   });
-  save();
+
+  await save();
   const now = new Date();
   document.getElementById('meeting-month').textContent = now.toLocaleDateString('en-US',{month:'long',year:'numeric'});
   renderPortfolio();
@@ -671,7 +798,7 @@ function addProperty() {
   const purchaseDate = document.getElementById('modal-purchase-date').value || null;
   const id = 'prop_'+Date.now();
   properties.push({id,name,system,units,purchaseDate});
-  save();
+  save(); // fire-and-forget
   closeModal();
   document.getElementById('modal-name').value='';
   document.getElementById('modal-units').value='';
@@ -683,10 +810,13 @@ function addProperty() {
 function deleteProperty() {
   const p = properties.find(x=>x.id===currentPropId);
   if(!confirm(`Remove "${p.name}"? This will delete all uploaded data for this property.`)) return;
-  properties = properties.filter(x=>x.id!==currentPropId);
-  delete propData[currentPropId];
-  notes = notes.filter(n=>n.propId!==currentPropId);
-  save();
+  const deletedId = currentPropId;
+  properties = properties.filter(x=>x.id!==deletedId);
+  delete propData[deletedId];
+  notes = notes.filter(n=>n.propId!==deletedId);
+  // Delete from Supabase propdata table and save meta
+  sb.from('sam_propdata').delete().eq('prop_id', deletedId);
+  save(); // fire-and-forget
   currentPropId=null;
   showView('portfolio');
 }
@@ -873,12 +1003,12 @@ function handleUpload(event, propId, fileKey) {
         if(!propData[propId]) propData[propId]={};
         propData[propId][fileKey] = parsed;
         propData[propId][fileKey+'_filename'] = file.name;
-        save();
+        save(propId); // fire-and-forget
         // Auto-match proforma to statement if both now present
         const pd0 = propData[propId];
         if(pd0.proforma && pd0.statement && !pd0.pfMapping) {
           propData[propId].pfMapping = autoMatchProformaToStatement(pd0.proforma.rows, pd0.statement.rows, properties.find(x=>x.id===propId)?.system);
-          save();
+          save(propId); // fire-and-forget
         }
         const prop = properties.find(x=>x.id===propId);
         renderUploadTab(prop);
@@ -924,7 +1054,7 @@ function handleUpload(event, propId, fileKey) {
         propData[propId]._acqRawData = rawData;
         propData[propId]._acqRawFilename = file.name;
         propData[propId]._acqSheetNames = allSheets;
-        save();
+        save(propId); // fire-and-forget
         showAcqColumnMapper(propId, rawData, file.name, allSheets, wb);
         return; // Early return — mapping UI handles the rest
       } else if(fileKey==='proforma') {
@@ -972,7 +1102,7 @@ function handleUpload(event, propId, fileKey) {
       if(!propData[propId]) propData[propId]={};
       propData[propId][fileKey] = parsed;
       propData[propId][fileKey+'_filename'] = file.name;
-      save();
+      save(propId); // fire-and-forget
       const prop = properties.find(x=>x.id===propId);
       renderUploadTab(prop);
       updateDetailBadge();
@@ -986,7 +1116,7 @@ function handleUpload(event, propId, fileKey) {
       const pd2 = propData[propId]||{};
       if(pd2.proforma && pd2.statement && !pd2.pfMapping) {
         propData[propId].pfMapping = autoMatchProformaToStatement(pd2.proforma.rows, pd2.statement.rows, properties.find(x=>x.id===propId)?.system);
-        save();
+        save(propId); // fire-and-forget
         renderMappingEditor(propId);
       } else if(pd2.proforma && pd2.statement) {
         renderMappingEditor(propId);
@@ -1594,7 +1724,7 @@ function parseProforma(ws, purchaseDate) {
 
 function rehydrateProforma(pf, purchaseDate) {
   // Recompute each row's total/values from yearlyTotals using the current pfYear.
-  // Works on a shallow copy of rows to avoid mutating stored localStorage data.
+  // Works on a shallow copy of rows to avoid mutating stored data.
   if(!pf || !pf.rows) return pf;
   const pfYear = getProformaYear(purchaseDate) || pf.pfYear || 1;
   if(pf.pfYear === pfYear && pf.rows.every(r => !r.yearlyTotals)) return pf; // nothing to rehydrate
@@ -2150,7 +2280,7 @@ function saveDebtServiceOverride(propId, field, val) {
   const num = parseFloat(val)||0;
   if(num) propData[propId].debtServiceOverride[field] = num;
   else delete propData[propId].debtServiceOverride[field];
-  save();
+  save(propId); // fire-and-forget
   // Refresh the upload tab card to update totals and badge
   const p = properties.find(x=>x.id===propId);
   if(p) renderUploadTab(p);
@@ -2170,7 +2300,7 @@ function renderMappingEditor(propId) {
   // Auto-match if no mapping saved yet
   if(!d.pfMapping) {
     propData[propId].pfMapping = autoMatchProformaToStatement(pf.rows, stmt.rows, p?.system);
-    save();
+    save(propId); // fire-and-forget
   }
   const mapping = d.pfMapping || {};
 
@@ -2290,7 +2420,7 @@ function savePfMappingByGroup(propId, group, stmtLabel) {
   if(!propData[propId].pfMapping) propData[propId].pfMapping={};
   if(stmtLabel) propData[propId].pfMapping[group] = [stmtLabel];
   else delete propData[propId].pfMapping[group];
-  save();
+  save(propId); // fire-and-forget
   renderMappingEditor(propId);
   renderBenchmarkTab();
 }
@@ -2304,7 +2434,7 @@ function resetPfMapping(propId) {
   const _prop = properties.find(x=>x.id===propId);
   const rawMatches = autoMatchProformaToStatement(d.proforma.rows, d.statement.rows, _prop?.system);
   propData[propId].pfMapping = rawMatches;
-  save();
+  save(propId); // fire-and-forget
   renderMappingEditor(propId);
   renderBenchmarkTab();
 }
@@ -3053,13 +3183,13 @@ function acqUpdateSkip(propId, filename, val) {
 }
 
 function cancelAcqMapper(propId) {
-  // Clean up temp raw data (also clears sheet names to avoid localStorage bloat)
+  // Clean up temp raw data (large — don't leave it in Supabase between sessions)
   if(propData[propId]) {
     delete propData[propId]._acqRawData;
     delete propData[propId]._acqRawFilename;
     delete propData[propId]._acqSheetNames;
   }
-  save();
+  save(propId); // fire-and-forget
   const el = document.getElementById('acq-unit-editor');
   if(el) el.innerHTML = '';
   const d = propData[propId]||{};
@@ -3127,12 +3257,12 @@ function applyAcqMapping(propId, filename) {
     imported++;
   });
 
-  // Clean up temp state (clear raw data to avoid localStorage bloat)
+  // Clean up temp state (large raw data — don't persist in Supabase)
   delete propData[propId]._acqRawData;
   delete propData[propId]._acqRawFilename;
   delete propData[propId]._acqSheetNames;
   propData[propId]['acqrentroll_filename'] = filename;
-  save();
+  save(propId); // fire-and-forget
 
   if(window._acqMapperState) delete window._acqMapperState[propId];
 
@@ -3225,7 +3355,7 @@ function saveAcqUnit(propId, unitNum, field, val, unitType, tier) {
   if(!propData[propId].acqUnits) propData[propId].acqUnits={};
   if(!propData[propId].acqUnits[unitNum]) propData[propId].acqUnits[unitNum]={unitType, tier};
   propData[propId].acqUnits[unitNum][field] = parseFloat(val)||0;
-  save();
+  save(propId); // fire-and-forget
   renderRentProgressionTab();
 }
 
@@ -3235,7 +3365,7 @@ function clearAcqUnits(propId) {
     delete propData[propId].acqUnits;
     delete propData[propId]['acqrentroll_filename'];
   }
-  save();
+  save(propId); // fire-and-forget
   renderUploadTab(properties.find(x=>x.id===propId));
   renderRentProgressionTab();
 }
@@ -3381,13 +3511,13 @@ function addNote(type) {
   if(!text) { alert('Please type a note first.'); return; }
   notes.push({propId:currentPropId, type, text, ts:Date.now()});
   document.getElementById('note-input').value='';
-  save();
+  save(); // fire-and-forget (notes are in meta)
   renderNotesTab();
 }
 
 function deleteNote(ts) {
   notes = notes.filter(n => n.ts !== ts);
-  save();
+  save(); // fire-and-forget
   renderNotesTab();
 }
 
@@ -3471,7 +3601,7 @@ function portfolioPropRow(p) {
 
 function togglePortfolioGroup(pm) {
   groupOpenState[pm] = !groupOpenState[pm];
-  saveGroupState();
+  saveGroupState(); // fire-and-forget async — no need to await for UI
   // Update the portfolio table in-place without full re-render
   const tbody = document.getElementById('portfolio-tbody');
   const isOpen = !!groupOpenState[pm];
@@ -3627,6 +3757,7 @@ function fmtVar(v) {
 document.addEventListener('keydown', e=>{
   if(e.key==='Escape') { closeModal(); }
   if(e.key==='Enter' && document.getElementById('modal-add').classList.contains('open')) { addProperty(); }
+  if(e.key==='Enter' && document.getElementById('login-screen').classList.contains('active')) { sendMagicLink(); }
 });
 
 init();
