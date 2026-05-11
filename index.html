@@ -1881,52 +1881,84 @@ function parseProforma(ws, purchaseDate) {
   const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
   const pfYear = getProformaYear(purchaseDate) || 1;
 
+  // ── Find year header row ──────────────────────────────────────────────────
+  // Standard template: "1" in column C (index 2)
+  // Institutional template (e.g. BG Flats): consecutive integers 0,1,2,3 starting anywhere
   let yearRow = -1;
-  for(let i=0;i<10;i++) {
-    if(data[i] && data[i][2] && data[i][2].toString().trim()==='1') { yearRow=i; break; }
+  for(let i=0; i<20; i++) {
+    const row = data[i];
+    if(!row) continue;
+    // Standard: "1" in column C
+    if(row[2] && row[2].toString().trim() === '1') { yearRow = i; break; }
+    // Flexible: find consecutive integer sequence (0,1,2 or 1,2,3) anywhere in the row
+    for(let ci=0; ci < row.length - 2; ci++) {
+      const v = row[ci];
+      if(v === null || v === undefined) continue;
+      const n = parseInt(v);
+      if((n === 0 || n === 1) && String(n) === String(v)) {
+        const n1 = parseInt(row[ci+1]); const n2 = parseInt(row[ci+2]);
+        if(n1 === n+1 && n2 === n+2) { yearRow = i; break; }
+      }
+    }
+    if(yearRow >= 0) break;
   }
-  if(yearRow<0) throw new Error('Could not find year header row in proforma. Expected row with "1" in column C.');
+  if(yearRow < 0) throw new Error('Could not find year header row in proforma. Expected row with "1" in column C.');
 
-  // Detect how many years are in the file and their column positions
-  // Year header row has values like 1,2,2,3,3,4,4... — find all unique years and their first (non-zero) column
-  const yearCols = {}; // yearNum -> colIndex with actual data
+  // ── Detect label column ───────────────────────────────────────────────────
+  // The leftmost column (within the first 4) that has text labels in data rows
+  let labelCol = 2; // default: column C
+  for(let i=yearRow+1; i<Math.min(yearRow+10, data.length); i++) {
+    const row = data[i];
+    if(!row) continue;
+    const found = row.findIndex((v, ci) => ci <= 3 && v && typeof v === 'string' && v.trim().length > 2);
+    if(found >= 0) { labelCol = found; break; }
+  }
+
+  // ── Build yearCols ────────────────────────────────────────────────────────
+  const yearCols = {};
   const headerRow = data[yearRow];
-  for(let ci=2; ci<headerRow.length; ci++) {
+  for(let ci=0; ci<headerRow.length; ci++) {
     const h = headerRow[ci];
     if(h === null || h === undefined) continue;
     const yr = parseInt(h);
     if(isNaN(yr) || yr < 1 || yr > 20) continue;
-    if(!(yr in yearCols)) yearCols[yr] = ci; // first column for this year (often zero — see below)
+    if(!(yr in yearCols)) yearCols[yr] = ci;
   }
-  // For each year, find which of its two columns has actual data (non-zero in first data rows)
-  // Only shift to baseCol+1 if (a) it has data AND (b) the year header row also marks it as the same year
+
+  // ── Determine value type ──────────────────────────────────────────────────
+  // If year 1 is far from the label column (institutional format), values are already annual.
+  // Standard template has year 1 at column 2-3; institutional has it at column 5+.
+  const year1Col = yearCols[1] || labelCol + 1;
+  const isAnnualValues = year1Col > 4;
+
+  // ── Resolve actual data column per year (standard template may have paired cols) ──
   const yearHeaderRow = data[yearRow] || [];
   const yearDataCols = {};
   Object.keys(yearCols).forEach(yr => {
     const baseCol = yearCols[yr];
     let col = baseCol;
-    let v0Count = 0, v1Count = 0;
-    for(let i=yearRow+1; i<Math.min(yearRow+15, data.length); i++) {
-      const row = data[i];
-      if(!row || !row[1]) continue;
-      const v0 = parseFloat(row[baseCol]) || 0;
-      const v1 = parseFloat(row[baseCol+1]) || 0;
-      if(v0 !== 0) v0Count++;
-      if(v1 !== 0) v1Count++;
+    if(!isAnnualValues) {
+      let v0Count = 0, v1Count = 0;
+      for(let i=yearRow+1; i<Math.min(yearRow+15, data.length); i++) {
+        const row = data[i];
+        if(!row || !row[labelCol]) continue;
+        const v0 = parseFloat(row[baseCol]) || 0;
+        const v1 = parseFloat(row[baseCol+1]) || 0;
+        if(v0 !== 0) v0Count++;
+        if(v1 !== 0) v1Count++;
+      }
+      const nextColSameYear = String(yearHeaderRow[baseCol+1]) === String(yr);
+      if(v0Count === 0 && v1Count > 0 && nextColSameYear) col = baseCol + 1;
+      else if(v0Count > 0) col = baseCol;
     }
-    // Only pick baseCol+1 if it has more non-zero values and the year header confirms same year
-    const nextColSameYear = String(yearHeaderRow[baseCol+1]) === String(yr);
-    if(v0Count === 0 && v1Count > 0 && nextColSameYear) col = baseCol + 1;
-    else if(v0Count > 0) col = baseCol;
     yearDataCols[yr] = col;
   });
 
-  // Section tracking — are we in income or expense?
+  // ── Section tracking ──────────────────────────────────────────────────────
   let inExpenseSection = false;
   let pastNOI = false;
   const rows = [];
 
-  // Labels that are always key rows regardless of value
   const KEY_LABEL_PATTERNS = [
     'total annual operating income', 'total annual operating expense',
     'annual net operating income', 'net operating income (noi)',
@@ -1934,37 +1966,43 @@ function parseProforma(ws, purchaseDate) {
     'monthly operating expense', 'total operating income', 'total operating expense',
     'annual interest', 'annual principal', 'total annual debt service',
     'total monthly cash flow', 'total annual cash flow',
+    // Institutional format labels
+    'effective gross income', 'effective rental income',
+    'total expenses', 'debt service', 'cash flow after debt service',
     'net income', 'cash flow',
   ];
 
-  for(let i=yearRow+1;i<data.length;i++) {
+  for(let i=yearRow+1; i<data.length; i++) {
     const row = data[i];
-    if(!row || !row[1]) continue;
-    const rawLabel = row[1].toString().trim();
-    if(!rawLabel) continue;
-    if(rawLabel.startsWith('=')) continue;
+    if(!row || !row[labelCol]) continue;
+    const rawLabel = row[labelCol].toString().trim();
+    if(!rawLabel || rawLabel.startsWith('=')) continue;
     const lc = rawLabel.toLowerCase();
 
-    // Use current pfYear column for determining if row has data / is key row
-    const targetCol = yearDataCols[pfYear] || (2 + (pfYear-1)*2);
+    const targetCol = yearDataCols[pfYear] || year1Col;
     const rawVal = parseFloat(row[targetCol]) || 0;
     const val = Math.abs(rawVal);
     const isKeyLabel = KEY_LABEL_PATTERNS.some(k => lc.includes(k));
     if(!val && !isKeyLabel) continue;
 
-    const isNOI         = lc.includes('annual net operating income') || lc.includes('net operating income (noi)')
-                       || lc === 'net operating income' || lc === 'noi'
-                       || (lc.includes('net operating income') && !lc.includes('total'));
+    const isNOI = lc.includes('annual net operating income') || lc.includes('net operating income (noi)')
+               || lc === 'net operating income' || lc === 'noi'
+               || (lc.includes('net operating income') && !lc.includes('total'));
     const isTotalIncome = lc.includes('total annual operating income') || lc === 'total operating income'
-                       || lc === 'total annual income' || lc.includes('gross monthly operating income');
-    const isTotalExpense= lc.includes('total annual operating expense') || lc.includes('total operating expense')
-                       || lc.includes('total annual expense') || lc.includes('monthly operating expense');
+                       || lc === 'total annual income' || lc.includes('gross monthly operating income')
+                       || lc.includes('effective gross income') || lc.includes('effective rental income');
+    const isTotalExpense = lc.includes('total annual operating expense') || lc.includes('total operating expense')
+                       || lc.includes('total annual expense') || lc.includes('monthly operating expense')
+                       || lc === 'total expenses';
     const isMonthlyExpenseTotal = lc.includes('monthly operating expense') && i > yearRow + 5;
     const isMonthlyIncomeTotal  = lc === 'gross monthly operating income' || lc === 'total operating income' || lc === 'total annual income';
-    const isDebtService = lc.includes('annual interest') || lc.includes('annual principal') || lc.includes('total annual debt service') || lc.includes('monthly mortgage');
-    const isMonthlyDebtService = lc.includes('monthly mortgage'); // monthly value, needs × 12
-    const isNetIncome   = !isNOI && !isDebtService && (
+    const isDebtService = lc.includes('annual interest') || lc.includes('annual principal')
+                       || lc.includes('total annual debt service') || lc.includes('monthly mortgage')
+                       || lc === 'debt service';
+    const isMonthlyDebtService = lc.includes('monthly mortgage');
+    const isNetIncome = !isNOI && !isDebtService && (
       lc.includes('total annual cash flow') || lc.includes('total monthly cash flow') ||
+      lc.includes('cash flow after debt service') ||
       lc.includes('net income') || (lc.includes('cash flow') && !lc.includes('operating'))
     );
 
@@ -1976,13 +2014,15 @@ function parseProforma(ws, purchaseDate) {
     const isTotal = isTotalIncome || isTotalExpense;
     const isLineItem = !isNOI && !isTotal && !isMonthlyIncomeTotal && !isMonthlyExpenseTotal && !isDebtService && !isNetIncome;
 
-    // Build yearlyTotals — annualized value for each year in the file
-    // Debt service rows are annual EXCEPT 'monthly mortgage' which is monthly and needs × 12
     const yearlyTotals = {};
     Object.keys(yearDataCols).forEach(yr => {
       const col = yearDataCols[yr];
       const v = Math.abs(parseFloat(row[col]) || 0);
-      const annualized = (isNOI || isTotal || isNetIncome || (isDebtService && !isMonthlyDebtService)) ? v : v * 12;
+      // Annual-value sheets: all values already annual, no multiplication needed.
+      // Monthly-value sheets: line items are monthly and need × 12; totals/NOI are already annual.
+      const annualized = isAnnualValues
+        ? v
+        : ((isNOI || isTotal || isNetIncome || (isDebtService && !isMonthlyDebtService)) ? v : v * 12);
       yearlyTotals[yr] = annualized;
     });
 
@@ -1995,7 +2035,7 @@ function parseProforma(ws, purchaseDate) {
       level: (isTotal || isNOI || isNetIncome || isDebtService) ? 0 : 1,
       isExpenseLine: inExpenseSection && isLineItem,
       isIncomeLine: !inExpenseSection && isLineItem && !pastNOI,
-      yearlyTotals,  // store all years for dynamic year selection
+      yearlyTotals,
       total: annualVal,
       values: Array(12).fill(annualVal / 12),
     });
