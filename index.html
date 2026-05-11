@@ -1308,6 +1308,8 @@ function handleUpload(event, propId, fileKey) {
         return; // Early return — mapping UI handles the rest
       } else if(fileKey==='proforma') {
         const sheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('traditional financing'))
+                       || wb.SheetNames.find(s=>s.toLowerCase() === 'annual pro forma')
+                       || wb.SheetNames.find(s=>s.toLowerCase().includes('annual pro forma'))
                        || wb.SheetNames.find(s=>s.toLowerCase().includes('pro forma'))
                        || wb.SheetNames.find(s=>s.toLowerCase().includes('proforma'))
                        || wb.SheetNames[0];
@@ -1394,9 +1396,20 @@ function parseAppfolio(ws) {
     if(!h) return;
     const hs = h.toString().trim();
     if(hs === 'Total') { totalCol = ci; return; }
-    if(ci > 0 && hs !== 'Account Name' && hs !== 'Percent' && hs !== 'Total' && !hs.includes('%')) {
-      months.push(hs);
-      monthCols.push(ci);
+    if(ci > 0) {
+      // Only accept date-like headers; normalize full names → 3-letter abbreviation
+      const FULL_MO = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+      let monthLabel = null;
+      if(hs.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}$/)) {
+        monthLabel = hs; // already "Apr 2026"
+      } else {
+        const fm = hs.match(/^([A-Za-z]+)\s+(\d{4})$/);
+        if(fm) {
+          const mi = FULL_MO.findIndex(m => m.toLowerCase() === fm[1].toLowerCase());
+          if(mi >= 0) monthLabel = MONTH_NAMES[mi] + ' ' + fm[2]; // "April 2026" → "Apr 2026"
+        }
+      }
+      if(monthLabel) { months.push(monthLabel); monthCols.push(ci); }
     }
   });
   // Fallback: if no explicit Total column, use last column
@@ -2957,7 +2970,7 @@ function renderBenchmarkTab() {
     const actual = r.values[mi];
     const t12Avg = r.values.reduce((a,b)=>a+b,0) / r.values.length;
     const t12Var = actual - t12Avg;
-    const isExp = r.isTotalExpense || r.isDebtService;
+    const isExp = r.isTotalExpense || r.isDebtService || r.isExpenseLine;
     const varGood = v => isExp ? v <= 0 : v >= 0;
 
     let pfAnnual = r._pfAnnual !== undefined ? r._pfAnnual : null;
