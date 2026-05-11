@@ -961,7 +961,7 @@ function renderUploadTab(p) {
   const acqSlotIcon = acqPending ? '⚠' : acqImported ? '✓' : '↑';
   document.getElementById('acq-rr-upload-grid').innerHTML = `
     <label class="upload-slot ${acqSlotHasFile?'has-file':''}" style="${acqPending?'border-color:var(--amber);background:var(--amber-bg)':''}">
-      <input type="file" accept=".xlsx,.xls,.pdf" onchange="handleUpload(event,'${p.id}','acqrentroll')">
+      <input type="file" accept=".xlsx,.xls,.xlsm,.pdf" onchange="handleUpload(event,'${p.id}','acqrentroll')">
       <div class="upload-slot-icon" style="${acqPending?'color:var(--amber)':''}">${acqSlotIcon}</div>
       <div class="upload-slot-label" style="${acqPending?'color:var(--amber)':''}">Acquisition rent roll</div>
       <div class="upload-slot-sub">${acqSlotSub}</div>
@@ -1104,7 +1104,7 @@ function uploadSlot(f, d, propId, type) {
   const savedLabel = hasFile
     ? (isSeeded ? `Year ${d[f.key].pfYear} — built in (upload to override)` : (d[f.key+'_filename']||'File loaded'))
     : f.sub;
-  const accept = f.key==='proforma' ? '.xlsx,.xls,.csv' : '.xlsx,.xls';
+  const accept = f.key==='proforma' ? '.xlsx,.xls,.xlsm,.csv' : '.xlsx,.xls,.xlsm';
   const slotHtml = `<label class="upload-slot ${hasFile?'has-file':''}" style="display:block">
     <input type="file" accept="${accept}" onchange="handleUpload(event,'${propId}','${f.key}')">
     <div class="upload-slot-icon">${hasFile?'✓':'↑'}</div>
@@ -1556,11 +1556,35 @@ function parseRentRoll(ws, system) {
 }
 
 function parseAppfolioRentRoll(data) {
+  // Find header row — look for "Unit" in col 0 and "BD/BA" anywhere in the row
   let headerRow = -1;
   for(let i=0;i<data.length;i++){
-    if(data[i] && data[i][0]==='Unit' && data[i][2]==='BD/BA') { headerRow=i; break; }
+    const row = data[i];
+    if(row && row[0]==='Unit' && row.some(c=>c==='BD/BA')) { headerRow=i; break; }
   }
   if(headerRow<0) throw new Error('Could not find rent roll header row in Appfolio file.');
+
+  // Detect column positions dynamically from the header row
+  const hdr = data[headerRow].map(c => (c||'').toString().trim().toLowerCase());
+  const bdbaCol      = hdr.indexOf('bd/ba');
+  const statusCol    = hdr.findIndex(h => h==='status');
+  const sqftCol      = hdr.findIndex(h => h==='sqft' || h==='sq ft' || h==='square feet');
+  // Market rent: prefer "computed market rent" then "market rent"
+  const marketCol    = (() => {
+    let idx = hdr.findIndex(h => h.includes('computed market') || h==='market rent');
+    if(idx < 0) idx = hdr.findIndex(h => h.includes('market'));
+    return idx;
+  })();
+  // Actual rent: "rent" column (but not "market rent" or "computed")
+  const actualCol    = (() => {
+    let idx = hdr.findIndex(h => h==='rent');
+    if(idx < 0) idx = hdr.findIndex(h => h.includes('rent') && !h.includes('market') && !h.includes('computed'));
+    return idx;
+  })();
+  // Tags column: typically the column between Unit and BD/BA in the old format
+  // In newer format there may be no tags column — fall back to -1
+  const tagsCol      = bdbaCol > 1 ? bdbaCol - 1 : -1;
+
   const units = [];
   for(let i=headerRow+1;i<data.length;i++){
     const row = data[i];
@@ -1568,22 +1592,22 @@ function parseAppfolioRentRoll(data) {
     const unitNum = row[0].toString().trim();
     if(!unitNum) continue;
     const lcu = unitNum.toLowerCase();
-    if(lcu === 'unit') continue; // skip stray header rows
-    // Stop only at grand total; skip intermediate building/floor subtotals
+    if(lcu === 'unit') continue;
     if(lcu === 'grand total' || lcu === 'totals') break;
     if(lcu.includes('total')) continue;
-    // Every valid unit must have a BD/BA value — this filters out property name
-    // header rows and any totals/summary rows that slipped through the checks above
-    const bdba = row[2] ? row[2].toString().trim() : '';
+    if(/^\d+\s+units?$/i.test(unitNum)) continue;
+    if(unitNum.length > 25 && !/^\w[\w\-]*\d/.test(unitNum)) continue;
+    // Must have a BD/BA value to be a real unit
+    const bdba = bdbaCol >= 0 && row[bdbaCol] ? row[bdbaCol].toString().trim() : '';
     if(!bdba) continue;
-    const unitType = normalizeUnitType(bdba, 'appfolio');
-    const tags = row[1] ? row[1].toString() : '';
-    const tier = normalizeRenovTier(tags);
-    const status = row[4] ? row[4].toString() : '';
-    const isVacant = status.toLowerCase().includes('vacant');
-    const marketRent = parseFloat(row[6]) || 0;
-    const actualRent = parseFloat(row[7]) || 0;
-    const sqft = parseInt(row[5]) || 0;
+    const unitType  = normalizeUnitType(bdba, 'appfolio');
+    const tags      = tagsCol >= 0 && row[tagsCol] ? row[tagsCol].toString() : '';
+    const tier      = normalizeRenovTier(tags);
+    const status    = statusCol >= 0 && row[statusCol] ? row[statusCol].toString() : '';
+    const isVacant  = status.toLowerCase().includes('vacant');
+    const marketRent= marketCol >= 0 ? parseFloat(row[marketCol]) || 0 : 0;
+    const actualRent= actualCol >= 0 ? parseFloat(row[actualCol]) || 0 : 0;
+    const sqft      = sqftCol  >= 0 ? parseInt(row[sqftCol])  || 0 : 0;
     units.push({unitNum, unitType, tier, isVacant, marketRent, actualRent, sqft, status, tags});
   }
   return {units, system:'appfolio'};
