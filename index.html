@@ -6,6 +6,14 @@
 <title>Stabilized Asset Meeting</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  // Set PDF.js worker before any usage
+  if (window.pdfjsLib) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+</script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   :root{
@@ -929,12 +937,12 @@ function renderUploadTab(p) {
   const acqPending  = !!d._acqRawFilename;
   const acqSlotSub  = acqPending ? 'File loaded — finish mapping below' :
                       acqImported ? (d['acqrentroll_filename'] || 'File loaded') :
-                      'Upload any .xlsx/.xls — column mapper will appear';
+                      'Upload .xlsx/.xls or .pdf — column mapper will appear';
   const acqSlotHasFile = acqImported || acqPending;
   const acqSlotIcon = acqPending ? '⚠' : acqImported ? '✓' : '↑';
   document.getElementById('acq-rr-upload-grid').innerHTML = `
     <label class="upload-slot ${acqSlotHasFile?'has-file':''}" style="${acqPending?'border-color:var(--amber);background:var(--amber-bg)':''}">
-      <input type="file" accept=".xlsx,.xls" onchange="handleUpload(event,'${p.id}','acqrentroll')">
+      <input type="file" accept=".xlsx,.xls,.pdf" onchange="handleUpload(event,'${p.id}','acqrentroll')">
       <div class="upload-slot-icon" style="${acqPending?'color:var(--amber)':''}">${acqSlotIcon}</div>
       <div class="upload-slot-label" style="${acqPending?'color:var(--amber)':''}">Acquisition rent roll</div>
       <div class="upload-slot-sub">${acqSlotSub}</div>
@@ -1077,6 +1085,84 @@ function uploadSlot(f, d, propId, type) {
   </div>`;
 }
 
+// ─── PDF TEXT EXTRACTION (for acquisition rent rolls) ────────────────────────
+// Extracts text from a PDF using PDF.js and returns a 2D array (rows of cells)
+// compatible with the existing column mapper UI.
+async function extractPdfToRows(file) {
+  if (!window.pdfjsLib) throw new Error('PDF.js library not loaded — please refresh and try again.');
+
+  // Ensure worker is configured (may not have been set at load time if script was still loading)
+  if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const allRows = [];
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const textContent = await page.getTextContent();
+
+    // Collect positioned text items, skip whitespace-only strings
+    const items = textContent.items
+      .filter(item => item.str && item.str.trim().length > 0)
+      .map(item => ({
+        str: item.str.trim(),
+        x: item.transform[4],
+        y: item.transform[5],
+        w: item.width || 0,
+      }));
+
+    if (!items.length) continue;
+
+    // Group items into rows by y-coordinate (PDF origin = bottom-left, so y is
+    // distance from bottom; items on the same visual line have similar y values)
+    const rowBuckets = [];
+    items.forEach(item => {
+      const existing = rowBuckets.find(b => Math.abs(b.y - item.y) <= 4);
+      if (existing) {
+        existing.items.push(item);
+      } else {
+        rowBuckets.push({ y: item.y, items: [item] });
+      }
+    });
+
+    // Sort rows top-to-bottom (y descending — larger y = higher on page in PDF coords)
+    rowBuckets.sort((a, b) => b.y - a.y);
+
+    rowBuckets.forEach(bucket => {
+      // Sort items left-to-right within the row
+      bucket.items.sort((a, b) => a.x - b.x);
+
+      // Split into cells: if horizontal gap from end of last item to start of
+      // next exceeds threshold, it's a new column. Threshold of 18pt works well
+      // for typical rent roll column layouts (~6mm gap).
+      const cells = [];
+      let curCell = '';
+      let curEndX = null;
+
+      bucket.items.forEach(item => {
+        const gap = curEndX !== null ? item.x - curEndX : 0;
+        if (curEndX === null || gap < 18) {
+          curCell += (curCell ? ' ' : '') + item.str;
+        } else {
+          cells.push(curCell);
+          curCell = item.str;
+        }
+        // Estimate right edge: use actual width if available, else ~5.5px per char
+        curEndX = item.x + (item.w > 0 ? item.w : item.str.length * 5.5);
+      });
+      if (curCell) cells.push(curCell);
+
+      if (cells.some(c => c.trim())) allRows.push(cells);
+    });
+  }
+
+  return allRows;
+}
+
 function handleUpload(event, propId, fileKey) {
   const file = event.target.files[0];
   if(!file) return;
@@ -1124,6 +1210,31 @@ function handleUpload(event, propId, fileKey) {
     };
     reader.readAsText(file);
     return;
+  }
+
+  // PDF path — only for acquisition rent roll
+  if(fileKey === 'acqrentroll' && file.name.toLowerCase().endsWith('.pdf')) {
+    // Show a loading indicator in the mapper area while extracting
+    const mapperEl = document.getElementById('acq-unit-editor');
+    if(mapperEl) mapperEl.innerHTML = `<div style="padding:16px;color:var(--text2);font-size:13px">Reading PDF… <span style="color:var(--text3)">this may take a few seconds</span></div>`;
+
+    extractPdfToRows(file).then(rawData => {
+      if(!rawData.length) {
+        if(mapperEl) mapperEl.innerHTML = '';
+        alert('Could not extract any text from this PDF.\n\nIt may be a scanned image. Try converting it to Excel first using Adobe Acrobat or Smallpdf.');
+        return;
+      }
+      if(!propData[propId]) propData[propId]={};
+      propData[propId]._acqRawData = rawData;
+      propData[propId]._acqRawFilename = file.name;
+      propData[propId]._acqSheetNames = ['PDF (all pages)'];
+      // Pass null for wb since there's no workbook — mapper handles PDF-sourced data identically
+      showAcqColumnMapper(propId, rawData, file.name, ['PDF (all pages)'], null);
+    }).catch(err => {
+      if(mapperEl) mapperEl.innerHTML = '';
+      alert('Error reading PDF: ' + err.message);
+    });
+    return; // Early return — async PDF path handles everything
   }
 
   // All other files read as array buffer (Excel)
