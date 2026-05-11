@@ -238,6 +238,7 @@
     </div>
   </div>
   <div class="topbar-right">
+    <span id="save-status" style="font-size:12px;min-width:110px;text-align:right"></span>
     <button class="btn" onclick="openAddProperty()">+ Add property</button>
     <button class="btn btn-primary" onclick="exportNotes()">Export notes</button>
     <button class="btn" onclick="signOut()" style="color:var(--text3)">Sign out</button>
@@ -569,6 +570,7 @@ async function signOut() {
 
 // ─── DATA LAYER ───────────────────────────────────────────────────────────────
 async function save(propId=null) {
+  setSaveStatus('saving');
   try {
     // Save meta (properties, notes, groupState) always
     const upserts = [
@@ -593,8 +595,10 @@ async function save(propId=null) {
         if(pdErr) throw pdErr;
       }
     }
+    setSaveStatus('saved');
   } catch(err) {
     console.error('Save failed:', err);
+    setSaveStatus('error');
     showSaveError();
   }
 }
@@ -2499,6 +2503,24 @@ function resetPfMapping(propId) {
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─── SAVE STATUS ─────────────────────────────────────────────────────────────
+function setSaveStatus(state) {
+  const el = document.getElementById('save-status');
+  if(!el) return;
+  clearTimeout(window._saveStatusTimer);
+  if(state === 'saving') {
+    el.innerHTML = '<span style="color:var(--text2)">Saving…</span>';
+  } else if(state === 'saved') {
+    const t = new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    el.innerHTML = `<span style="color:var(--green)">✓ Saved ${t}</span>`;
+    window._saveStatusTimer = setTimeout(()=>{ el.innerHTML=''; }, 5000);
+  } else if(state === 'error') {
+    el.innerHTML = '<span style="color:var(--red)">⚠ Save failed</span>';
+  } else {
+    el.innerHTML = '';
+  }
 }
 
 // ─── SHARED UTILITY ───────────────────────────────────────────────────────────
