@@ -576,6 +576,7 @@ let groupOpenState = {};
 let properties = null;
 let propData = {};
 let notes = [];
+let _noteCounter = 0; // ensures unique timestamps even when notes are added within the same millisecond
 let currentPropId = null;
 
 const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -617,14 +618,21 @@ async function save(propId=null) {
     ];
     await sbRest('POST', 'sam_meta', upserts, UPSERT_HEADERS);
 
-    // Save propData — per-property if propId given, otherwise all
+    // Save propData — per-property if propId given, otherwise all.
+    // Always strip ephemeral mapper keys before persisting — they can be large and
+    // are intentionally in-memory only (cleaned up on load if accidentally saved).
+    function cleanForSave(data) {
+      if(!data) return {};
+      const { _acqRawData, _acqRawFilename, _acqSheetNames, ...rest } = data;
+      return rest;
+    }
     if(propId) {
       await sbRest('POST', 'sam_propdata',
-        {prop_id:propId, data:propData[propId]||{}},
+        {prop_id:propId, data:cleanForSave(propData[propId])},
         UPSERT_HEADERS
       );
     } else {
-      const rows = Object.entries(propData).map(([prop_id,data])=>({prop_id,data}));
+      const rows = Object.entries(propData).map(([prop_id,data])=>({prop_id, data:cleanForSave(data)}));
       if(rows.length) {
         await sbRest('POST', 'sam_propdata', rows, UPSERT_HEADERS);
       }
@@ -692,6 +700,9 @@ async function init() {
       _sbToken = session?.access_token || null;
       document.getElementById('login-screen').classList.remove('active');
       if(!_loadAndRenderRunning) await loadAndRender();
+    } else if(event === 'TOKEN_REFRESHED') {
+      // Keep cached token fresh — Supabase rotates it every ~60 min
+      _sbToken = session?.access_token || null;
     } else if(event === 'SIGNED_OUT') {
       _sbToken = null;
       // Fix #3 - clear in-memory state on sign-out
@@ -993,7 +1004,7 @@ function renderUploadTab(p) {
         <div style="font-size:13px;font-weight:500">Proforma — Year ${pfYear}</div>
         <div style="display:flex;gap:8px;align-items:center">
           ${hasLineItems?`<span class="badge badge-neutral">${lineItems.length} line items</span>`:''}
-          <span class="badge badge-ok" style="font-size:11px">${source}</span>
+          <span class="badge badge-ok" style="font-size:11px">${escHtml(source)}</span>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
@@ -1098,7 +1109,15 @@ async function extractPdfToRows(file) {
   }
 
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  let pdf;
+  try {
+    pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  } catch(pdfErr) {
+    if(pdfErr && (pdfErr.name === 'PasswordException' || (pdfErr.message && pdfErr.message.toLowerCase().includes('password')))) {
+      throw new Error('This PDF is password-protected. Please remove the password and try again.');
+    }
+    throw pdfErr;
+  }
   const allRows = [];
 
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
@@ -1351,7 +1370,7 @@ function parseAppfolio(ws) {
     if(!h) return;
     const hs = h.toString().trim();
     if(hs === 'Total') { totalCol = ci; return; }
-    if(ci > 0 && hs !== 'Account Name' && hs !== 'Percent' && hs !== 'Total') {
+    if(ci > 0 && hs !== 'Account Name' && hs !== 'Percent' && hs !== 'Total' && !hs.includes('%')) {
       months.push(hs);
       monthCols.push(ci);
     }
@@ -1413,14 +1432,19 @@ function parseBuildium(ws) {
   headers.forEach((h, ci) => {
     if(h && h.toString().trim() === 'Total') totalCol = ci;
   });
-  const months = headers.slice(1, totalCol).filter(Boolean).map(h=>{
-    if(!h) return '';
+  // Track which column indices actually have a header so months[] and values[] stay aligned
+  const monthColIndices = [];
+  const months = [];
+  headers.slice(1, totalCol).forEach((h, ci) => {
+    if(!h) return; // skip blank header columns
+    monthColIndices.push(ci + 1); // +1 because we sliced from index 1
     const s = h.toString();
     if(s.match(/^\d{2}-\d{4}$/)) {
       const [mm,yyyy] = s.split('-');
-      return MONTH_NAMES[parseInt(mm)-1]+' '+yyyy;
+      months.push(MONTH_NAMES[parseInt(mm)-1]+' '+yyyy);
+    } else {
+      months.push(s);
     }
-    return s;
   });
 
   let propertyName = '';
@@ -1451,7 +1475,7 @@ function parseBuildium(ws) {
     const isNetIncome = NET_INCOME_LABELS.some(x=>lc===x);
     const isSubtotal = SUBTOTAL_PREFIX.some(x=>lc.startsWith(x));
     const isTotal = isTotalIncome || isTotalExpense || isNetIncome;
-    const values = headers.slice(1, totalCol).map((_,ci)=>parseFloat(row[ci+1])||0);
+    const values = monthColIndices.map(ci=>parseFloat(row[ci])||0);
     // Total col may contain a formula string SheetJS can't evaluate — fall back to summing months
     const totalRaw = row[totalCol];
     const total = (totalRaw !== null && typeof totalRaw === 'number')
@@ -1521,8 +1545,9 @@ function parseAppfolioRentRoll(data) {
     if(!unitNum) continue;
     const lcu = unitNum.toLowerCase();
     if(lcu === 'unit') continue; // skip stray header rows
-    // Stop at any totals/summary row
-    if(lcu.includes('total') || lcu === 'grand total' || lcu === 'totals') break;
+    // Stop only at grand total; skip intermediate building/floor subtotals
+    if(lcu === 'grand total' || lcu === 'totals') break;
+    if(lcu.includes('total')) continue;
     const bdba = row[2] ? row[2].toString().trim() : '';
     const unitType = normalizeUnitType(bdba, 'appfolio');
     const tags = row[1] ? row[1].toString() : '';
@@ -1572,6 +1597,7 @@ function normalizeUnitType(raw, system) {
     if(beds===1) return '1 Bed';
     if(beds===2) return '2 Bed';
     if(beds===3) return '3 Bed';
+    if(beds>=4) return `${beds} Bed`;
     return raw;
   }
   if(system==='buildium') {
@@ -1580,6 +1606,9 @@ function normalizeUnitType(raw, system) {
     if(lc.includes('1 bed')) return '1 Bed';
     if(lc.includes('2 bed')) return '2 Bed';
     if(lc.includes('3 bed')) return '3 Bed';
+    if(lc.includes('4 bed')) return '4 Bed';
+    const mBed = lc.match(/(\d+)\s*bed/);
+    if(mBed && parseInt(mBed[1]) >= 5) return `${mBed[1]} Bed`;
     return raw;
   }
   return raw;
@@ -1699,6 +1728,7 @@ const PF_LINE_ITEMS = [
     pfKeys:   ['mortgage','loan payment','debt service','monthly mortgage'],
     stmtKeys: ['mortgage','loan payment','debt service'],
     isIncome: false,
+    isDebtService: true,
   },
   {
     group: 'dscr',
@@ -1826,20 +1856,26 @@ function parseProforma(ws, purchaseDate) {
     if(isNaN(yr) || yr < 1 || yr > 20) continue;
     if(!(yr in yearCols)) yearCols[yr] = ci; // first column for this year (often zero — see below)
   }
-  // For each year, find which of its two columns has actual data (non-zero in row 11 or first data row)
-  // Strategy: for each year, check both columns and prefer the one with non-zero values
+  // For each year, find which of its two columns has actual data (non-zero in first data rows)
+  // Only shift to baseCol+1 if (a) it has data AND (b) the year header row also marks it as the same year
+  const yearHeaderRow = data[yearRow] || [];
   const yearDataCols = {};
   Object.keys(yearCols).forEach(yr => {
     const baseCol = yearCols[yr];
-    // Check if this column or the next one has data in the first few data rows
     let col = baseCol;
+    let v0Count = 0, v1Count = 0;
     for(let i=yearRow+1; i<Math.min(yearRow+15, data.length); i++) {
       const row = data[i];
       if(!row || !row[1]) continue;
       const v0 = parseFloat(row[baseCol]) || 0;
       const v1 = parseFloat(row[baseCol+1]) || 0;
-      if(v0 !== 0 || v1 !== 0) { col = v0 !== 0 ? baseCol : baseCol+1; break; }
+      if(v0 !== 0) v0Count++;
+      if(v1 !== 0) v1Count++;
     }
+    // Only pick baseCol+1 if it has more non-zero values and the year header confirms same year
+    const nextColSameYear = String(yearHeaderRow[baseCol+1]) === String(yr);
+    if(v0Count === 0 && v1Count > 0 && nextColSameYear) col = baseCol + 1;
+    else if(v0Count > 0) col = baseCol;
     yearDataCols[yr] = col;
   });
 
@@ -1978,75 +2014,75 @@ function parseProformaInfoSheet(ws, purchaseDate) {
 
   // Apply year escalation (simple 3% annual growth for years > 1)
   const escalate = (v, years) => v * Math.pow(1.03, years - 1);
+
+  // Pre-compute annual figures for years 1-10 so yearlyTotals enables the year selector
+  function calcForYear(y) {
+    const occupied = units * (1 - vacancyRate);
+    const monthlyInc = escalate(grossMonthly, y) * (1 - vacancyRate)
+      + escalate(petIncome/12, y)
+      + escalate(laundryIncome/12, y)
+      + (utilityPerUnit * occupied);
+    const inc  = monthlyInc * 12;
+    const mgmt = inc * mgmtRate;
+    const rep  = inc * repairsRate;
+    const cap  = inc * capexRate;
+    const ins  = escalate(insurance, y);
+    const tax  = escalate(taxes, y);
+    const land = escalate(landscaping, y);
+    const wat  = escalate(water, y);
+    const garb = escalate(garbage, y);
+    const elec = escalate(electricity, y);
+    const gasV = escalate(gas, y);
+    const pestV= escalate(pest, y);
+    const exp  = mgmt + rep + cap + ins + tax + land + wat + garb + elec + gasV + pestV;
+    return {inc, mgmt, rep, cap, ins, tax, land, wat, garb, elec, gasV, pestV, exp, noi: inc - exp};
+  }
+
+  const ALL_YEARS = [1,2,3,4,5,6,7,8,9,10];
+  const byYear = {};
+  ALL_YEARS.forEach(y => { byYear[y] = calcForYear(y); });
+
   const yr = pfYear;
+  const fy = byYear[yr];
 
-  const occupied = units * (1 - vacancyRate);
-  const monthlyIncome = escalate(grossMonthly, yr) * (1 - vacancyRate)
-    + escalate(petIncome/12, yr)
-    + escalate(laundryIncome/12, yr)
-    + (utilityPerUnit * occupied);
-  const annualIncome = monthlyIncome * 12;
-
-  const annualMgmt      = annualIncome * mgmtRate;
-  const annualRepairs   = annualIncome * repairsRate;
-  const annualCapex     = annualIncome * capexRate;
-  const annualInsurance = escalate(insurance, yr);
-  const annualTaxes     = escalate(taxes, yr);
-  const annualLandscape = escalate(landscaping, yr);
-  const annualWater     = escalate(water, yr);
-  const annualGarbage   = escalate(garbage, yr);
-  const annualElec      = escalate(electricity, yr);
-  const annualGas       = escalate(gas, yr);
-  const annualPest      = escalate(pest, yr);
-
-  const annualExpense = annualMgmt + annualRepairs + annualCapex + annualInsurance
-    + annualTaxes + annualLandscape + annualWater + annualGarbage
-    + annualElec + annualGas + annualPest;
-  const annualNOI = annualIncome - annualExpense;
+  function ytRow(getVal, base) {
+    const yt = {};
+    ALL_YEARS.forEach(y => { yt[y] = getVal(byYear[y]); });
+    return {...base, total: getVal(fy), values: Array(12).fill(getVal(fy)/12), yearlyTotals: yt};
+  }
 
   const rows = [
-    {label:'Total Annual Operating Income', isNOI:false, isTotalIncome:true, isTotalExpense:false,
-     isTotal:true, isNetIncome:false, isCategory:false, isSubtotal:false, isDebtService:false, level:0,
-     total:annualIncome, values:Array(12).fill(annualIncome/12)},
-    {label:'Total Annual Operating Expense', isNOI:false, isTotalIncome:false, isTotalExpense:true,
-     isTotal:true, isNetIncome:false, isCategory:false, isSubtotal:false, isDebtService:false, level:0,
-     total:annualExpense, values:Array(12).fill(annualExpense/12)},
-    {label:'Annual Net Operating Income', isNOI:true, isTotalIncome:false, isTotalExpense:false,
-     isTotal:false, isNetIncome:false, isCategory:false, isSubtotal:false, isDebtService:false, level:0,
-     total:annualNOI, values:Array(12).fill(annualNOI/12)},
+    ytRow(b=>b.inc,  {label:'Total Annual Operating Income', isNOI:false, isTotalIncome:true, isTotalExpense:false,
+     isTotal:true, isNetIncome:false, isCategory:false, isSubtotal:false, isDebtService:false, level:0}),
+    ytRow(b=>b.exp,  {label:'Total Annual Operating Expense', isNOI:false, isTotalIncome:false, isTotalExpense:true,
+     isTotal:true, isNetIncome:false, isCategory:false, isSubtotal:false, isDebtService:false, level:0}),
+    ytRow(b=>b.noi,  {label:'Annual Net Operating Income', isNOI:true, isTotalIncome:false, isTotalExpense:false,
+     isTotal:false, isNetIncome:false, isCategory:false, isSubtotal:false, isDebtService:false, level:0}),
     // Line items for benchmark matching
-    {label:'Property Management Fees', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+    ytRow(b=>b.mgmt, {label:'Property Management Fees', isExpenseLine:true, isIncomeLine:false, isNOI:false,
      isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
-     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
-     total:annualMgmt, values:Array(12).fill(annualMgmt/12)},
-    {label:'Repairs & Maintenance', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1}),
+    ytRow(b=>b.rep,  {label:'Repairs & Maintenance', isExpenseLine:true, isIncomeLine:false, isNOI:false,
      isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
-     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
-     total:annualRepairs, values:Array(12).fill(annualRepairs/12)},
-    {label:'Real Estate Taxes', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1}),
+    ytRow(b=>b.tax,  {label:'Real Estate Taxes', isExpenseLine:true, isIncomeLine:false, isNOI:false,
      isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
-     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
-     total:annualTaxes, values:Array(12).fill(annualTaxes/12)},
-    {label:'Rental Property Insurance', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1}),
+    ytRow(b=>b.ins,  {label:'Rental Property Insurance', isExpenseLine:true, isIncomeLine:false, isNOI:false,
      isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
-     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
-     total:annualInsurance, values:Array(12).fill(annualInsurance/12)},
-    {label:'Landscaping and Snow removal', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1}),
+    ytRow(b=>b.land, {label:'Landscaping and Snow removal', isExpenseLine:true, isIncomeLine:false, isNOI:false,
      isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
-     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
-     total:annualLandscape, values:Array(12).fill(annualLandscape/12)},
-    {label:'Water', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1}),
+    ytRow(b=>b.wat,  {label:'Water', isExpenseLine:true, isIncomeLine:false, isNOI:false,
      isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
-     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
-     total:annualWater, values:Array(12).fill(annualWater/12)},
-    {label:'Garbage', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1}),
+    ytRow(b=>b.garb, {label:'Garbage', isExpenseLine:true, isIncomeLine:false, isNOI:false,
      isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
-     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
-     total:annualGarbage, values:Array(12).fill(annualGarbage/12)},
-    {label:'Electricity', isExpenseLine:true, isIncomeLine:false, isNOI:false,
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1}),
+    ytRow(b=>b.elec, {label:'Electricity', isExpenseLine:true, isIncomeLine:false, isNOI:false,
      isTotalIncome:false, isTotalExpense:false, isTotal:false, isNetIncome:false,
-     isCategory:false, isSubtotal:false, isDebtService:false, level:1,
-     total:annualElec, values:Array(12).fill(annualElec/12)},
+     isCategory:false, isSubtotal:false, isDebtService:false, level:1}),
   ];
 
   // Always recalculate pfYear from purchase date — don't trust stored value
@@ -2097,7 +2133,10 @@ function parseProformaCsv(text, purchaseDate) {
   // Calculate which year we're in
   const effectiveDate = purchaseDate || csvPurchaseDate;
   const pfYear = effectiveDate ? getProformaYear(effectiveDate) : 1;
-  const targetCol = pfYear; // YEAR 1 = col index 1, YEAR 2 = col index 2, etc.
+  // Find actual column index for YEAR 1 from header row (don't assume it's column 1)
+  const yearRowCells = data[yearRow] || [];
+  const year1ColIdx = yearRowCells.findIndex(c => c && c.toString().trim().toUpperCase() === 'YEAR 1');
+  const targetCol = year1ColIdx >= 0 ? year1ColIdx + (pfYear - 1) : pfYear;
 
   // Parse value helper — strip commas, parens for negatives
   function parseVal(s) {
@@ -2336,11 +2375,19 @@ function renderStatementTable(monthIdx) {
       rows_html+=`<tr class="${cls}"><td class="indent-${r.level}">${r.label}</td><td>${fmt(val)}</td></tr>`;
     });
   } else if(view==='ytd') {
-    thead = `<tr><th style="text-align:left">Account</th><th>YTD Total</th></tr>`;
+    const selMonthLbl = stmt.months[mi] || '';
+    const selYrYTD = parseInt((selMonthLbl || '').split(' ')[1]) || new Date().getFullYear();
+    const janLblYTD = 'Jan ' + selYrYTD;
+    const janIdxYTD = stmt.months.indexOf(janLblYTD);
+    const ytdSt = (janIdxYTD >= 0 && janIdxYTD <= mi) ? janIdxYTD : mi;
+    const ytdStLbl = stmt.months[ytdSt] || selMonthLbl;
+    const ytdHdr = ytdSt === mi ? selMonthLbl : `${ytdStLbl} – ${selMonthLbl}`;
+    thead = `<tr><th style="text-align:left">Account</th><th>YTD Total (${ytdHdr})</th></tr>`;
     stmt.rows.forEach(r=>{
       if(r.isCategory) { rows_html+=`<tr class="row-category"><td class="indent-${r.level}">${r.label}</td><td></td></tr>`; return; }
       const cls = r.isNOI?'row-noi':r.isTotal?'row-total':r.isSubtotal?'row-subtotal':'';
-      rows_html+=`<tr class="${cls}"><td class="indent-${r.level}">${r.label}</td><td>${fmt(r.total)}</td></tr>`;
+      const ytdVal = r.values.slice(ytdSt, mi + 1).reduce((a,b)=>a+b, 0);
+      rows_html+=`<tr class="${cls}"><td class="indent-${r.level}">${r.label}</td><td>${fmt(ytdVal)}</td></tr>`;
     });
   } else {
     const monthCols = stmt.months.map(m=>`<th>${m}</th>`).join('')+'<th>Total</th>';
@@ -2393,7 +2440,7 @@ function renderProformaTab() {
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
       <div>
         <div style="font-size:15px;font-weight:500">Proforma — Year ${pfYear}</div>
-        <div style="font-size:12px;color:var(--text3);margin-top:2px">Source: ${source}${p.purchaseDate?' · Purchased '+new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):''}</div>
+        <div style="font-size:12px;color:var(--text3);margin-top:2px">Source: ${escHtml(source)}${p.purchaseDate?' · Purchased '+new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):''}</div>
       </div>
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:20px">
@@ -2959,9 +3006,9 @@ function renderBenchmarkTab() {
     // Sum proforma debt service
     let totalPfAnnual = null;
     if(hasPF) {
-      const pfDSRows = pf.rows.filter(x=>x.isDebtService);
-      if(pfDSRows.length) {
-        totalPfAnnual = pfDSRows.reduce((s,r)=>s+r.total, 0);
+      const innerPfDSRows = pf.rows.filter(x=>x.isDebtService);
+      if(innerPfDSRows.length) {
+        totalPfAnnual = innerPfDSRows.reduce((s,r)=>s+r.total, 0);
       }
       if(!totalPfAnnual) {
         totalPfAnnual = (dsOverride.interest||0) + (dsOverride.principal||0) || null;
@@ -3105,23 +3152,31 @@ function renderBenchmarkTab() {
     const selYear = parseInt((selMonth || '').split(' ')[1]) || new Date().getFullYear();
     const janLabel = 'Jan ' + selYear;
     const janIdx = stmt.months.indexOf(janLabel);
-    // If Jan is in the file and comes before selMonth, start there; else start at 0
-    const ytdStartIdx = (janIdx >= 0 && janIdx <= monthIdx) ? janIdx : 0;
-    const monthsInYTD = monthIdx - ytdStartIdx + 1;
+    // If Jan is in the file and comes before selMonth, start there;
+    // if Jan is not in the file at all, show only the selected month (single-month YTD).
+    const ytdStartIdx = (janIdx >= 0 && janIdx <= monthIdx) ? janIdx : monthIdx;
+    const monthsInYTD = Math.max(1, monthIdx - ytdStartIdx + 1);
     const ytdStartLabel = stmt.months[ytdStartIdx] || stmt.months[0];
+    const isSingleMonth = monthsInYTD === 1;
 
     const KEY_LABELS = ['total operating income','total income','total budgeted operating income',
       'total operating expense','total expense','total budgeted operating expense',
       'total operating expe','noi - net operating income','net operating income',
       'net income','total budgeted income'];
 
-    // Build header
-    let ytdCols = ['Account', `YTD Actual (${ytdStartLabel} – ${selMonth})`];
+    // Build header — use "Month actual (Apr 2025)" label for single-month, "YTD (...)" otherwise
+    const ytdActualLabel = isSingleMonth
+      ? `Month Actual (${selMonth})`
+      : `YTD Actual (${ytdStartLabel} – ${selMonth})`;
+    let ytdCols = ['Account', ytdActualLabel];
     if(hasBG) ytdCols.push('Budget YTD', 'Bud Var $', 'Bud Var %');
     if(hasPF) ytdCols.push(`Proforma YTD`, 'PF Var $', 'PF Var %');
+    const ytdSectionTitle = isSingleMonth
+      ? `Month actual vs budget &amp; proforma (${selMonth})`
+      : `YTD actual vs budget &amp; proforma (${ytdStartLabel} – ${selMonth})`;
 
     html += `<div class="bench-section">
-      <div class="bench-title">YTD actual vs budget &amp; proforma (${ytdStartLabel} – ${selMonth})</div>
+      <div class="bench-title">${ytdSectionTitle}</div>
       <div class="bench-wrap"><table class="bench-table">
       <thead><tr>${ytdCols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead><tbody>`;
 
@@ -3327,8 +3382,7 @@ function showAcqColumnMapper(propId, rawData, filename, sheetNames, wb) {
         </div>
         <div>
           <div style="font-size:11px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Actual rent</div>
-          <select id="acq-col-actual" ${sameRentChecked?'style="width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit;opacity:0.4;pointer-events:none"':'style="width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit"'}
-            id="acq-col-actual">
+          <select id="acq-col-actual" ${sameRentChecked?'style="width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit;opacity:0.4;pointer-events:none"':'style="width:100%;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit"'}>
             ${colOpts(guess.actualRent)}</select>
         </div>
         <div>
@@ -3764,7 +3818,7 @@ function renderNotesTab() {
 function addNote(type) {
   const text = document.getElementById('note-input').value.trim();
   if(!text) { alert('Please type a note first.'); return; }
-  notes.push({propId:currentPropId, type, text, ts:Date.now()});
+  notes.push({propId:currentPropId, type, text, ts:Date.now() * 1000 + (_noteCounter++ % 1000)});
   document.getElementById('note-input').value='';
   save(); // fire-and-forget (notes are in meta)
   renderNotesTab();
@@ -3787,7 +3841,7 @@ function updateDetailBadge() {
 }
 
 // ─── PORTFOLIO VIEW ───────────────────────────────────────────────────────────
-function portfolioPropRow(p) {
+function portfolioPropRow(p, pm, isOpen) {
   const dot = getStatusDot(p.id);
   const d = propData[p.id]||{};
   const stmt = d.statement;
@@ -3841,7 +3895,7 @@ function portfolioPropRow(p) {
     p.units ? `${p.units} units` : null,
     purchaseDateStr && pfYearStr ? `${purchaseDateStr} · Year ${pfYearStr}` : purchaseDateStr
   ].filter(Boolean).join(' · ');
-  return `<tr class="ptbl-prop-row" onclick="selectProp('${p.id}')">
+  return `<tr class="ptbl-prop-row${isOpen ? '' : ' hidden'}" data-pm="${escHtml(pm)}" onclick="selectProp('${p.id}')">
     <td><strong>${escHtml(p.name)}</strong>${subLine?` <span style="color:var(--text3);font-weight:400;font-size:11px">${subLine}</span>`:''}</td>
     <td>${p.system==='buildium'?'Buildium':'Appfolio'}</td>
     <td>${statusBadge}</td>
@@ -3873,6 +3927,7 @@ function togglePortfolioGroup(pm) {
 }
 
 function renderPortfolio() {
+  if(!properties) return; // guard against call before first load completes
   let loaded=0, ok=0, warn=0, flag=0;
   properties.forEach(p=>{
     const d = propData[p.id]||{};
@@ -3932,10 +3987,8 @@ function renderPortfolio() {
       </td>
     </tr>`;
     props.forEach(p => {
-      const rowHtml = portfolioPropRow(p);
-      // Inject data-pm attribute and hidden class onto the tr
-      tbody += rowHtml
-        .replace('<tr class="ptbl-prop-row"', `<tr class="ptbl-prop-row${isOpen?'':' hidden'}" data-pm="${pm}"`);
+      const rowHtml = portfolioPropRow(p, pm, isOpen);
+      tbody += rowHtml;
     });
   });
 
@@ -4017,9 +4070,12 @@ function downloadParsedFile(propId, fileKey) {
     });
   } else if(fileKey === 'proforma') {
     sheetName = 'Proforma';
-    aoa = [['Line Item', 'Annual', 'Monthly']];
-    (parsed.rows || []).filter(r => !r.isCategory).forEach(r => {
-      aoa.push([r.label, r.total, Math.round(r.total / 12)]);
+    const prop = properties ? properties.find(p => p.id === propId) : null;
+    const rehydrated = rehydrateProforma(parsed, prop ? prop.purchaseDate : null);
+    const pfYr = rehydrated.pfYear || 1;
+    aoa = [['Line Item', `Year ${pfYr} Annual`, `Year ${pfYr} Monthly`]];
+    (rehydrated.rows || []).filter(r => !r.isCategory).forEach(r => {
+      aoa.push([r.label, r.total, r.total !== 0 ? Math.round(r.total / 12) : 0]);
     });
   }
 
