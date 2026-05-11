@@ -257,9 +257,12 @@
 
   <!-- PORTFOLIO VIEW -->
   <div class="portfolio-view active" id="portfolio-view">
-      <div class="portfolio-header">
-        <h2>Portfolio overview</h2>
-        <div class="portfolio-sub" id="portfolio-sub">Upload files for each property to see performance summary.</div>
+      <div class="portfolio-header" style="display:flex;align-items:baseline;justify-content:space-between">
+        <div>
+          <h2>Portfolio overview</h2>
+          <div class="portfolio-sub" id="portfolio-sub">Upload files for each property to see performance summary.</div>
+        </div>
+        <div id="portfolio-last-saved" style="font-size:12px;color:var(--text3)"></div>
       </div>
       <div class="portfolio-kpis" id="portfolio-kpis">
         <div class="kpi-card"><div class="kpi-label">Properties loaded</div><div class="kpi-val" id="pk-loaded">0</div></div>
@@ -801,6 +804,11 @@ async function loadAndRender() {
 
   const now = new Date();
   document.getElementById('meeting-month').textContent = now.toLocaleDateString('en-US',{month:'long',year:'numeric'});
+  // Restore last-saved label from localStorage
+  try {
+    const saved = localStorage.getItem('sam_last_saved');
+    if(saved) updatePortfolioLastSaved(saved);
+  } catch(e) {}
   renderPortfolio();
   _loadAndRenderRunning = false;
 }
@@ -2706,19 +2714,30 @@ function escHtml(s) {
 // ─── SAVE STATUS ─────────────────────────────────────────────────────────────
 function setSaveStatus(state) {
   const el = document.getElementById('save-status');
-  if(!el) return;
   clearTimeout(window._saveStatusTimer);
   if(state === 'saving') {
-    el.innerHTML = '<span style="color:var(--text2)">Saving…</span>';
+    if(el) el.innerHTML = '<span style="color:var(--text2)">Saving…</span>';
   } else if(state === 'saved') {
-    const t = new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
-    el.innerHTML = `<span style="color:var(--green)">✓ Saved ${t}</span>`;
-    window._saveStatusTimer = setTimeout(()=>{ el.innerHTML=''; }, 5000);
+    const now = new Date();
+    const t = now.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    const dt = now.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' at ' + t;
+    if(el) {
+      el.innerHTML = `<span style="color:var(--green)">✓ Saved ${t}</span>`;
+      window._saveStatusTimer = setTimeout(()=>{ if(el) el.innerHTML=''; }, 5000);
+    }
+    // Persist to localStorage so it survives page refresh
+    try { localStorage.setItem('sam_last_saved', dt); } catch(e) {}
+    updatePortfolioLastSaved(dt);
   } else if(state === 'error') {
-    el.innerHTML = '<span style="color:var(--red)">⚠ Save failed</span>';
+    if(el) el.innerHTML = '<span style="color:var(--red)">⚠ Save failed</span>';
   } else {
-    el.innerHTML = '';
+    if(el) el.innerHTML = '';
   }
+}
+
+function updatePortfolioLastSaved(label) {
+  const el = document.getElementById('portfolio-last-saved');
+  if(el) el.textContent = label ? `Last saved: ${label}` : '';
 }
 
 // ─── SHARED UTILITY ───────────────────────────────────────────────────────────
