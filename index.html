@@ -2772,21 +2772,42 @@ function renderBenchmarkTab() {
   );
   const debtSubs    = stmt.rows.filter(r => isDebtService(r));
 
-  // If statement has no debt service rows, synthesize them from the override
+  // If statement has no debt service rows, synthesize them from override or proforma
   const dsOverride = d.debtServiceOverride || {};
+  // Helper: find interest/principal annual values from the parsed proforma's isDebtService rows
+  const pfDSRows = pf ? pf.rows.filter(r => r.isDebtService && r.total) : [];
+  function pfDSAnnual(type) {
+    if(type === 'interest') {
+      if(dsOverride.interest) return dsOverride.interest;
+      const row = pfDSRows.find(r => r.label.toLowerCase().includes('interest'));
+      return row ? row.total : null;
+    }
+    if(type === 'principal') {
+      if(dsOverride.principal) return dsOverride.principal;
+      const row = pfDSRows.find(r =>
+        r.label.toLowerCase().includes('principal') ||
+        (r.label.toLowerCase().includes('mortgage') && !r.label.toLowerCase().includes('interest'))
+      );
+      return row ? row.total : null;
+    }
+    return null;
+  }
+  const interestAnnual  = pfDSAnnual('interest');
+  const principalAnnual = pfDSAnnual('principal');
+
   const syntheticDebtSubs = [];
-  if(!debtSubs.length && (dsOverride.interest || dsOverride.principal)) {
-    if(dsOverride.interest) syntheticDebtSubs.push({
+  if(!debtSubs.length) {
+    if(interestAnnual) syntheticDebtSubs.push({
       label: 'Mortgage Interest', isDebtService: true, isTotalExpense: false, isNOI: false,
       isNetIncome: false, isTotal: false, isCategory: false, isSubtotal: false, level: 1,
-      values: Array(12).fill(dsOverride.interest/12), total: dsOverride.interest,
-      _pfAnnual: dsOverride.interest, _synthetic: true,
+      values: Array(12).fill(interestAnnual/12), total: interestAnnual,
+      _pfAnnual: interestAnnual, _synthetic: true,
     });
-    if(dsOverride.principal) syntheticDebtSubs.push({
+    if(principalAnnual) syntheticDebtSubs.push({
       label: 'Mortgage Principal', isDebtService: true, isTotalExpense: false, isNOI: false,
       isNetIncome: false, isTotal: false, isCategory: false, isSubtotal: false, level: 1,
-      values: Array(12).fill(dsOverride.principal/12), total: dsOverride.principal,
-      _pfAnnual: dsOverride.principal, _synthetic: true,
+      values: Array(12).fill(principalAnnual/12), total: principalAnnual,
+      _pfAnnual: principalAnnual, _synthetic: true,
     });
   }
   const effectiveDebtSubs = debtSubs.length ? debtSubs : syntheticDebtSubs;
@@ -2816,22 +2837,25 @@ function renderBenchmarkTab() {
         pfRow = bestRow(pf.rows.filter(x=>x.isNetIncome));
         if(!pfRow || !pfRow.total) {
           const pfNOIRow = bestRow(pf.rows.filter(x=>x.isNOI));
-          const pfDSRows = pf.rows.filter(x=>x.isDebtService);
           const pfDS = pfDSRows.reduce((s,x)=>s+x.total, 0)
-                    || (dsOverride.interest||0) + (dsOverride.principal||0);
+                    || (interestAnnual||0) + (principalAnnual||0);
           if(pfNOIRow && pfDS) pfAnnual = pfNOIRow.total - pfDS;
           else if(pfNOIRow) pfAnnual = pfNOIRow.total; // fallback to NOI if no DS
         }
       }
       else {
-        // For debt service rows, also match against override
+        // For debt service rows, match by label then by type (interest/principal) against
+        // proforma's isDebtService rows — handles mismatched label names across systems
         pfRow = pfMap[r.label.toLowerCase()];
         if(!pfRow && isDebtService(r)) {
           const lc = r.label.toLowerCase();
-          if(lc.includes('interest') && dsOverride.interest) pfAnnual = dsOverride.interest;
-          else if(lc.includes('principal') && dsOverride.principal) pfAnnual = dsOverride.principal;
-          else if((lc.includes('total') || lc.includes('debt service')) && (dsOverride.interest||dsOverride.principal))
-            pfAnnual = (dsOverride.interest||0) + (dsOverride.principal||0);
+          if(lc.includes('interest')) {
+            pfAnnual = pfDSAnnual('interest');
+          } else if(lc.includes('principal') || lc.includes('mortgage')) {
+            pfAnnual = pfDSAnnual('principal');
+          } else if(lc.includes('total') || lc.includes('debt service')) {
+            pfAnnual = (interestAnnual||0) + (principalAnnual||0) || null;
+          }
         }
       }
       if(pfRow && pfAnnual === null) pfAnnual = pfRow.total || null;
@@ -3075,19 +3099,29 @@ function renderBenchmarkTab() {
 
   // ── YTD vs budget and proforma ────────────────────────────────────────────────
   if(hasBG || hasPF) {
-    const monthsInYTD = monthIdx + 1;
+    // YTD = Jan 1 of the year containing selMonth through selMonth.
+    // Find the index of "Jan YYYY" in stmt.months so YTD doesn't bleed into the
+    // prior calendar year even when the statement file spans 12+ months.
+    const selYear = parseInt((selMonth || '').split(' ')[1]) || new Date().getFullYear();
+    const janLabel = 'Jan ' + selYear;
+    const janIdx = stmt.months.indexOf(janLabel);
+    // If Jan is in the file and comes before selMonth, start there; else start at 0
+    const ytdStartIdx = (janIdx >= 0 && janIdx <= monthIdx) ? janIdx : 0;
+    const monthsInYTD = monthIdx - ytdStartIdx + 1;
+    const ytdStartLabel = stmt.months[ytdStartIdx] || stmt.months[0];
+
     const KEY_LABELS = ['total operating income','total income','total budgeted operating income',
       'total operating expense','total expense','total budgeted operating expense',
       'total operating expe','noi - net operating income','net operating income',
       'net income','total budgeted income'];
 
     // Build header
-    let ytdCols = ['Account', `YTD Actual (${stmt.months[0]} – ${selMonth})`];
+    let ytdCols = ['Account', `YTD Actual (${ytdStartLabel} – ${selMonth})`];
     if(hasBG) ytdCols.push('Budget YTD', 'Bud Var $', 'Bud Var %');
     if(hasPF) ytdCols.push(`Proforma YTD`, 'PF Var $', 'PF Var %');
 
     html += `<div class="bench-section">
-      <div class="bench-title">YTD actual vs budget &amp; proforma (${stmt.months[0]} – ${selMonth})</div>
+      <div class="bench-title">YTD actual vs budget &amp; proforma (${ytdStartLabel} – ${selMonth})</div>
       <div class="bench-wrap"><table class="bench-table">
       <thead><tr>${ytdCols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead><tbody>`;
 
@@ -3097,7 +3131,7 @@ function renderBenchmarkTab() {
       const isKey = KEY_LABELS.some(k=>lc===k||lc.includes(k));
       if(!isKey && !r.isNOI && !r.isTotal) return;
 
-      const ytd = r.values.slice(0, monthsInYTD).reduce((a,b)=>a+b,0);
+      const ytd = r.values.slice(ytdStartIdx, monthIdx + 1).reduce((a,b)=>a+b,0);
       const cls = r.isNOI?'row-noi':r.isTotal?'row-total':'row-subtotal';
       const isExp = r.isTotalExpense || (!r.isTotalIncome && !r.isNOI && lc.includes('expense'));
       const vg = v => isExp ? v <= 0 : v >= 0;
