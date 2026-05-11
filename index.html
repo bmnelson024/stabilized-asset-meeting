@@ -3594,9 +3594,14 @@ function applyAcqMapping(propId, filename) {
     if(unitRaw === null || unitRaw === undefined || String(unitRaw).trim() === '') { skipped++; return; }
     const unitNum = String(unitRaw).trim();
 
-    // Stop at total/summary rows
+    // Skip summary/header rows
     const lcu = unitNum.toLowerCase();
     if(lcu.includes('total') || lcu.includes('grand') || lcu.includes('subtotal')) return;
+    // Skip "N units" count rows (e.g. "56 Units")
+    if(/^\d+\s+units?$/i.test(unitNum.trim())) return;
+    // Skip property name / address rows — long strings with no numeric unit identifier
+    // (real unit numbers are short like "101", "A1", "DB1-3")
+    if(unitNum.length > 25 && !/^\w[\w\-]*\d/.test(unitNum)) return;
 
     const marketRent = marketCol >= 0
       ? parseFloat(String(row[marketCol] || '').replace(/[$, ]/g,'')) || 0
@@ -3614,11 +3619,14 @@ function applyAcqMapping(propId, filename) {
       isVacant = st.includes('vacant') || st.includes('available') || st.trim() === '';
     }
 
+    // Preserve any manually-entered acquisition rents — only overwrite if the
+    // existing value is zero (i.e. never been set) or the unit is brand new.
+    const existing = propData[propId].acqUnits[unitNum] || {};
     propData[propId].acqUnits[unitNum] = {
-      marketRent,
-      actualRent: isVacant ? 0 : actualRent,
-      unitType,
-      tier: 'Classic',
+      marketRent: existing.marketRent || marketRent,
+      actualRent: isVacant ? 0 : (existing.actualRent || actualRent),
+      unitType: unitType !== 'Unknown' ? unitType : (existing.unitType || 'Unknown'),
+      tier: existing.tier || 'Classic',
     };
     imported++;
   });
