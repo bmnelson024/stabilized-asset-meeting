@@ -537,6 +537,33 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const ALLOWED_DOMAIN = 'leavenwealth.com';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// Cached access token — set after sign-in, used for raw REST calls
+let _sbToken = null;
+
+// Raw REST helper — bypasses the Supabase JS client's internal auth-lock which
+// can hang indefinitely on some browsers/versions. Auth calls still use sb.auth.
+async function sbRest(method, path, body, extraHeaders = {}) {
+  const token = _sbToken || SUPABASE_ANON_KEY;
+  const headers = {
+    'apikey': SUPABASE_ANON_KEY,
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    ...extraHeaders,
+  };
+  const opts = { method, headers };
+  if (body !== null && body !== undefined) opts.body = JSON.stringify(body);
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, opts);
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.status);
+    throw new Error(`Supabase ${method} /${path} → ${res.status}: ${text}`);
+  }
+  if (method === 'GET') {
+    const data = await res.json();
+    return { data, error: null };
+  }
+  return { data: null, error: null };
+}
+
 let groupOpenState = {};
 let properties = null;
 let propData = {};
@@ -568,7 +595,9 @@ async function signOut() {
   document.getElementById('login-screen').classList.add('active');
 }
 
-// ─── DATA LAYER ───────────────────────────────────────────────────────────────
+// ─── DATA LAYER (raw REST — bypasses Supabase JS client lock) ─────────────────
+const UPSERT_HEADERS = { 'Prefer': 'resolution=merge-duplicates,return=minimal' };
+
 async function save(propId=null) {
   setSaveStatus('saving');
   try {
@@ -578,21 +607,18 @@ async function save(propId=null) {
       {key:'notes', value:notes},
       {key:'groups', value:groupOpenState},
     ];
-    const {error: metaErr} = await sb.from('sam_meta').upsert(upserts, {onConflict:'key'});
-    if(metaErr) throw metaErr;
+    await sbRest('POST', 'sam_meta', upserts, UPSERT_HEADERS);
 
     // Save propData — per-property if propId given, otherwise all
     if(propId) {
-      const {error: pdErr} = await sb.from('sam_propdata').upsert(
+      await sbRest('POST', 'sam_propdata',
         {prop_id:propId, data:propData[propId]||{}},
-        {onConflict:'prop_id'}
+        UPSERT_HEADERS
       );
-      if(pdErr) throw pdErr;
     } else {
       const rows = Object.entries(propData).map(([prop_id,data])=>({prop_id,data}));
       if(rows.length) {
-        const {error: pdErr} = await sb.from('sam_propdata').upsert(rows, {onConflict:'prop_id'});
-        if(pdErr) throw pdErr;
+        await sbRest('POST', 'sam_propdata', rows, UPSERT_HEADERS);
       }
     }
     setSaveStatus('saved');
@@ -603,11 +629,9 @@ async function save(propId=null) {
   }
 }
 
-// Fix #9 - saveGroupState just calls save() with no propId for the meta upsert only
 async function saveGroupState() {
   try {
-    const {error} = await sb.from('sam_meta').upsert({key:'groups', value:groupOpenState},{onConflict:'key'});
-    if(error) throw error;
+    await sbRest('POST', 'sam_meta', {key:'groups', value:groupOpenState}, UPSERT_HEADERS);
   } catch(err) {
     console.error('saveGroupState failed:', err);
   }
@@ -615,13 +639,9 @@ async function saveGroupState() {
 
 async function loadFromSupabase() {
   const [metaRes, pdRes] = await Promise.all([
-    sb.from('sam_meta').select('key,value'),
-    sb.from('sam_propdata').select('prop_id,data'),
+    sbRest('GET', 'sam_meta?select=key,value'),
+    sbRest('GET', 'sam_propdata?select=prop_id,data'),
   ]);
-
-  // Fix #5 - check for load errors
-  if(metaRes.error) throw new Error('Failed to load meta: ' + metaRes.error.message);
-  if(pdRes.error) throw new Error('Failed to load property data: ' + pdRes.error.message);
 
   // Unpack meta
   if(metaRes.data) {
@@ -661,9 +681,11 @@ async function init() {
   // so magic link redirects are handled even on a cold page load
   sb.auth.onAuthStateChange(async (event, session) => {
     if(event === 'SIGNED_IN') {
+      _sbToken = session?.access_token || null;
       document.getElementById('login-screen').classList.remove('active');
       if(!_loadAndRenderRunning) await loadAndRender();
     } else if(event === 'SIGNED_OUT') {
+      _sbToken = null;
       // Fix #3 - clear in-memory state on sign-out
       properties = null;
       propData = {};
@@ -690,6 +712,7 @@ async function init() {
     return;
   }
 
+  _sbToken = session.access_token || null;
   document.getElementById('login-screen').classList.remove('active');
   await loadAndRender();
 }
@@ -708,7 +731,7 @@ async function loadAndRender() {
 
   let dirty = false; // Fix #10 - only write back if cleanup actually changed something
 
-  if(!properties) {
+  if(!properties || !properties.length) {
     properties = SEED_PROPERTIES.map((p,i)=>({
       id: 'prop_seed_'+i,
       name: p.name,
@@ -879,8 +902,8 @@ function deleteProperty() {
   delete propData[deletedId];
   notes = notes.filter(n=>n.propId!==deletedId);
   // Fix #6 - delete from Supabase with error handling
-  sb.from('sam_propdata').delete().eq('prop_id', deletedId)
-    .then(({error}) => { if(error) console.error('Failed to delete property data:', error); });
+  sbRest('DELETE', `sam_propdata?prop_id=eq.${encodeURIComponent(deletedId)}`)
+    .catch(err => console.error('Failed to delete property data:', err));
   save(); // fire-and-forget (saves updated properties + notes meta)
   currentPropId=null;
   showView('portfolio');
@@ -1039,12 +1062,19 @@ function uploadSlot(f, d, propId, type) {
     ? (isSeeded ? `Year ${d[f.key].pfYear} — built in (upload to override)` : (d[f.key+'_filename']||'File loaded'))
     : f.sub;
   const accept = f.key==='proforma' ? '.xlsx,.xls,.csv' : '.xlsx,.xls';
-  return `<label class="upload-slot ${hasFile?'has-file':''}">
+  const slotHtml = `<label class="upload-slot ${hasFile?'has-file':''}" style="display:block">
     <input type="file" accept="${accept}" onchange="handleUpload(event,'${propId}','${f.key}')">
     <div class="upload-slot-icon">${hasFile?'✓':'↑'}</div>
     <div class="upload-slot-label">${f.label}</div>
     <div class="upload-slot-sub">${savedLabel}</div>
   </label>`;
+  if(!hasFile) return slotHtml;
+  return `<div style="position:relative">
+    ${slotHtml}
+    <button onclick="downloadParsedFile('${propId}','${f.key}')"
+      title="Download parsed data as .xlsx"
+      style="position:absolute;top:6px;right:6px;z-index:2;background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:2px 8px;font-size:11px;color:var(--text2);cursor:pointer;font-family:inherit;line-height:1.4">↓</button>
+  </div>`;
 }
 
 function handleUpload(event, propId, fileKey) {
@@ -3816,6 +3846,43 @@ function exportNotes() {
   a.href=URL.createObjectURL(blob);
   a.download='meeting-notes-'+now.toISOString().slice(0,10)+'.txt';
   a.click();
+}
+
+// ─── DOWNLOAD PARSED FILE ────────────────────────────────────────────────────
+function downloadParsedFile(propId, fileKey) {
+  const d = propData[propId] || {};
+  const parsed = d[fileKey];
+  if(!parsed) { alert('No data loaded for this file.'); return; }
+
+  const wb = XLSX.utils.book_new();
+  let aoa = [];
+  let sheetName = 'Data';
+
+  if(fileKey === 'statement' || fileKey === 'budget') {
+    sheetName = fileKey === 'budget' ? 'Budget' : 'Statement';
+    aoa = [['Account', ...(parsed.months || []), 'Total']];
+    (parsed.rows || []).forEach(r => {
+      aoa.push([r.label, ...(r.values || []), r.total]);
+    });
+  } else if(fileKey === 'rentroll') {
+    sheetName = 'Rent Roll';
+    aoa = [['Unit', 'Type', 'Tier', 'Status', 'Market Rent', 'Actual Rent']];
+    (parsed.units || []).forEach(u => {
+      aoa.push([u.unitNum, u.unitType, u.tier || '', u.isVacant ? 'Vacant' : 'Occupied', u.marketRent, u.actualRent]);
+    });
+  } else if(fileKey === 'proforma') {
+    sheetName = 'Proforma';
+    aoa = [['Line Item', 'Annual', 'Monthly']];
+    (parsed.rows || []).filter(r => !r.isCategory).forEach(r => {
+      aoa.push([r.label, r.total, Math.round(r.total / 12)]);
+    });
+  }
+
+  if(!aoa.length) { alert('No data to export.'); return; }
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  const basename = (d[fileKey + '_filename'] || fileKey).replace(/\.[^.]+$/, '');
+  XLSX.writeFile(wb, basename + ' (parsed).xlsx');
 }
 
 // ─── FORMATTING ───────────────────────────────────────────────────────────────
