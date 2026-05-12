@@ -3227,9 +3227,11 @@ function renderBenchmarkTab() {
 
   // Build income line item rows (mapped PF items) or fall back to raw statement subs
   function incomeDetailRows(key) {
-    if(!mapping) return detailRows(incomeSubs, key);
+    // Tag raw statement rows as income lines so rowCells colors variance correctly
+    const taggedIncSubs = incomeSubs.map(r => r.isIncomeLine ? r : {...r, isIncomeLine:true});
+    if(!mapping) return detailRows(taggedIncSubs, key);
     const incomeItems = PF_LINE_ITEMS.filter(i => i.isIncome && !i.isComputed && mapping[i.group]);
-    if(!incomeItems.length) return detailRows(incomeSubs, key);
+    if(!incomeItems.length) return detailRows(taggedIncSubs, key);
     return incomeItems.map(item => pfLineItemRow(item, key)).join('');
   }
 
@@ -3347,7 +3349,7 @@ function renderBenchmarkTab() {
 
       const ytd = r.values.slice(ytdStartIdx, monthIdx + 1).reduce((a,b)=>a+b,0);
       const cls = r.isNOI?'row-noi':r.isTotal?'row-total':'row-subtotal';
-      const isExp = r.isTotalExpense || (!r.isTotalIncome && !r.isNOI && lc.includes('expense'));
+      const isExp = r.isTotalExpense || r.isDebtService || r.isExpenseLine;
       const vg = v => isExp ? v <= 0 : v >= 0;
 
       // Budget YTD — prorate annual budget by months elapsed
