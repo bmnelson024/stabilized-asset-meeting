@@ -3961,6 +3961,53 @@ function renderRentProgressionTab() {
       </tr>`;
     });
     html+=`</tbody></table></div></div>`;
+
+    // ── Overall property summary ─────────────────────────────────────────────
+    const allWithAcqActual = validUnits.filter(u => acqUnits[u.unitNum]?.actualRent);
+    const allOccupiedWithAcq = allWithAcqActual.filter(u => !u.isVacant);
+    const allWithAcqMarket = hasAnyAcqMarket ? validUnits.filter(u => acqUnits[u.unitNum]?.marketRent) : [];
+
+    if(allWithAcqActual.length > 0) {
+      const totalAcqActual  = allWithAcqActual.reduce((s,u) => s + acqUnits[u.unitNum].actualRent, 0);
+      const totalCurActual  = allOccupiedWithAcq.reduce((s,u) => s + u.actualRent, 0);
+      const avgAcqActualAll = totalAcqActual / allWithAcqActual.length;
+      const avgCurActualAll = allOccupiedWithAcq.length ? totalCurActual / allOccupiedWithAcq.length : null;
+      const actGrowthAll    = avgCurActualAll !== null ? (avgCurActualAll - avgAcqActualAll) / avgAcqActualAll * 100 : null;
+
+      let mktOverallHtml = '';
+      if(allWithAcqMarket.length > 0) {
+        const avgAcqMktAll  = allWithAcqMarket.reduce((s,u) => s + acqUnits[u.unitNum].marketRent, 0) / allWithAcqMarket.length;
+        const avgCurMktAll  = allWithAcqMarket.reduce((s,u) => s + u.marketRent, 0) / allWithAcqMarket.length;
+        const mktGrowthAll  = (avgCurMktAll - avgAcqMktAll) / avgAcqMktAll * 100;
+        mktOverallHtml = `
+          <div style="display:flex;flex-direction:column;align-items:center;padding:12px 20px;border-right:1px solid var(--border)">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Avg market rent</div>
+            <div style="font-size:15px;font-weight:500">${fmt(avgAcqMktAll)} → ${fmt(avgCurMktAll)}</div>
+            <div style="font-size:13px;font-weight:600;margin-top:2px" class="${mktGrowthAll>=0?'val-pos':'val-neg'}">${mktGrowthAll>=0?'+':''}${mktGrowthAll.toFixed(1)}%</div>
+          </div>`;
+      }
+
+      html += `<div class="bench-section">
+        <div class="bench-title">Overall property summary</div>
+        <div style="border:1px solid var(--border);border-radius:var(--radius-lg);display:flex;flex-wrap:wrap">
+          ${mktOverallHtml}
+          <div style="display:flex;flex-direction:column;align-items:center;padding:12px 20px;border-right:1px solid var(--border)">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Avg actual rent</div>
+            <div style="font-size:15px;font-weight:500">${fmt(avgAcqActualAll)} → ${avgCurActualAll!==null?fmt(avgCurActualAll):'—'}</div>
+            <div style="font-size:13px;font-weight:600;margin-top:2px" class="${actGrowthAll!==null?(actGrowthAll>=0?'val-pos':'val-neg'):''}">${actGrowthAll!==null?(actGrowthAll>=0?'+':'')+actGrowthAll.toFixed(1)+'%':'—'}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;padding:12px 20px;border-right:1px solid var(--border)">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Units with acq. data</div>
+            <div style="font-size:15px;font-weight:500">${allWithAcqActual.length} / ${validUnits.length}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;padding:12px 20px">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Total monthly rent</div>
+            <div style="font-size:15px;font-weight:500">${fmt(totalAcqActual)} → ${fmt(totalCurActual)}</div>
+            <div style="font-size:13px;font-weight:600;margin-top:2px" class="${actGrowthAll!==null?(actGrowthAll>=0?'val-pos':'val-neg'):''}">${totalCurActual&&totalAcqActual?(((totalCurActual-totalAcqActual)/totalAcqActual*100)>=0?'+':'')+(((totalCurActual-totalAcqActual)/totalAcqActual*100)).toFixed(1)+'%':'—'}</div>
+          </div>
+        </div>
+      </div>`;
+    }
   }
 
   container.innerHTML = html;
