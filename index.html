@@ -1439,10 +1439,11 @@ function parseAppfolio(ws) {
     const level = Math.min(Math.floor(indent/4), 2);
     const lc = label.toLowerCase();
     const isCategory = !row.slice(1).some(v=>v!==null && v!=='');
-    const isNOI = NOI_LABELS.some(x=>lc.includes(x));
-    const isTotalIncome = TOTAL_INCOME_LABELS.some(x=>lc===x);
-    const isTotalExpense = TOTAL_EXPENSE_LABELS.some(x=>lc===x);
-    const isNetIncome = NET_INCOME_LABELS.some(x=>lc===x);
+    // Never flag a category row (no values) as a key total — avoids phantom zero matches
+    const isNOI = !isCategory && NOI_LABELS.some(x=>lc.includes(x));
+    const isTotalIncome = !isCategory && TOTAL_INCOME_LABELS.some(x=>lc===x);
+    const isTotalExpense = !isCategory && TOTAL_EXPENSE_LABELS.some(x=>lc===x);
+    const isNetIncome = !isCategory && NET_INCOME_LABELS.some(x=>lc===x);
     const isSubtotal = !isCategory && lc.startsWith('total') && !isNOI && !isTotalIncome && !isTotalExpense;
     const isTotal = isTotalIncome || isTotalExpense || isNetIncome;
     const values = monthCols.map(ci=>parseFloat(row[ci])||0);
@@ -2822,9 +2823,12 @@ function updatePortfolioLastSaved(label) {
 // prefer rows whose label contains "annual" with non-zero total, then first non-zero, then last.
 function bestRow(rows) {
   if(!rows.length) return null;
-  const annual = rows.filter(r => r.label.toLowerCase().includes('annual') && r.total);
+  // Prefer non-category rows with a non-zero total
+  const nonCat = rows.filter(r => !r.isCategory);
+  const pool = nonCat.length ? nonCat : rows;
+  const annual = pool.filter(r => r.label.toLowerCase().includes('annual') && r.total);
   if(annual.length) return annual[annual.length-1];
-  return rows.find(r => r.total) || rows[rows.length-1];
+  return pool.find(r => r.total) || pool[pool.length-1];
 }
 
 // ─── BENCHMARK TAB ────────────────────────────────────────────────────────────
