@@ -3235,9 +3235,11 @@ function renderBenchmarkTab() {
 
   // Build expense line item rows (mapped PF items) or fall back to raw statement subs
   function expenseDetailRows(key) {
-    if(!mapping) return detailRows(expenseSubs, key);
+    // Tag raw statement rows as expense lines so rowCells colors variance correctly
+    const taggedExpSubs = expenseSubs.map(r => r.isExpenseLine ? r : {...r, isExpenseLine:true});
+    if(!mapping) return detailRows(taggedExpSubs, key);
     const expenseItems = PF_LINE_ITEMS.filter(i => !i.isIncome && !i.isComputed && !i.isDebtService && mapping[i.group]);
-    if(!expenseItems.length) return detailRows(expenseSubs, key);
+    if(!expenseItems.length) return detailRows(taggedExpSubs, key);
     return expenseItems.map(item => pfLineItemRow(item, key)).join('');
   }
 
