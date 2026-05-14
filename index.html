@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Stabilized Asset Meeting</title>
+<title>Monthly Property Review</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -224,7 +224,7 @@
 <!-- LOGIN SCREEN -->
 <div class="login-screen" id="login-screen">
   <div class="login-box">
-    <h2>Stabilized Asset Meeting</h2>
+    <h2>Monthly Property Review</h2>
     <p>Enter your @leavenwealth.com email to receive a sign-in link.</p>
     <input class="login-input" type="email" id="login-email" placeholder="you@leavenwealth.com" autocomplete="email">
     <button class="btn btn-primary" style="width:100%;padding:9px" onclick="sendMagicLink()">Send sign-in link</button>
@@ -234,7 +234,7 @@
 
 <div class="topbar">
   <div class="topbar-left">
-    <span class="topbar-title">Stabilized Asset Meeting</span>
+    <span class="topbar-title">Monthly Property Review</span>
     <span class="topbar-month" id="meeting-month">—</span>
     <div class="topbar-search" id="topbar-search">
       <input type="text" placeholder="Search properties..." oninput="filterPortfolio(this.value)" id="prop-search">
@@ -293,6 +293,7 @@
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <span id="detail-status-badge" class="badge badge-neutral">No data</span>
+          <button id="detail-stab-toggle" class="btn" onclick="toggleStabilized()" style="font-size:12px">Stabilized</button>
           <button class="btn" onclick="deleteProperty()" style="color:var(--red);border-color:var(--red-bg)">Remove</button>
         </div>
       </div>
@@ -412,6 +413,13 @@
     <div class="modal-field">
       <label>Purchase date (for proforma year calculation)</label>
       <input type="date" id="modal-purchase-date">
+    </div>
+    <div class="modal-field">
+      <label>Property type</label>
+      <select id="modal-stabilized">
+        <option value="stabilized">Stabilized</option>
+        <option value="nonstabilized">Non-Stabilized</option>
+      </select>
     </div>
     <div class="modal-btns">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -871,6 +879,7 @@ function selectProp(id) {
   const pfYear = p.purchaseDate ? getProformaYear(p.purchaseDate) : null;
   const pfYearStr = pfYear ? ` · Proforma Year ${pfYear}` : ' · No purchase date set';
   document.getElementById('detail-prop-meta').textContent = `${p.system==='buildium'?'Buildium':'Appfolio'} · ${p.units||'?'} units${pfYearStr}`;
+  updateStabToggle(p);
   renderUploadTab(p);
   updateDetailBadge();
   renderNotesTab();
@@ -910,15 +919,35 @@ function addProperty() {
   const system = document.getElementById('modal-system').value;
   const units = parseInt(document.getElementById('modal-units').value)||null;
   const purchaseDate = document.getElementById('modal-purchase-date').value || null;
+  const stabilized = document.getElementById('modal-stabilized').value !== 'nonstabilized';
   const id = 'prop_'+Date.now();
-  properties.push({id,name,system,units,purchaseDate});
+  properties.push({id,name,system,units,purchaseDate,stabilized});
   save(); // fire-and-forget
   closeModal();
   document.getElementById('modal-name').value='';
   document.getElementById('modal-units').value='';
   document.getElementById('modal-purchase-date').value='';
+  document.getElementById('modal-stabilized').value='stabilized';
   renderPortfolio();
   selectProp(id);
+}
+
+function updateStabToggle(p) {
+  const btn = document.getElementById('detail-stab-toggle');
+  if(!btn) return;
+  const isStab = p.stabilized !== false; // null/undefined = stabilized (default)
+  btn.textContent = isStab ? 'Stabilized' : 'Non-Stabilized';
+  btn.style.color = isStab ? 'var(--green)' : 'var(--amber)';
+  btn.style.borderColor = isStab ? 'var(--green)' : 'var(--amber)';
+}
+
+function toggleStabilized() {
+  const p = properties.find(x=>x.id===currentPropId);
+  if(!p) return;
+  p.stabilized = p.stabilized === false; // false → true, true/undefined → false
+  updateStabToggle(p);
+  renderPortfolio();
+  save();
 }
 
 function deleteProperty() {
@@ -4166,59 +4195,69 @@ function renderPortfolio() {
   });
 
 
-  const groups = {};
-  GROUP_ORDER.forEach(pm => groups[pm] = []);
-  properties.forEach(p => {
-    const pm = PM_MAP[p.name] || 'Other';
-    if(!groups[pm]) groups[pm] = [];
-    groups[pm].push(p);
-  });
+  // Split properties into Stabilized (default) and Non-Stabilized
+  const stabProps = properties.filter(p => p.stabilized !== false);
+  const nonStabProps = properties.filter(p => p.stabilized === false);
 
-  let tbody = '';
-  GROUP_ORDER.forEach(pm => {
-    const props = groups[pm];
-    if(!props.length) return;
-    const isOpen = !!groupOpenState[pm];
-    // Group summary dot — worst status in group
-    const dots = props.map(p => getStatusDot(p.id));
-    const hasFlag = dots.some(d=>d==='dot-flag');
-    const hasWarn = dots.some(d=>d==='dot-warn');
-    const hasLoaded = dots.some(d=>d!=='dot-none');
-    const summaryDotClass = !hasLoaded ? 'dot-none' : hasFlag ? 'dot-flag' : hasWarn ? 'dot-warn' : 'dot-ok';
-    // Group NOI totals — use annualized NOI to match per-property row logic
-    function getAvgMonthlyNoi(propId) {
-      const stmt = (propData[propId]||{}).statement;
-      if(!stmt) return 0;
-      const noiRow = stmt.rows.find(r=>r.isNOI);
-      if(!noiRow) return 0;
-      const monthsWithData = noiRow.values.filter(v=>v!==0).length || 1;
-      return noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
-    }
-    const groupNoi = props.reduce((sum,p)=>sum+getAvgMonthlyNoi(p.id), 0);
-    const groupBgNoi = props.reduce((sum,p)=>{ const n=getKeyMetric(p.id,'budget_noi'); return sum+(n?n/12:0); }, 0);
-    const groupLoaded = props.filter(p=>propData[p.id]&&propData[p.id].statement).length;
-    const groupNoteCount = props.reduce((sum,p)=>sum+notes.filter(n=>n.propId===p.id).length,0);
-    const noiVar = groupNoi&&groupBgNoi ? (() => {
-      const pct = (groupNoi-groupBgNoi)/Math.abs(groupBgNoi)*100;
-      return `<span class="${pct>=0?'val-pos':'val-neg'}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
-    })() : '—';
+  function getAvgMonthlyNoi(propId) {
+    const stmt = (propData[propId]||{}).statement;
+    if(!stmt) return 0;
+    const noiRow = stmt.rows.find(r=>r.isNOI);
+    if(!noiRow) return 0;
+    const monthsWithData = noiRow.values.filter(v=>v!==0).length || 1;
+    return noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
+  }
 
-    tbody += `<tr class="ptbl-group-row" data-pm="${pm}" onclick="togglePortfolioGroup('${pm}')">
-      <td colspan="9">
-        <span class="ptbl-chevron ${isOpen?'open':''}">▶</span>
-        <span class="prop-dot ${summaryDotClass}" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle"></span>
-        ${pm}
-        <span style="font-weight:400;color:var(--text3);margin-left:8px;text-transform:none;letter-spacing:0">${props.length} properties · ${groupLoaded} loaded</span>
-        ${groupNoi?`<span style="font-weight:400;color:var(--text2);margin-left:16px;text-transform:none;letter-spacing:0">NOI ${fmt(groupNoi)} ${noiVar}</span>`:''}
-        ${groupNoteCount?`<span style="font-weight:400;margin-left:16px;text-transform:none;letter-spacing:0"><span class="badge badge-neutral">${groupNoteCount} note${groupNoteCount>1?'s':''}</span></span>`:''}
-      </td>
-    </tr>`;
-    props.forEach(p => {
-      const rowHtml = portfolioPropRow(p, pm, isOpen);
-      tbody += rowHtml;
+  function buildPmGroups(propList) {
+    const groups = {};
+    GROUP_ORDER.forEach(pm => groups[pm] = []);
+    propList.forEach(p => {
+      const pm = PM_MAP[p.name] || 'Other';
+      if(!groups[pm]) groups[pm] = [];
+      groups[pm].push(p);
     });
-  });
+    return groups;
+  }
 
+  function renderSection(propList, sectionLabel, sectionKey) {
+    if(!propList.length) return '';
+    const groups = buildPmGroups(propList);
+    const allPms = [...GROUP_ORDER, ...Object.keys(groups).filter(k=>!GROUP_ORDER.includes(k))];
+    let html = `<tr><td colspan="9" style="padding:8px 12px 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text2);background:var(--bg);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:2">${sectionLabel} <span style="font-weight:400;color:var(--text3)">(${propList.length})</span></td></tr>`;
+    allPms.forEach(pm => {
+      const props = groups[pm];
+      if(!props || !props.length) return;
+      const stateKey = sectionKey + '_' + pm;
+      const isOpen = groupOpenState[stateKey] !== false; // default open
+      const dots = props.map(p => getStatusDot(p.id));
+      const hasFlag = dots.some(d=>d==='dot-flag');
+      const hasWarn = dots.some(d=>d==='dot-warn');
+      const hasLoaded = dots.some(d=>d!=='dot-none');
+      const summaryDotClass = !hasLoaded ? 'dot-none' : hasFlag ? 'dot-flag' : hasWarn ? 'dot-warn' : 'dot-ok';
+      const groupNoi = props.reduce((sum,p)=>sum+getAvgMonthlyNoi(p.id), 0);
+      const groupBgNoi = props.reduce((sum,p)=>{ const n=getKeyMetric(p.id,'budget_noi'); return sum+(n?n/12:0); }, 0);
+      const groupLoaded = props.filter(p=>propData[p.id]&&propData[p.id].statement).length;
+      const groupNoteCount = props.reduce((sum,p)=>sum+notes.filter(n=>n.propId===p.id).length,0);
+      const noiVar = groupNoi&&groupBgNoi ? (() => {
+        const pct = (groupNoi-groupBgNoi)/Math.abs(groupBgNoi)*100;
+        return `<span class="${pct>=0?'val-pos':'val-neg'}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
+      })() : '—';
+      html += `<tr class="ptbl-group-row" data-pm="${escHtml(stateKey)}" onclick="togglePortfolioGroup('${escHtml(stateKey)}')">
+        <td colspan="9">
+          <span class="ptbl-chevron ${isOpen?'open':''}" id="bch-${escHtml(stateKey)}">▶</span>
+          <span class="prop-dot ${summaryDotClass}" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle"></span>
+          ${pm}
+          <span style="font-weight:400;color:var(--text3);margin-left:8px;text-transform:none;letter-spacing:0">${props.length} properties · ${groupLoaded} loaded</span>
+          ${groupNoi?`<span style="font-weight:400;color:var(--text2);margin-left:16px;text-transform:none;letter-spacing:0">NOI ${fmt(groupNoi)} ${noiVar}</span>`:''}
+          ${groupNoteCount?`<span style="font-weight:400;margin-left:16px;text-transform:none;letter-spacing:0"><span class="badge badge-neutral">${groupNoteCount} note${groupNoteCount>1?'s':''}</span></span>`:''}
+        </td>
+      </tr>`;
+      props.forEach(p => { html += portfolioPropRow(p, stateKey, isOpen); });
+    });
+    return html;
+  }
+
+  let tbody = renderSection(stabProps, 'Stabilized', 'stab') + renderSection(nonStabProps, 'Non-Stabilized', 'ns');
   if(!properties.length) tbody=`<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
   document.getElementById('portfolio-tbody').innerHTML=tbody;
   document.getElementById('pk-loaded').textContent=loaded;
