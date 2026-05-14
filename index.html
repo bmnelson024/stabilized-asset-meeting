@@ -262,7 +262,11 @@
           <h2>Portfolio overview</h2>
           <div class="portfolio-sub" id="portfolio-sub">Upload files for each property to see performance summary.</div>
         </div>
-        <div id="portfolio-last-saved" style="font-size:12px;color:var(--text3)"></div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div id="portfolio-last-saved" style="font-size:12px;color:var(--text3)"></div>
+          <button class="btn" style="font-size:12px;padding:4px 10px" onclick="setAllGroups(true)">Expand all</button>
+          <button class="btn" style="font-size:12px;padding:4px 10px" onclick="setAllGroups(false)">Collapse all</button>
+        </div>
       </div>
       <div class="portfolio-kpis" id="portfolio-kpis">
         <div class="kpi-card"><div class="kpi-label">Properties loaded</div><div class="kpi-val" id="pk-loaded">0</div></div>
@@ -4162,6 +4166,25 @@ function portfolioPropRow(p, pm, isOpen) {
     <td>${t12VsPfHTML}</td>
     <td>${propNoteCount?`<span class="badge badge-neutral">${propNoteCount} note${propNoteCount>1?'s':''}</span>`:'—'}</td>
   </tr>`;
+}
+
+function setAllGroups(open) {
+  const tbody = document.getElementById('portfolio-tbody');
+  // Collect all unique group keys from the rendered rows
+  const keys = new Set();
+  tbody.querySelectorAll('.ptbl-group-row').forEach(row => keys.add(row.getAttribute('data-pm')));
+  keys.forEach(pm => {
+    groupOpenState[pm] = open;
+    const groupRow = tbody.querySelector(`[data-pm="${CSS.escape(pm)}"]`);
+    if(groupRow) {
+      const ch = groupRow.querySelector('.ptbl-chevron');
+      if(ch) ch.classList.toggle('open', open);
+    }
+    tbody.querySelectorAll(`.ptbl-prop-row[data-pm="${CSS.escape(pm)}"]`).forEach(row => {
+      row.classList.toggle('hidden', !open);
+    });
+  });
+  saveGroupState();
 }
 
 function togglePortfolioGroup(pm) {
