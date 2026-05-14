@@ -3485,10 +3485,14 @@ function showAcqColumnMapper(propId, rawData, filename, sheetNames, wb) {
   if(!el) return;
 
   // ── Sheet selector ──────────────────────────────────────────────────────────
-  let currentSheet = 0;
-  let currentData = rawData;
-  let headerRowIdx = autoDetectHeaderRow(rawData);
-  let skipRows = headerRowIdx >= 0 ? headerRowIdx : 0;
+  const _existingState = window._acqMapperState && window._acqMapperState[propId];
+  let currentSheet = _existingState ? _existingState.currentSheet : 0;
+  let currentData = _existingState ? _existingState.currentData : rawData;
+  let headerRowIdx = autoDetectHeaderRow(currentData);
+  // Use manually-set skipRows from state if available, otherwise auto-detect
+  let skipRows = (_existingState && _existingState.skipRows !== undefined)
+    ? _existingState.skipRows
+    : (headerRowIdx >= 0 ? headerRowIdx : 0);
 
   function renderMapper() {
     const previewRows = currentData.slice(skipRows, skipRows + 8);
