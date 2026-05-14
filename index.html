@@ -259,7 +259,7 @@
   <div class="portfolio-view active" id="portfolio-view">
       <div class="portfolio-header" style="display:flex;align-items:baseline;justify-content:space-between">
         <div>
-          <h2>Portfolio overview</h2>
+          <h2>Portfolio Overview</h2>
           <div class="portfolio-sub" id="portfolio-sub">Upload files for each property to see performance summary.</div>
         </div>
         <div style="display:flex;align-items:center;gap:12px">
@@ -1054,7 +1054,7 @@ function renderUploadTab(p) {
         if(rrU && rrU.length) {
           const occ = rrU.filter(u=>!u.isVacant).length;
           const pct = (occ/rrU.length*100).toFixed(0);
-          const occColor = pct>=95?'var(--green)':pct>=85?'var(--text)':'#ffa040';
+          const occColor = pct>=90?'var(--green)':pct>=85?'#ffa040':'var(--red)';
           occCard = `<div class="kpi-card">
             <div class="kpi-label">Occupancy</div>
             <div style="font-size:16px;font-weight:500;color:${occColor}">${pct}%</div>
@@ -3288,7 +3288,7 @@ function renderBenchmarkTab() {
     const occOccupied = rrUnitsB.filter(u=>!u.isVacant).length;
     const occTotal    = rrUnitsB.length;
     const occActual   = occOccupied / occTotal * 100;
-    const occColor    = occActual >= 95 ? 'var(--green)' : occActual >= 85 ? 'var(--text)' : '#ffa040';
+    const occColor    = occActual >= 90 ? 'var(--green)' : occActual >= 85 ? '#ffa040' : 'var(--red)';
     const fmtOcc      = v => `${v.toFixed(1)}%`;
 
     // Proforma occupancy: look for vacancy/credit loss row and back-calculate,
@@ -4103,7 +4103,7 @@ function portfolioPropRow(p, pm, isOpen) {
   if(rrUnitsP && rrUnitsP.length) {
     const occupiedP = rrUnitsP.filter(u=>!u.isVacant).length;
     const occPctP = (occupiedP / rrUnitsP.length * 100).toFixed(0);
-    const occColor = occPctP >= 95 ? 'var(--green)' : occPctP >= 85 ? 'var(--text)' : '#ffa040';
+    const occColor = occPctP >= 90 ? 'var(--green)' : occPctP >= 85 ? '#ffa040' : 'var(--red)';
     occHTML = `<span style="color:${occColor};font-weight:500">${occPctP}%</span> <span style="color:var(--text3);font-size:11px">${occupiedP}/${rrUnitsP.length}</span>`;
   }
 
