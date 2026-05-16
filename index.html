@@ -1666,6 +1666,18 @@ function parseBuildiumRentRoll(data) {
     if(data[i] && data[i][0]==='Unit' && data[i][4]==='Bed/Bath') { headerRow=i; break; }
   }
   if(headerRow<0) throw new Error('Could not find rent roll header row in Buildium file.');
+
+  // Detect columns from header row
+  const hdr = data[headerRow].map(c => (c||'').toString().trim().toLowerCase());
+  const rentCol       = hdr.findIndex(h => h === 'rent');
+  const marketRentCol = hdr.findIndex(h => h.includes('market rent') || h === 'market');
+  const bdbaCol       = hdr.findIndex(h => h === 'bed/bath');
+  const tenantsCol    = hdr.findIndex(h => h === 'tenants');
+  // Fall back to fixed positions if headers not found
+  const _rentCol   = rentCol   >= 0 ? rentCol   : 7;
+  const _bdbaCol   = bdbaCol   >= 0 ? bdbaCol   : 4;
+  const _tenantsCol= tenantsCol>= 0 ? tenantsCol: 1;
+
   const units = [];
   for(let i=headerRow+1;i<data.length;i++){
     const row = data[i];
@@ -1673,14 +1685,16 @@ function parseBuildiumRentRoll(data) {
     const unitNum = row[0].toString().trim();
     if(!unitNum) continue;
     if(unitNum.toLowerCase().includes('total') || unitNum.toLowerCase().includes('grand')) break;
-    if(unitNum.toLowerCase() === 'unit') continue; // skip stray header rows
-    const bdba = row[4] ? row[4].toString().trim() : '';
-    if(!bdba) continue; // skip property-name group header rows — no Bed/Bath means not a unit
-    const tenants = row[1] ? row[1].toString().trim() : '';
+    if(unitNum.toLowerCase() === 'unit') continue;
+    const bdba = row[_bdbaCol] ? row[_bdbaCol].toString().trim() : '';
+    if(!bdba) continue;
+    const tenants = row[_tenantsCol] ? row[_tenantsCol].toString().trim() : '';
     const isVacant = !tenants || tenants.toUpperCase()==='VACANT' || tenants.toLowerCase()==='no tenant';
     const unitType = normalizeUnitType(bdba, 'buildium');
-    const marketRent = parseFloat(row[7]) || 0;
-    const actualRent = parseFloat(row[8]) || 0;
+    // "Rent" column = contracted base rent (actual rent paid)
+    // Market rent only present if file has explicit market rent column
+    const actualRent = parseFloat(row[_rentCol]) || 0;
+    const marketRent = marketRentCol >= 0 ? (parseFloat(row[marketRentCol]) || 0) : actualRent;
     units.push({unitNum, unitType, tier:'Classic', isVacant, marketRent, actualRent, sqft:0, status: isVacant?'Vacant':'Current', tags:''});
   }
   return {units, system:'buildium'};
