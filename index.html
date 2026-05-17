@@ -3149,6 +3149,11 @@ function renderBenchmarkTab() {
           } else if(lc.includes('total') || lc.includes('debt service')) {
             pfAnnual = (interestAnnual||0) + (principalAnnual||0) || null;
           }
+          // Fallback: if still no match but proforma has DS rows, use their total
+          // (handles generic "Debt Service" labels that don't split interest/principal)
+          if(pfAnnual === null && pfDSRows.length) {
+            pfAnnual = pfDSRows.reduce((s, r) => s + r.total, 0) || null;
+          }
         }
       }
       if(pfRow && pfAnnual === null) pfAnnual = pfRow.total || null;
