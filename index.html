@@ -2315,7 +2315,7 @@ function parseProformaTemplate(ws, purchaseDate) {
   }
   if(!Object.keys(yearDataCols).length) throw new Error('LW Pro Forma template: no Year columns found in row 1.');
 
-  let inExpenseSection = false, inDebtSection = false, pastNOI = false;
+  let inExpenseSection = false, inDebtSection = false, inAMFSection = false, pastNOI = false;
   const rows = [];
 
   for(let i = 1; i < data.length; i++) {
@@ -2326,20 +2326,22 @@ function parseProformaTemplate(ws, purchaseDate) {
     const lc = rawLabel.toLowerCase();
 
     // Section headers — no numeric data, just labels
-    if(lc === 'income')        { inExpenseSection = false; inDebtSection = false; continue; }
-    if(lc === 'expenses')      { inExpenseSection = true;  inDebtSection = false; continue; }
-    if(lc === 'debt service')  { inExpenseSection = false; inDebtSection = true;  continue; }
+    if(lc === 'income')               { inExpenseSection = false; inDebtSection = false; inAMFSection = false; continue; }
+    if(lc === 'expenses')             { inExpenseSection = true;  inDebtSection = false; inAMFSection = false; continue; }
+    if(lc === 'debt service')         { inExpenseSection = false; inDebtSection = true;  inAMFSection = false; continue; }
+    if(lc === 'asset management fee') { inExpenseSection = false; inDebtSection = false; inAMFSection = true;  continue; }
 
     const isTotalIncome  = lc.includes('total effective gross income') || lc === 'total income';
     const isTotalExpense = lc.includes('total operating expense') || lc === 'total expenses';
     const isNOI          = lc.includes('net operating income');
     const isDebtService  = inDebtSection && !isNOI && !lc.includes('net cash flow');
+    const isAssetMgmt    = inAMFSection  && !isNOI && !lc.includes('net cash flow');
     const isNetIncome    = lc.includes('net cash flow') || lc.includes('cash flow after debt');
 
-    if(isNOI) { pastNOI = true; inExpenseSection = false; inDebtSection = false; }
+    if(isNOI) { pastNOI = true; inExpenseSection = false; inDebtSection = false; inAMFSection = false; }
 
     const isTotal    = isTotalIncome || isTotalExpense;
-    const isLineItem = !isNOI && !isTotal && !isDebtService && !isNetIncome;
+    const isLineItem = !isNOI && !isTotal && !isDebtService && !isAssetMgmt && !isNetIncome;
 
     // All template values are monthly — annualize × 12
     const yearlyTotals = {};
@@ -2355,11 +2357,11 @@ function parseProformaTemplate(ws, purchaseDate) {
 
     rows.push({
       label: rawLabel,
-      isNOI, isTotalIncome, isTotalExpense, isTotal, isNetIncome, isDebtService,
+      isNOI, isTotalIncome, isTotalExpense, isTotal, isNetIncome, isDebtService, isAssetMgmt,
       isCategory: false, isSubtotal: false,
-      level: (isTotal || isNOI || isNetIncome || isDebtService) ? 0 : 1,
+      level: (isTotal || isNOI || isNetIncome || isDebtService || isAssetMgmt) ? 0 : 1,
       isExpenseLine: inExpenseSection && isLineItem,
-      isIncomeLine:  !inExpenseSection && !inDebtSection && isLineItem && !pastNOI,
+      isIncomeLine:  !inExpenseSection && !inDebtSection && !inAMFSection && isLineItem && !pastNOI,
       yearlyTotals,
       total:  annualVal,
       values: Array(12).fill(annualVal / 12),
@@ -3086,6 +3088,9 @@ function renderBenchmarkTab() {
     return DEBT_SERVICE_KEYS.some(k => lc.includes(k));
   };
 
+  // Asset management fee detection
+  const isAssetMgmtFee = r => r.isAssetMgmt || r.label.toLowerCase().includes('asset management');
+
   // Find the four anchor rows from the statement
   const anchorIncome  = stmt.rows.find(r => r.isTotalIncome);
   const anchorExpense = stmt.rows.find(r => r.isTotalExpense);
@@ -3110,6 +3115,7 @@ function renderBenchmarkTab() {
     (idxExpense < 0 || ri < idxExpense)
   );
   const debtSubs    = stmt.rows.filter(r => isDebtService(r));
+  const amfSubs     = stmt.rows.filter(r => isAssetMgmtFee(r) && !isDebtService(r));
 
   // If statement has no debt service rows, synthesize them from override or proforma
   const dsOverride = d.debtServiceOverride || {};
@@ -3156,7 +3162,7 @@ function renderBenchmarkTab() {
     const actual = r.values[mi];
     const t12Avg = r.values.reduce((a,b)=>a+b,0) / r.values.length;
     const t12Var = actual - t12Avg;
-    const isExp = r.isTotalExpense || r.isDebtService || r.isExpenseLine;
+    const isExp = r.isTotalExpense || r.isDebtService || r.isExpenseLine || r.isAssetMgmt || isAssetMgmtFee(r);
     const varGood = v => isExp ? v <= 0 : v >= 0;
 
     let pfAnnual = r._pfAnnual !== undefined ? r._pfAnnual : null;
@@ -3200,6 +3206,11 @@ function renderBenchmarkTab() {
           if(pfAnnual === null && pfDSRows.length) {
             pfAnnual = pfDSRows.reduce((s, r) => s + r.total, 0) || null;
           }
+        }
+        // Asset management fee — match by label or isAssetMgmt flag
+        if(pfAnnual === null && isAssetMgmtFee(r)) {
+          const pfAmfRow = pf.rows.find(x => x.isAssetMgmt || x.label.toLowerCase().includes('asset management'));
+          if(pfAmfRow) pfAnnual = pfAmfRow.total || null;
         }
       }
       if(pfRow && pfAnnual === null) pfAnnual = pfRow.total || null;
@@ -3276,6 +3287,18 @@ function renderBenchmarkTab() {
     <div class="bench-wrap"><table class="bench-table">
     <thead><tr>${cols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
     <tbody>`;
+
+  function amfDetailRows(rows, key) {
+    if(!rows.length) return '';
+    const isOpen = !!benchOpenState[currentPropId+'|'+key];
+    // Tag rows so rowCells knows they're expense-direction
+    return rows.map(r => {
+      const tagged = {...r, isAssetMgmt: true};
+      return `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
+        <td>${r.label}</td>${rowCells(tagged, monthIdx)}
+      </tr>`;
+    }).join('');
+  }
 
   function debtDetailRows(rows, key) {
     if(!rows.length) return '';
@@ -3498,7 +3521,7 @@ function renderBenchmarkTab() {
 
   if(anchorIncome)  html += summaryRow(anchorIncome,  'income',  'row-total', hasIncomeSubs,              'Total Operating Income')  + incomeDetailRows('income');
   if(anchorExpense) html += summaryRow(anchorExpense, 'expense', 'row-total', hasExpenseSubs,             'Total Operating Expense') + expenseDetailRows('expense');
-  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',   effectiveDebtSubs.length>0, 'Net Operating Income')    + debtDetailRows(effectiveDebtSubs,'noi');
+  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',   amfSubs.length>0||effectiveDebtSubs.length>0, 'Net Operating Income') + amfDetailRows(amfSubs,'noi') + debtDetailRows(effectiveDebtSubs,'noi');
   if(anchorNet)     html += summaryRow(anchorNet,     'net',     'row-net',   false,                      'Net Income / Cash Flow');
 
   html += `</tbody></table></div></div>`;
