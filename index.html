@@ -3304,18 +3304,16 @@ function renderBenchmarkTab() {
   function capexDetailRows(rows, key) {
     if(!rows.length) return '';
     const isOpen = !!benchOpenState[currentPropId+'|'+key];
-    return rows.map(r => {
-      // Capex has no proforma/budget target — show actual and T12 avg only, dashes for variance cols
-      const actual  = r.values[monthIdx];
-      const t12Avg  = r.values.reduce((a,b)=>a+b,0) / r.values.length;
-      let cells = `<td>${fmt(actual)}</td>`;
-      if(hasBG) cells += `<td>—</td><td>—</td><td>—</td>`;
-      cells += `<td>${fmt(t12Avg)}</td>`;
-      if(hasPF) cells += `<td>—</td><td>—</td><td>—</td>`;
-      return `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
-        <td>${r.label}</td>${cells}
-      </tr>`;
-    }).join('');
+    // Aggregate all capex lines into a single summary row
+    const actual = rows.reduce((s,r) => s + r.values[monthIdx], 0);
+    const t12Avg = rows.reduce((s,r) => s + r.values.reduce((a,b)=>a+b,0)/r.values.length, 0);
+    let cells = `<td>${fmt(actual)}</td>`;
+    if(hasBG) cells += `<td>—</td><td>—</td><td>—</td>`;
+    cells += `<td>${fmt(t12Avg)}</td>`;
+    if(hasPF) cells += `<td>—</td><td>—</td><td>—</td>`;
+    return `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
+      <td>Capital Expenditures</td>${cells}
+    </tr>`;
   }
 
   function debtDetailRows(rows, key) {
