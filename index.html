@@ -3538,7 +3538,22 @@ function renderBenchmarkTab() {
   if(anchorIncome)  html += summaryRow(anchorIncome,  'income',  'row-total', hasIncomeSubs,              'Total Operating Income')  + incomeDetailRows('income');
   if(anchorExpense) html += summaryRow(anchorExpense, 'expense', 'row-total', hasExpenseSubs,             'Total Operating Expense') + expenseDetailRows('expense');
   if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',   amfSubs.length>0||capexSubs.length>0||effectiveDebtSubs.length>0, 'Net Operating Income') + amfDetailRows(amfSubs,'noi') + capexDetailRows(capexSubs,'noi') + debtDetailRows(effectiveDebtSubs,'noi');
-  if(anchorNet)     html += summaryRow(anchorNet,     'net',     'row-net',   false,                      'Net Income / Cash Flow');
+
+  // Effective Cash Flow = NOI - AMF - Capex - Debt Service (computed, not read from statement)
+  if(anchorNOI) {
+    const sumValues = rows => rows.reduce((s,r) => s.map((v,i) => v + (r.values[i]||0)), Array(12).fill(0));
+    const efcfValues = anchorNOI.values.map((v,i) =>
+      v - sumValues(amfSubs)[i] - sumValues(capexSubs)[i] - sumValues(effectiveDebtSubs)[i]
+    );
+    const efcfRow = {
+      label: 'Effective Cash Flow', isNetIncome: true,
+      isNOI: false, isTotalIncome: false, isTotalExpense: false, isTotal: false,
+      isDebtService: false, isAssetMgmt: false, isCategory: false, isSubtotal: false,
+      isExpenseLine: false, isIncomeLine: false, level: 0,
+      values: efcfValues, total: efcfValues.reduce((a,b)=>a+b,0),
+    };
+    html += summaryRow(efcfRow, 'net', 'row-net', false, 'Effective Cash Flow');
+  }
 
   html += `</tbody></table></div></div>`;
 
