@@ -3114,8 +3114,10 @@ function renderBenchmarkTab() {
     (idxIncome < 0 || ri > idxIncome) &&
     (idxExpense < 0 || ri < idxExpense)
   );
+  const isCapex     = r => { const lc = r.label.toLowerCase(); return lc.includes('capex') || lc.includes('capital expenditure') || lc.includes('capital improvement'); };
   const debtSubs    = stmt.rows.filter(r => isDebtService(r));
   const amfSubs     = stmt.rows.filter(r => isAssetMgmtFee(r) && !isDebtService(r));
+  const capexSubs   = stmt.rows.filter(r => isCapex(r) && !isDebtService(r) && !isAssetMgmtFee(r));
 
   // If statement has no debt service rows, synthesize them from override or proforma
   const dsOverride = d.debtServiceOverride || {};
@@ -3162,7 +3164,7 @@ function renderBenchmarkTab() {
     const actual = r.values[mi];
     const t12Avg = r.values.reduce((a,b)=>a+b,0) / r.values.length;
     const t12Var = actual - t12Avg;
-    const isExp = r.isTotalExpense || r.isDebtService || r.isExpenseLine || r.isAssetMgmt || isAssetMgmtFee(r);
+    const isExp = r.isTotalExpense || r.isDebtService || r.isExpenseLine || r.isAssetMgmt || isAssetMgmtFee(r) || isCapex(r);
     const varGood = v => isExp ? v <= 0 : v >= 0;
 
     let pfAnnual = r._pfAnnual !== undefined ? r._pfAnnual : null;
@@ -3291,11 +3293,27 @@ function renderBenchmarkTab() {
   function amfDetailRows(rows, key) {
     if(!rows.length) return '';
     const isOpen = !!benchOpenState[currentPropId+'|'+key];
-    // Tag rows so rowCells knows they're expense-direction
     return rows.map(r => {
       const tagged = {...r, isAssetMgmt: true};
       return `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
         <td>${r.label}</td>${rowCells(tagged, monthIdx)}
+      </tr>`;
+    }).join('');
+  }
+
+  function capexDetailRows(rows, key) {
+    if(!rows.length) return '';
+    const isOpen = !!benchOpenState[currentPropId+'|'+key];
+    return rows.map(r => {
+      // Capex has no proforma/budget target — show actual and T12 avg only, dashes for variance cols
+      const actual  = r.values[monthIdx];
+      const t12Avg  = r.values.reduce((a,b)=>a+b,0) / r.values.length;
+      let cells = `<td>${fmt(actual)}</td>`;
+      if(hasBG) cells += `<td>—</td><td>—</td><td>—</td>`;
+      cells += `<td>${fmt(t12Avg)}</td>`;
+      if(hasPF) cells += `<td>—</td><td>—</td><td>—</td>`;
+      return `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
+        <td>${r.label}</td>${cells}
       </tr>`;
     }).join('');
   }
@@ -3521,7 +3539,7 @@ function renderBenchmarkTab() {
 
   if(anchorIncome)  html += summaryRow(anchorIncome,  'income',  'row-total', hasIncomeSubs,              'Total Operating Income')  + incomeDetailRows('income');
   if(anchorExpense) html += summaryRow(anchorExpense, 'expense', 'row-total', hasExpenseSubs,             'Total Operating Expense') + expenseDetailRows('expense');
-  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',   amfSubs.length>0||effectiveDebtSubs.length>0, 'Net Operating Income') + amfDetailRows(amfSubs,'noi') + debtDetailRows(effectiveDebtSubs,'noi');
+  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',   amfSubs.length>0||capexSubs.length>0||effectiveDebtSubs.length>0, 'Net Operating Income') + amfDetailRows(amfSubs,'noi') + capexDetailRows(capexSubs,'noi') + debtDetailRows(effectiveDebtSubs,'noi');
   if(anchorNet)     html += summaryRow(anchorNet,     'net',     'row-net',   false,                      'Net Income / Cash Flow');
 
   html += `</tbody></table></div></div>`;
