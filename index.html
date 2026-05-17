@@ -2262,8 +2262,10 @@ function parseProformaTemplate(ws, purchaseDate) {
   for(let ci = 1; ci < headerRow.length; ci++) {
     const h = headerRow[ci];
     if(!h) continue;
-    const m = h.toString().trim().match(/^Year\s*(\d+)$/i);
-    if(m) yearDataCols[parseInt(m[1])] = ci;
+    const hs = h.toString().trim();
+    const m = hs.match(/^Year\s*(\d+)/i);
+    // Only use monthly input columns — skip the Annual reference columns
+    if(m && !hs.toLowerCase().includes('ann')) yearDataCols[parseInt(m[1])] = ci;
   }
   if(!Object.keys(yearDataCols).length) throw new Error('LW Pro Forma template: no Year columns found in row 1.');
 
