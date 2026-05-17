@@ -4067,18 +4067,158 @@ function renderRentProgressionTab() {
     return;
   }
 
-  // Filter out phantom header rows that slipped through old parser versions:
-  // real header rows have no rent data at all and an Unknown unit type
   const validUnits = rr.units.filter(u => !(u.unitType === 'Unknown' && u.marketRent === 0 && u.actualRent === 0));
-
   const hasAnyAcq = Object.keys(acqUnits).length > 0;
-  // Only show market rent columns if at least one unit has acq market rent data
   const hasAnyAcqMarket = Object.values(acqUnits).some(u => u.marketRent);
 
-  // Unit-level table
-  let html = `<div class="bench-section">
-    <div class="bench-title">Unit-level rent progression${p.purchaseDate?' — purchased '+new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',year:'numeric'}):''}
-      ${!hasAnyAcq?'<span style="font-size:11px;color:var(--amber);margin-left:8px">↑ Enter acquisition rents on the Upload tab</span>':''}</div>
+  // ── Pre-compute overall summary values ────────────────────────────────────
+  const allOccupied = validUnits.filter(u => !u.isVacant);
+  const allWithAcqActual = validUnits.filter(u => acqUnits[u.unitNum]?.actualRent);
+  const allOccupiedWithAcq = allWithAcqActual.filter(u => !u.isVacant);
+  const allWithAcqMarket = hasAnyAcqMarket ? validUnits.filter(u => acqUnits[u.unitNum]?.marketRent) : [];
+
+  const totalCurActual  = allOccupied.reduce((s,u) => s + u.actualRent, 0);
+  const avgCurActualAll = allOccupied.length ? totalCurActual / allOccupied.length : null;
+
+  const totalAcqActual  = allWithAcqActual.reduce((s,u) => s + acqUnits[u.unitNum].actualRent, 0);
+  const totalCurActualAcq = allOccupiedWithAcq.reduce((s,u) => s + u.actualRent, 0);
+  const avgAcqActualAll = allWithAcqActual.length ? totalAcqActual / allWithAcqActual.length : null;
+  const avgCurActualAcq = allOccupiedWithAcq.length ? totalCurActualAcq / allOccupiedWithAcq.length : null;
+  const actGrowthAll    = avgAcqActualAll && avgCurActualAcq !== null
+    ? (avgCurActualAcq - avgAcqActualAll) / avgAcqActualAll * 100 : null;
+
+  // ── Proforma rent comparison ───────────────────────────────────────────────
+  const pf = d.proforma ? rehydrateProforma(d.proforma, p.purchaseDate) : null;
+  const pfYear = pf ? (getProformaYear(p.purchaseDate) || pf.pfYear || 1) : null;
+  // Find Gross Potential Rent line in proforma, fall back to any income line
+  let pfGPRRow = null;
+  if(pf) {
+    pfGPRRow = pf.rows.find(r => r.isIncomeLine && (
+      r.label.toLowerCase().includes('gross potential') ||
+      r.label.toLowerCase().includes('gross rent') ||
+      r.label.toLowerCase().includes('rental income') ||
+      r.label.toLowerCase().includes('total rental')
+    ));
+    if(!pfGPRRow) pfGPRRow = bestRow(pf.rows.filter(r => r.isTotalIncome));
+  }
+  const pfMonthlyTotal = pfGPRRow ? pfGPRRow.total / 12 : null;
+  const pfAvgPerUnit   = pfMonthlyTotal && validUnits.length ? pfMonthlyTotal / validUnits.length : null;
+  const pfVsActual     = pfAvgPerUnit && avgCurActualAll !== null ? avgCurActualAll - pfAvgPerUnit : null;
+  const pfVsPct        = pfVsActual !== null && pfAvgPerUnit ? pfVsActual / pfAvgPerUnit * 100 : null;
+
+  let html = '';
+
+  // ── 1. Overall property summary (always first) ────────────────────────────
+  {
+    const cellStyle = 'display:flex;flex-direction:column;align-items:center;padding:12px 20px;border-right:1px solid var(--border)';
+    const labelStyle = 'font-size:11px;color:var(--text3);margin-bottom:4px';
+    const valStyle   = 'font-size:15px;font-weight:500';
+    const deltaStyle = 'font-size:13px;font-weight:600;margin-top:2px';
+
+    let overallCards = '';
+
+    // Market rent card (only if acq market data exists)
+    if(allWithAcqMarket.length > 0) {
+      const avgAcqMktAll = allWithAcqMarket.reduce((s,u) => s + acqUnits[u.unitNum].marketRent, 0) / allWithAcqMarket.length;
+      const avgCurMktAll = allWithAcqMarket.reduce((s,u) => s + u.marketRent, 0) / allWithAcqMarket.length;
+      const mktG = (avgCurMktAll - avgAcqMktAll) / avgAcqMktAll * 100;
+      overallCards += `<div style="${cellStyle}">
+        <div style="${labelStyle}">Avg market rent</div>
+        <div style="${valStyle}">${fmt(avgAcqMktAll)} → ${fmt(avgCurMktAll)}</div>
+        <div style="${deltaStyle}" class="${mktG>=0?'val-pos':'val-neg'}">${mktG>=0?'+':''}${mktG.toFixed(1)}%</div>
+      </div>`;
+    }
+
+    // Avg actual rent (acquisition → current)
+    if(avgAcqActualAll) {
+      overallCards += `<div style="${cellStyle}">
+        <div style="${labelStyle}">Avg actual rent (acq → now)</div>
+        <div style="${valStyle}">${fmt(avgAcqActualAll)} → ${avgCurActualAcq!==null?fmt(avgCurActualAcq):'—'}</div>
+        <div style="${deltaStyle}" class="${actGrowthAll!==null?(actGrowthAll>=0?'val-pos':'val-neg'):''}">${actGrowthAll!==null?(actGrowthAll>=0?'+':'')+actGrowthAll.toFixed(1)+'%':'—'}</div>
+      </div>`;
+    }
+
+    // Current avg actual rent vs proforma
+    if(pfAvgPerUnit !== null) {
+      const cls = pfVsActual !== null ? (pfVsActual >= 0 ? 'val-pos' : 'val-neg') : '';
+      overallCards += `<div style="${cellStyle}">
+        <div style="${labelStyle}">Avg rent vs Proforma Yr ${pfYear}</div>
+        <div style="${valStyle}">${avgCurActualAll!==null?fmt(avgCurActualAll):'—'} <span style="font-size:12px;color:var(--text3)">vs ${fmt(pfAvgPerUnit)}</span></div>
+        <div style="${deltaStyle}" class="${cls}">${pfVsActual!==null?(pfVsActual>=0?'+':'')+fmtVar(pfVsActual)+' ('+pfVsPct.toFixed(1)+'%)':'—'}</div>
+      </div>`;
+    }
+
+    // Total monthly rent
+    overallCards += `<div style="${cellStyle}">
+      <div style="${labelStyle}">Total monthly rent collected</div>
+      <div style="${valStyle}">${fmt(totalCurActual)}</div>
+      <div style="${deltaStyle}" style="color:var(--text3);font-size:12px">${allOccupied.length} occupied / ${validUnits.length} total</div>
+    </div>`;
+
+    // Units with acq data
+    if(hasAnyAcq) {
+      overallCards += `<div style="display:flex;flex-direction:column;align-items:center;padding:12px 20px">
+        <div style="${labelStyle}">Units with acq. data</div>
+        <div style="${valStyle}">${allWithAcqActual.length} / ${validUnits.length}</div>
+      </div>`;
+    }
+
+    html += `<div class="bench-section">
+      <div class="bench-title">Overall property summary${p.purchaseDate?' — purchased '+new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',year:'numeric'}):''}</div>
+      <div style="border:1px solid var(--border);border-radius:var(--radius-lg);display:flex;flex-wrap:wrap">${overallCards}</div>
+    </div>`;
+  }
+
+  // ── 2. Summary by unit type ───────────────────────────────────────────────
+  const groups = {};
+  validUnits.forEach(u=>{
+    const key = p.system==='appfolio' ? `${u.unitType}||${u.tier}` : u.unitType;
+    if(!groups[key]) groups[key]={unitType:u.unitType, tier:u.tier, units:[]};
+    groups[key].units.push(u);
+  });
+
+  html += `<div class="bench-section">
+    <div class="bench-title">Summary by unit type${!hasAnyAcq?'<span style="font-size:11px;color:var(--amber);margin-left:8px">↑ Enter acquisition rents on the Upload tab to see growth</span>':''}</div>
+    <div class="bench-wrap"><table class="bench-table">
+    <thead><tr>
+      <th style="text-align:left">Unit type</th>
+      ${p.system==='appfolio'?'<th style="text-align:left">Tier</th>':''}
+      <th>Units</th><th>Occupancy</th>
+      ${hasAnyAcqMarket?'<th>Avg acq. market</th><th>Avg current market</th><th>Market growth</th>':''}
+      ${hasAnyAcq?'<th>Avg acq. actual</th>':''}
+      <th>Avg current actual</th>
+      ${hasAnyAcq?'<th>Actual growth</th>':''}
+    </tr></thead><tbody>`;
+
+  Object.keys(groups).sort().forEach(key=>{
+    const g = groups[key];
+    const occupied = g.units.filter(u=>!u.isVacant);
+    const unitsWithAcq = g.units.filter(u=>acqUnits[u.unitNum]);
+    const occPct = g.units.length?(occupied.length/g.units.length*100).toFixed(0)+'%':'—';
+    const avgCurMarket = g.units.length?g.units.reduce((a,u)=>a+u.marketRent,0)/g.units.length:0;
+    const avgCurActual = occupied.length?occupied.reduce((a,u)=>a+u.actualRent,0)/occupied.length:0;
+    const avgAcqMarket = unitsWithAcq.length?unitsWithAcq.reduce((a,u)=>a+(acqUnits[u.unitNum].marketRent||0),0)/unitsWithAcq.length:null;
+    const avgAcqActual = unitsWithAcq.length?unitsWithAcq.reduce((a,u)=>a+(acqUnits[u.unitNum].actualRent||0),0)/unitsWithAcq.length:null;
+    const mktGrowth = avgAcqMarket?(avgCurMarket-avgAcqMarket)/avgAcqMarket*100:null;
+    const actGrowth = avgAcqActual?(avgCurActual-avgAcqActual)/avgAcqActual*100:null;
+    const tierBadge = p.system==='appfolio'
+      ?`<td><span class="badge ${g.tier==='Full remodel'?'badge-ok':g.tier==='Partial remodel'?'badge-warn':'badge-neutral'}">${g.tier}</span></td>`:'';
+    html+=`<tr>
+      <td style="font-weight:500">${g.unitType}</td>${tierBadge}
+      <td>${g.units.length}</td><td>${occPct}</td>
+      ${hasAnyAcqMarket?`
+      <td>${avgAcqMarket?fmt(avgAcqMarket):'—'}</td><td>${fmt(avgCurMarket)}</td>
+      <td class="${mktGrowth!==null?(mktGrowth>=0?'val-pos':'val-neg'):''}">${mktGrowth!==null?(mktGrowth>=0?'+':'')+mktGrowth.toFixed(1)+'%':'—'}</td>`:''}
+      ${hasAnyAcq?`<td>${avgAcqActual?fmt(avgAcqActual):'—'}</td>`:''}
+      <td>${occupied.length?fmt(avgCurActual):'—'}</td>
+      ${hasAnyAcq?`<td class="${actGrowth!==null?(actGrowth>=0?'val-pos':'val-neg'):''}">${actGrowth!==null?(actGrowth>=0?'+':'')+actGrowth.toFixed(1)+'%':'—'}</td>`:''}
+    </tr>`;
+  });
+  html+=`</tbody></table></div></div>`;
+
+  // ── 3. Unit-level table ───────────────────────────────────────────────────
+  html += `<div class="bench-section">
+    <div class="bench-title">Unit-level detail</div>
     <div style="overflow:auto;max-height:55vh;border:1px solid var(--border);border-radius:var(--radius-lg)">
     <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:700px">
       <thead><tr style="background:var(--bg2)">
@@ -4089,9 +4229,9 @@ function renderRentProgressionTab() {
         <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Acq. market</th>
         <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Current market</th>
         <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Market Δ</th>`:''}
-        <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Acq. actual</th>
+        ${hasAnyAcq?`<th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Acq. actual</th>`:''}
         <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Current actual</th>
-        <th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Actual Δ</th>
+        ${hasAnyAcq?`<th style="padding:8px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1">Actual Δ</th>`:''}
       </tr></thead><tbody>`;
 
   validUnits.forEach(u => {
@@ -4115,104 +4255,13 @@ function renderRentProgressionTab() {
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">${fmt(curMarket)}</td>
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right" class="${mktPct!==null?(mktPct>=0?'val-pos':'val-neg'):''}">
         ${mktPct!==null?`${mktPct>=0?'+':''}${mktPct.toFixed(1)}%`:'—'}</td>`:''}
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">${acqActual?fmt(acqActual):'<span style="color:var(--text3)">—</span>'}</td>
+      ${hasAnyAcq?`<td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">${acqActual?fmt(acqActual):'<span style="color:var(--text3)">—</span>'}</td>`:''}
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">${curActual!==null?fmt(curActual):'<span style="color:var(--text3)">Vacant</span>'}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right" class="${actPct!==null?(actPct>=0?'val-pos':'val-neg'):''}">
-        ${actPct!==null?`${actPct>=0?'+':''}${actPct.toFixed(1)}%`:'—'}</td>
+      ${hasAnyAcq?`<td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right" class="${actPct!==null?(actPct>=0?'val-pos':'val-neg'):''}">
+        ${actPct!==null?`${actPct>=0?'+':''}${actPct.toFixed(1)}%`:'—'}</td>`:''}
     </tr>`;
   });
   html += `</tbody></table></div></div>`;
-
-  // Grouped summary (only when we have acquisition data)
-  if(hasAnyAcq) {
-    const groups = {};
-    validUnits.forEach(u=>{
-      const key = p.system==='appfolio' ? `${u.unitType}||${u.tier}` : u.unitType;
-      if(!groups[key]) groups[key]={unitType:u.unitType, tier:u.tier, units:[]};
-      groups[key].units.push(u);
-    });
-    html += `<div class="bench-section">
-      <div class="bench-title">Summary by unit type</div>
-      <div class="bench-wrap"><table class="bench-table">
-      <thead><tr>
-        <th style="text-align:left">Unit type</th>
-        ${p.system==='appfolio'?'<th style="text-align:left">Tier</th>':''}
-        <th>Units</th><th>Occupancy</th>
-        ${hasAnyAcqMarket?'<th>Avg acq. market</th><th>Avg current market</th><th>Market growth</th>':''}
-        <th>Avg acq. actual</th><th>Avg current actual</th><th>Actual growth</th>
-      </tr></thead><tbody>`;
-    Object.keys(groups).sort().forEach(key=>{
-      const g = groups[key];
-      const occupied = g.units.filter(u=>!u.isVacant);
-      const unitsWithAcq = g.units.filter(u=>acqUnits[u.unitNum]);
-      const occPct = g.units.length?(occupied.length/g.units.length*100).toFixed(0)+'%':'—';
-      const avgCurMarket = g.units.length?g.units.reduce((a,u)=>a+u.marketRent,0)/g.units.length:0;
-      const avgCurActual = occupied.length?occupied.reduce((a,u)=>a+u.actualRent,0)/occupied.length:0;
-      const avgAcqMarket = unitsWithAcq.length?unitsWithAcq.reduce((a,u)=>a+(acqUnits[u.unitNum].marketRent||0),0)/unitsWithAcq.length:null;
-      const avgAcqActual = unitsWithAcq.length?unitsWithAcq.reduce((a,u)=>a+(acqUnits[u.unitNum].actualRent||0),0)/unitsWithAcq.length:null;
-      const mktGrowth = avgAcqMarket?(avgCurMarket-avgAcqMarket)/avgAcqMarket*100:null;
-      const actGrowth = avgAcqActual?(avgCurActual-avgAcqActual)/avgAcqActual*100:null;
-      const tierBadge = p.system==='appfolio'
-        ?`<td><span class="badge ${g.tier==='Full remodel'?'badge-ok':g.tier==='Partial remodel'?'badge-warn':'badge-neutral'}">${g.tier}</span></td>`:'';
-      html+=`<tr>
-        <td style="font-weight:500">${g.unitType}</td>${tierBadge}
-        <td>${g.units.length}</td><td>${occPct}</td>
-        ${hasAnyAcqMarket?`
-        <td>${avgAcqMarket?fmt(avgAcqMarket):'—'}</td><td>${fmt(avgCurMarket)}</td>
-        <td class="${mktGrowth!==null?(mktGrowth>=0?'val-pos':'val-neg'):''}">${mktGrowth!==null?(mktGrowth>=0?'+':'')+mktGrowth.toFixed(1)+'%':'—'}</td>`:''}
-        <td>${avgAcqActual?fmt(avgAcqActual):'—'}</td><td>${occupied.length?fmt(avgCurActual):'—'}</td>
-        <td class="${actGrowth!==null?(actGrowth>=0?'val-pos':'val-neg'):''}">${actGrowth!==null?(actGrowth>=0?'+':'')+actGrowth.toFixed(1)+'%':'—'}</td>
-      </tr>`;
-    });
-    html+=`</tbody></table></div></div>`;
-
-    // ── Overall property summary ─────────────────────────────────────────────
-    const allWithAcqActual = validUnits.filter(u => acqUnits[u.unitNum]?.actualRent);
-    const allOccupiedWithAcq = allWithAcqActual.filter(u => !u.isVacant);
-    const allWithAcqMarket = hasAnyAcqMarket ? validUnits.filter(u => acqUnits[u.unitNum]?.marketRent) : [];
-
-    if(allWithAcqActual.length > 0) {
-      const totalAcqActual  = allWithAcqActual.reduce((s,u) => s + acqUnits[u.unitNum].actualRent, 0);
-      const totalCurActual  = allOccupiedWithAcq.reduce((s,u) => s + u.actualRent, 0);
-      const avgAcqActualAll = totalAcqActual / allWithAcqActual.length;
-      const avgCurActualAll = allOccupiedWithAcq.length ? totalCurActual / allOccupiedWithAcq.length : null;
-      const actGrowthAll    = avgCurActualAll !== null ? (avgCurActualAll - avgAcqActualAll) / avgAcqActualAll * 100 : null;
-
-      let mktOverallHtml = '';
-      if(allWithAcqMarket.length > 0) {
-        const avgAcqMktAll  = allWithAcqMarket.reduce((s,u) => s + acqUnits[u.unitNum].marketRent, 0) / allWithAcqMarket.length;
-        const avgCurMktAll  = allWithAcqMarket.reduce((s,u) => s + u.marketRent, 0) / allWithAcqMarket.length;
-        const mktGrowthAll  = (avgCurMktAll - avgAcqMktAll) / avgAcqMktAll * 100;
-        mktOverallHtml = `
-          <div style="display:flex;flex-direction:column;align-items:center;padding:12px 20px;border-right:1px solid var(--border)">
-            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Avg market rent</div>
-            <div style="font-size:15px;font-weight:500">${fmt(avgAcqMktAll)} → ${fmt(avgCurMktAll)}</div>
-            <div style="font-size:13px;font-weight:600;margin-top:2px" class="${mktGrowthAll>=0?'val-pos':'val-neg'}">${mktGrowthAll>=0?'+':''}${mktGrowthAll.toFixed(1)}%</div>
-          </div>`;
-      }
-
-      html += `<div class="bench-section">
-        <div class="bench-title">Overall property summary</div>
-        <div style="border:1px solid var(--border);border-radius:var(--radius-lg);display:flex;flex-wrap:wrap">
-          ${mktOverallHtml}
-          <div style="display:flex;flex-direction:column;align-items:center;padding:12px 20px;border-right:1px solid var(--border)">
-            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Avg actual rent</div>
-            <div style="font-size:15px;font-weight:500">${fmt(avgAcqActualAll)} → ${avgCurActualAll!==null?fmt(avgCurActualAll):'—'}</div>
-            <div style="font-size:13px;font-weight:600;margin-top:2px" class="${actGrowthAll!==null?(actGrowthAll>=0?'val-pos':'val-neg'):''}">${actGrowthAll!==null?(actGrowthAll>=0?'+':'')+actGrowthAll.toFixed(1)+'%':'—'}</div>
-          </div>
-          <div style="display:flex;flex-direction:column;align-items:center;padding:12px 20px;border-right:1px solid var(--border)">
-            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Units with acq. data</div>
-            <div style="font-size:15px;font-weight:500">${allWithAcqActual.length} / ${validUnits.length}</div>
-          </div>
-          <div style="display:flex;flex-direction:column;align-items:center;padding:12px 20px">
-            <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Total monthly rent</div>
-            <div style="font-size:15px;font-weight:500">${fmt(totalAcqActual)} → ${fmt(totalCurActual)}</div>
-            <div style="font-size:13px;font-weight:600;margin-top:2px" class="${actGrowthAll!==null?(actGrowthAll>=0?'val-pos':'val-neg'):''}">${totalCurActual&&totalAcqActual?(((totalCurActual-totalAcqActual)/totalAcqActual*100)>=0?'+':'')+(((totalCurActual-totalAcqActual)/totalAcqActual*100)).toFixed(1)+'%':'—'}</div>
-          </div>
-        </div>
-      </div>`;
-    }
-  }
 
   container.innerHTML = html;
 }
