@@ -315,6 +315,7 @@
       <div class="tab-content" id="tab-upload">
         <div id="proforma-summary-card" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:16px"></div>
         <div id="mapping-editor" style="display:none;margin-bottom:16px"></div>
+        <div id="escrow-warning" style="display:none;margin-bottom:12px"></div>
         <div class="upload-section">
           <div class="upload-section-title">Monthly files (re-upload each month)</div>
           <div class="upload-grid" id="monthly-upload-grid"></div>
@@ -969,6 +970,29 @@ function deleteProperty() {
   showView('portfolio');
 }
 
+// ─── ESCROW DETECTION ─────────────────────────────────────────────────────────
+function checkMissingEscrow(stmt) {
+  if(!stmt || !stmt.rows || !stmt.months || !stmt.months.length) return null;
+  const now = new Date();
+  const prevLabel = MONTH_NAMES[new Date(now.getFullYear(), now.getMonth()-1, 1).getMonth()]
+                  + ' ' + new Date(now.getFullYear(), now.getMonth()-1, 1).getFullYear();
+  let mi = stmt.months.indexOf(prevLabel);
+  if(mi < 0) mi = stmt.months.indexOf(MONTH_NAMES[now.getMonth()] + ' ' + now.getFullYear());
+  if(mi < 0) mi = stmt.months.length - 1;
+  const month = stmt.months[mi] || '';
+  let foundTax = false, taxOk = false, foundIns = false, insOk = false;
+  stmt.rows.forEach(r => {
+    if(r.isCategory) return;
+    const grp = getStmtMatchGroup(r.label);
+    if(grp === 'tax')      { foundTax = true; if((r.values[mi]||0) > 0) taxOk = true; }
+    if(grp === 'insurance'){ foundIns = true; if((r.values[mi]||0) > 0) insOk = true; }
+  });
+  const taxMissing = foundTax && !taxOk;
+  const insMissing = foundIns && !insOk;
+  if(!taxMissing && !insMissing) return null;
+  return { taxMissing, insMissing, month };
+}
+
 // ─── UPLOAD TAB ───────────────────────────────────────────────────────────────
 function renderUploadTab(p) {
   const d = propData[p.id] || {};
@@ -983,6 +1007,28 @@ function renderUploadTab(p) {
   ];
   document.getElementById('monthly-upload-grid').innerHTML = monthly.map(f=>uploadSlot(f,d,p.id,'monthly')).join('');
   document.getElementById('benchmark-upload-grid').innerHTML = benchmarks.map(f=>uploadSlot(f,d,p.id,'benchmark')).join('');
+
+  // Escrow warning
+  const escrowEl = document.getElementById('escrow-warning');
+  const escrowCheck = d.statement ? checkMissingEscrow(d.statement) : null;
+  if(escrowCheck) {
+    const missing = [escrowCheck.taxMissing && 'property taxes', escrowCheck.insMissing && 'insurance'].filter(Boolean).join(' and ');
+    escrowEl.style.display = 'block';
+    escrowEl.innerHTML = `
+      <div style="background:var(--amber-bg,#fff8e6);border:1px solid var(--amber,#ffa040);border-radius:var(--radius-lg);padding:12px 16px;display:flex;align-items:flex-start;gap:10px">
+        <span style="font-size:18px;line-height:1">⚠</span>
+        <div>
+          <div style="font-weight:600;font-size:13px;color:var(--amber,#ffa040);margin-bottom:3px">Missing escrow — ${escrowCheck.month}</div>
+          <div style="font-size:12px;color:var(--text2)">
+            <strong>${missing.charAt(0).toUpperCase()+missing.slice(1)}</strong> show $0 for ${escrowCheck.month}.
+            If these are not escrowed, re-upload a version of the statement with those amounts averaged across all months.
+          </div>
+        </div>
+      </div>`;
+  } else {
+    escrowEl.style.display = 'none';
+    escrowEl.innerHTML = '';
+  }
 
   // Acquisition rent roll upload slot
   const acqImported = !!d['acqrentroll_filename'];
@@ -3212,7 +3258,20 @@ function renderBenchmarkTab() {
     </tr>`).join('');
   }
 
-  let html = `<div class="bench-section">
+  // Escrow warning banner
+  const escrowCheck = checkMissingEscrow(stmt);
+  const escrowBanner = escrowCheck ? (() => {
+    const missing = [escrowCheck.taxMissing && 'Property Taxes', escrowCheck.insMissing && 'Insurance'].filter(Boolean).join(' and ');
+    return `<div style="background:var(--amber-bg,#fff8e6);border:1px solid var(--amber,#ffa040);border-radius:var(--radius-lg);padding:10px 14px;display:flex;align-items:flex-start;gap:10px;margin-bottom:12px">
+      <span style="font-size:16px;line-height:1.4">⚠</span>
+      <div style="font-size:12px;color:var(--text2)">
+        <strong style="color:var(--amber,#ffa040)">${missing} — $0 for ${escrowCheck.month}.</strong>
+        These may not be escrowed. Re-upload a version of the statement with these amounts averaged across all months for accurate benchmarking.
+      </div>
+    </div>`;
+  })() : '';
+
+  let html = escrowBanner + `<div class="bench-section">
     <div class="bench-title">Month vs benchmarks — ${selMonth}</div>
     <div class="bench-wrap"><table class="bench-table">
     <thead><tr>${cols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
