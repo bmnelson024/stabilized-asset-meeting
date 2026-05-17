@@ -1031,7 +1031,7 @@ function renderUploadTab(p) {
     // Always recalculate pfYear dynamically from purchase date
     const pfYear = p.purchaseDate ? (getProformaYear(p.purchaseDate) || pf.pfYear || '—') : (pf.pfYear || '—');
     const isSeededPf = pf.system === 'proforma_seed' || pf.system === 'proforma_infosheet';
-    const source = pf.system === 'proforma_infosheet' ? 'Info sheet (formulas)' : isSeededPf ? 'Built in' : (d.proforma_filename || 'Uploaded');
+    const source = pf.system === 'proforma_infosheet' ? 'Info sheet (formulas)' : isSeededPf ? 'Built in' : pf.system === 'proforma_template' ? '✦ LW Template' : (d.proforma_filename || 'Uploaded');
     const lineItems = pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine);
     const hasLineItems = lineItems.length > 0;
 
@@ -1340,24 +1340,37 @@ function handleUpload(event, propId, fileKey) {
         showAcqColumnMapper(propId, rawData, file.name, allSheets, wb);
         return; // Early return — mapping UI handles the rest
       } else if(fileKey==='proforma') {
-        const sheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('traditional financing'))
-                       || wb.SheetNames.find(s=>s.toLowerCase() === 'annual pro forma')
-                       || wb.SheetNames.find(s=>s.toLowerCase().includes('annual pro forma'))
-                       || wb.SheetNames.find(s=>s.toLowerCase().includes('pro forma'))
-                       || wb.SheetNames.find(s=>s.toLowerCase().includes('proforma'))
-                       || wb.SheetNames[0];
-        const ws = wb.Sheets[sheetName];
-        if(!ws) throw new Error('Could not find a proforma sheet in this file.');
-        parsed = parseProforma(ws, p.purchaseDate);
-        // If all key values are zero (cross-sheet formula refs SheetJS can't evaluate),
-        // fall back to parsing the Information Sheet directly
-        const hasValues = parsed.rows.some(r => r.total !== 0);
-        if(!hasValues) {
-          const infoSheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('information'));
-          if(infoSheetName) {
-            const infoWs = wb.Sheets[infoSheetName];
-            const infoParsed = parseProformaInfoSheet(infoWs, p.purchaseDate);
-            if(infoParsed) parsed = infoParsed;
+        // ── Template detection: check for "LW Pro Forma" tab or A1 marker ──
+        const templateSheetName = wb.SheetNames.find(s => s === 'LW Pro Forma');
+        const templateWs = templateSheetName ? wb.Sheets[templateSheetName] : null;
+        const isTemplate = templateWs && (() => {
+          const d = XLSX.utils.sheet_to_json(templateWs, {header:1, defval:null, range:0});
+          return d && d[0] && d[0][0] && d[0][0].toString().trim() === 'LW Pro Forma';
+        })();
+
+        if(isTemplate) {
+          parsed = parseProformaTemplate(templateWs, p.purchaseDate);
+        } else {
+          // Existing parser logic — unchanged
+          const sheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('traditional financing'))
+                         || wb.SheetNames.find(s=>s.toLowerCase() === 'annual pro forma')
+                         || wb.SheetNames.find(s=>s.toLowerCase().includes('annual pro forma'))
+                         || wb.SheetNames.find(s=>s.toLowerCase().includes('pro forma'))
+                         || wb.SheetNames.find(s=>s.toLowerCase().includes('proforma'))
+                         || wb.SheetNames[0];
+          const ws = wb.Sheets[sheetName];
+          if(!ws) throw new Error('Could not find a proforma sheet in this file.');
+          parsed = parseProforma(ws, p.purchaseDate);
+          // If all key values are zero (cross-sheet formula refs SheetJS can't evaluate),
+          // fall back to parsing the Information Sheet directly
+          const hasValues = parsed.rows.some(r => r.total !== 0);
+          if(!hasValues) {
+            const infoSheetName = wb.SheetNames.find(s=>s.toLowerCase().includes('information'));
+            if(infoSheetName) {
+              const infoWs = wb.Sheets[infoSheetName];
+              const infoParsed = parseProformaInfoSheet(infoWs, p.purchaseDate);
+              if(infoParsed) parsed = infoParsed;
+            }
           }
         }
       } else if(fileKey==='budget') {
@@ -2232,6 +2245,80 @@ function parseProformaInfoSheet(ws, purchaseDate) {
   const correctPfYear = getProformaYear(purchaseDate) || pfYear;
   return {rows, pfYear: correctPfYear, system:'proforma_infosheet',
           months:Array(12).fill(''), propertyName:''};
+}
+
+function parseProformaTemplate(ws, purchaseDate) {
+  // Parser for the standardized LW Pro Forma Template.
+  // Detects via cell A1 === 'LW Pro Forma'.
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  const marker = data[0] && data[0][0] ? data[0][0].toString().trim() : '';
+  if(marker !== 'LW Pro Forma') throw new Error('Not an LW Pro Forma template.');
+
+  const pfYear = getProformaYear(purchaseDate) || 1;
+
+  // Row 1 (index 0): year headers — "Year 1", "Year 2", …
+  const headerRow = data[0] || [];
+  const yearDataCols = {};
+  for(let ci = 1; ci < headerRow.length; ci++) {
+    const h = headerRow[ci];
+    if(!h) continue;
+    const m = h.toString().trim().match(/^Year\s*(\d+)$/i);
+    if(m) yearDataCols[parseInt(m[1])] = ci;
+  }
+  if(!Object.keys(yearDataCols).length) throw new Error('LW Pro Forma template: no Year columns found in row 1.');
+
+  let inExpenseSection = false, inDebtSection = false, pastNOI = false;
+  const rows = [];
+
+  for(let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if(!row || !row[0]) continue;
+    const rawLabel = row[0].toString().trim();
+    if(!rawLabel || rawLabel.startsWith('←')) continue; // skip instruction row
+    const lc = rawLabel.toLowerCase();
+
+    // Section headers — no numeric data, just labels
+    if(lc === 'income')        { inExpenseSection = false; inDebtSection = false; continue; }
+    if(lc === 'expenses')      { inExpenseSection = true;  inDebtSection = false; continue; }
+    if(lc === 'debt service')  { inExpenseSection = false; inDebtSection = true;  continue; }
+
+    const isTotalIncome  = lc.includes('total effective gross income') || lc === 'total income';
+    const isTotalExpense = lc.includes('total operating expense') || lc === 'total expenses';
+    const isNOI          = lc.includes('net operating income');
+    const isDebtService  = inDebtSection && !isNOI && !lc.includes('net cash flow');
+    const isNetIncome    = lc.includes('net cash flow') || lc.includes('cash flow after debt');
+
+    if(isNOI) { pastNOI = true; inExpenseSection = false; inDebtSection = false; }
+
+    const isTotal    = isTotalIncome || isTotalExpense;
+    const isLineItem = !isNOI && !isTotal && !isDebtService && !isNetIncome;
+
+    // All template values are monthly — annualize × 12
+    const yearlyTotals = {};
+    Object.keys(yearDataCols).forEach(yr => {
+      const ci = yearDataCols[yr];
+      const v = row[ci];
+      yearlyTotals[parseInt(yr)] = Math.abs(parseFloat(v) || 0) * 12;
+    });
+    const annualVal = yearlyTotals[pfYear] || yearlyTotals[1] || 0;
+
+    // Skip blank line items (keep totals/NOI/debt/CF even if zero)
+    if(!annualVal && isLineItem) continue;
+
+    rows.push({
+      label: rawLabel,
+      isNOI, isTotalIncome, isTotalExpense, isTotal, isNetIncome, isDebtService,
+      isCategory: false, isSubtotal: false,
+      level: (isTotal || isNOI || isNetIncome || isDebtService) ? 0 : 1,
+      isExpenseLine: inExpenseSection && isLineItem,
+      isIncomeLine:  !inExpenseSection && !inDebtSection && isLineItem && !pastNOI,
+      yearlyTotals,
+      total:  annualVal,
+      values: Array(12).fill(annualVal / 12),
+    });
+  }
+
+  return {rows, pfYear, yearDataCols, system:'proforma_template', months:Array(12).fill(''), propertyName:''};
 }
 
 function parseProformaCsv(text, purchaseDate) {
