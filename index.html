@@ -872,7 +872,7 @@ function getStatusDot(id) {
   const budgetMonthlyNoi = budgetNoi / 12;
 
   const pct = (currentMonthNoi - budgetMonthlyNoi) / Math.abs(budgetMonthlyNoi);
-  if(pct >= -0.03) return 'dot-ok';
+  if(pct >= -0.05) return 'dot-ok';
   if(pct >= -0.10) return 'dot-warn';
   return 'dot-flag';
 }
