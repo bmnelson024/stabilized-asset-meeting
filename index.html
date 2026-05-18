@@ -1976,17 +1976,24 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system) {
     return matches;
   }
   // Appfolio: keyword-based auto-match
+  // Scoring: subtotal row = +2 points, primary key match (stmtKeys[0]) = +1 point.
+  // This ensures e.g. "Total REPAIRS/SERVICES" (primary key 'repair' + subtotal = 3pts) beats
+  // "Total COMMON AREA MAINTENANCE" (secondary key 'maintenance' + subtotal = 2pts) for repairs.
   const matches = {};
   PF_LINE_ITEMS.filter(item => !item.isComputed).forEach(item => {
     let best = null;
-    let bestIsSubtotal = false;
+    let bestScore = -1;
+    const primaryKey = item.stmtKeys[0] || '';
     stmtRows.forEach(stmtRow => {
       if(stmtRow.isCategory) return;
       const stmtGroup = getStmtMatchGroup(stmtRow.label);
       if(stmtGroup === item.group) {
-        if(!best || (!bestIsSubtotal && stmtRow.isSubtotal)) {
+        const lc = stmtRow.label.toLowerCase();
+        const isPrimary = primaryKey && lc.includes(primaryKey);
+        const score = (stmtRow.isSubtotal ? 2 : 0) + (isPrimary ? 1 : 0);
+        if(score > bestScore) {
           best = stmtRow.label;
-          bestIsSubtotal = stmtRow.isSubtotal;
+          bestScore = score;
         }
       }
     });
