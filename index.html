@@ -323,8 +323,9 @@
         <div class="upload-section">
           <div class="upload-section-title">Benchmarks &amp; reference (saved — only re-upload when changed)</div>
           <div style="margin-bottom:10px">
-            <button onclick="downloadProformaTemplate()" style="font-size:12px;padding:5px 12px;border:1px solid var(--accent);border-radius:6px;background:var(--bg);color:var(--accent);cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-family:inherit">
-              <span style="font-size:14px">↓</span> Download LW Pro Forma Template
+            <button onclick="downloadProformaTemplate()" style="font-size:12px;font-weight:500;padding:7px 14px;border:2px solid #4a90d9;border-radius:7px;background:#1a3a5c;color:#7ec8f7;cursor:pointer;display:inline-flex;align-items:center;gap:7px;font-family:inherit;box-shadow:0 1px 4px rgba(0,0,0,0.3)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 3v13M7 11l5 5 5-5"/><path d="M5 21h14"/></svg>
+              Download LW Pro Forma Template
             </button>
           </div>
           <div class="upload-grid" id="benchmark-upload-grid"></div>
@@ -2306,8 +2307,11 @@ function downloadProformaTemplate() {
   const blob = new Blob([bytes], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = 'LW Pro Forma Template.xlsx'; a.click();
-  URL.revokeObjectURL(url);
+  a.href = url;
+  a.download = 'LW Pro Forma Template.xlsx';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
 }
 
 function parseProformaTemplate(ws, purchaseDate) {
@@ -2884,7 +2888,7 @@ function renderMappingEditor(propId) {
       </div>`;
     });
 
-    const bldCollapsed = window._mappingCollapsed || false;
+    const bldCollapsed = window._mappingCollapsed !== false;
     el.innerHTML = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${bldCollapsed?'0':'12px'}">
         <div style="display:flex;align-items:center;gap:10px">
@@ -2923,7 +2927,7 @@ function renderMappingEditor(propId) {
     return pf.rows.find(r => item.pfKeys.some(k => r.label.toLowerCase().includes(k)));
   }
 
-  const isCollapsed = window._mappingCollapsed || false;
+  const isCollapsed = window._mappingCollapsed !== false;
   let html = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${isCollapsed?'0':'12px'}">
       <div style="display:flex;align-items:center;gap:10px">
@@ -4066,17 +4070,21 @@ function renderAcqUnitEditor(propId) {
   const filledCount = Object.keys(acqUnits).length;
   const totalCount = rr.units.length;
 
+  const acqCollapsed = window._acqUnitsCollapsed !== false;
   let html = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div>
-        <div style="font-size:13px;font-weight:500">Acquisition rents by unit</div>
-        <div style="font-size:12px;color:var(--text3);margin-top:2px">${filledCount} of ${totalCount} units filled in${hasAcqFile?' · From: '+d['acqrentroll_filename']:''}</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${acqCollapsed?'0':'12px'}">
+      <div style="display:flex;align-items:center;gap:10px">
+        <button onclick="window._acqUnitsCollapsed=!window._acqUnitsCollapsed;renderAcqUnitEditor('${propId}')" style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;padding:0;line-height:1">${acqCollapsed?'▶':'▼'}</button>
+        <div>
+          <div style="font-size:13px;font-weight:500">Acquisition rents by unit</div>
+          <div style="font-size:12px;color:var(--text3);margin-top:2px">${filledCount} of ${totalCount} units filled in${hasAcqFile?' · From: '+d['acqrentroll_filename']:''}</div>
+        </div>
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn" style="font-size:12px" onclick="clearAcqUnits('${propId}')">Clear all</button>
       </div>
     </div>
-    <div style="overflow:auto;max-height:400px;border:1px solid var(--border);border-radius:var(--radius)">
+    ${acqCollapsed ? '' : `<div style="overflow:auto;max-height:400px;border:1px solid var(--border);border-radius:var(--radius)">
     <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:500px">
       <thead>
         <tr style="background:var(--bg2);position:sticky;top:0;z-index:1">
@@ -4089,7 +4097,7 @@ function renderAcqUnitEditor(propId) {
           <th style="padding:7px 10px;text-align:right;font-weight:500;color:var(--green);border-bottom:1px solid var(--border)">Acq. actual rent</th>
         </tr>
       </thead>
-      <tbody>`;
+      <tbody>`}`;
 
   rr.units.forEach(u => {
     const acq = acqUnits[u.unitNum] || {};
@@ -4118,7 +4126,8 @@ function renderAcqUnitEditor(propId) {
     </tr>`;
   });
 
-  html += `</tbody></table></div></div>`;
+  if(!acqCollapsed) html += `</tbody></table></div>`;
+  html += `</div>`;
   el.innerHTML = html;
 }
 
