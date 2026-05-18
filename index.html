@@ -2621,6 +2621,10 @@ function renderStatementTab() {
     container.innerHTML = `<div class="upload-notice"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12h6M9 16h6M5 20h14a2 2 0 0 0 2-2V8l-5-5H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg><p>Upload an income statement or cash flow file on the Upload tab.</p></div>`;
     return;
   }
+  if(!stmt.months || !stmt.months.length) {
+    container.innerHTML = `<div class="upload-notice"><p>Statement loaded but no monthly columns were detected. Please check the file format.</p></div>`;
+    return;
+  }
   const monthOpts = stmt.months.map((m,i)=>`<option value="${i}" ${i===stmt.months.length-1?'selected':''}>${m}</option>`).join('');
   container.innerHTML = `
     <div class="stmt-controls">
@@ -3045,6 +3049,10 @@ function renderBenchmarkTab() {
     container.innerHTML = `<div class="upload-notice"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg><p>Upload your monthly statement first, then upload proforma and/or budget files to see comparisons.</p></div>`;
     return;
   }
+  if(!stmt.months || !stmt.months.length) {
+    container.innerHTML = `<div class="upload-notice"><p>Statement loaded but no monthly columns were detected. Please check the file format.</p></div>`;
+    return;
+  }
 
   const p = properties.find(x=>x.id===currentPropId);
   const pf = d.proforma ? rehydrateProforma(d.proforma, p.purchaseDate) : null;
@@ -3108,16 +3116,18 @@ function renderBenchmarkTab() {
     r.level > 0 && !isDebtService(r) &&
     (idxIncome < 0 || ri < idxIncome)
   );
-  const expenseSubs = stmt.rows.filter((r, ri) =>
-    !r.isCategory && !r.isSubtotal && !r.isTotal && !r.isNOI && !r.isNetIncome &&
-    r.level > 0 && !isDebtService(r) &&
-    (idxIncome < 0 || ri > idxIncome) &&
-    (idxExpense < 0 || ri < idxExpense)
-  );
   const isCapex     = r => { const lc = r.label.toLowerCase(); return lc.includes('capex') || lc.includes('capital expenditure') || lc.includes('capital improvement'); };
   const debtSubs    = stmt.rows.filter(r => isDebtService(r));
   const amfSubs     = stmt.rows.filter(r => isAssetMgmtFee(r) && !isDebtService(r));
   const capexSubs   = stmt.rows.filter(r => isCapex(r) && !isDebtService(r) && !isAssetMgmtFee(r));
+  // Exclude AMF and capex rows from expenseSubs — they are shown separately under the NOI row.
+  // Without this, those rows appear under both Total Operating Expense and the NOI section.
+  const expenseSubs = stmt.rows.filter((r, ri) =>
+    !r.isCategory && !r.isSubtotal && !r.isTotal && !r.isNOI && !r.isNetIncome &&
+    r.level > 0 && !isDebtService(r) && !isAssetMgmtFee(r) && !isCapex(r) &&
+    (idxIncome < 0 || ri > idxIncome) &&
+    (idxExpense < 0 || ri < idxExpense)
+  );
 
   // If statement has no debt service rows, synthesize them from override or proforma
   const dsOverride = d.debtServiceOverride || {};
@@ -3516,8 +3526,7 @@ function renderBenchmarkTab() {
       }
     }
 
-    let occCells = `<td style="text-align:right;font-weight:500;color:${occColor}">${fmtOcc(occActual)}</td>`;
-    occCells += `<td style="text-align:right;color:var(--text3);font-size:11px">${occOccupied}/${occTotal} units</td>`;
+    let occCells = `<td style="text-align:right;font-weight:500;color:${occColor}">${fmtOcc(occActual)} <span style="color:var(--text3);font-size:11px;font-weight:400">${occOccupied}/${occTotal}</span></td>`;
     if(hasBG) occCells += `<td colspan="3" style="text-align:right;color:var(--text3);font-size:11px">—</td>`;
     occCells += `<td style="text-align:right;color:var(--text3)">—</td>`; // T12 avg
     if(hasPF) {
@@ -4198,7 +4207,7 @@ function renderRentProgressionTab() {
       overallCards += `<div style="${cellStyle}">
         <div style="${labelStyle}">Avg rent vs Proforma Yr ${pfYear}</div>
         <div style="${valStyle}">${avgCurActualAll!==null?fmt(avgCurActualAll):'—'} <span style="font-size:12px;color:var(--text3)">vs ${fmt(pfAvgPerUnit)}</span></div>
-        <div style="${deltaStyle}" class="${cls}">${pfVsActual!==null?(pfVsActual>=0?'+':'')+fmtVar(pfVsActual)+' ('+pfVsPct.toFixed(1)+'%)':'—'}</div>
+        <div style="${deltaStyle}" class="${cls}">${pfVsActual!==null?(pfVsActual>=0?'+':'')+fmtVar(pfVsActual)+(pfVsPct!==null?' ('+pfVsPct.toFixed(1)+'%)':''):'—'}</div>
       </div>`;
     }
 
@@ -4206,7 +4215,7 @@ function renderRentProgressionTab() {
     overallCards += `<div style="${cellStyle}">
       <div style="${labelStyle}">Total monthly rent collected</div>
       <div style="${valStyle}">${fmt(totalCurActual)}</div>
-      <div style="${deltaStyle}" style="color:var(--text3);font-size:12px">${allOccupied.length} occupied / ${validUnits.length} total</div>
+      <div style="color:var(--text3);font-size:12px">${allOccupied.length} occupied / ${validUnits.length} total</div>
     </div>`;
 
     // Units with acq data
@@ -4520,7 +4529,7 @@ function renderPortfolio() {
     if(!propList.length) return '';
     const groups = buildPmGroups(propList);
     const allPms = [...GROUP_ORDER, ...Object.keys(groups).filter(k=>!GROUP_ORDER.includes(k))];
-    let html = `<tr><td colspan="9" style="padding:8px 12px 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text2);background:var(--bg);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:2">${sectionLabel} <span style="font-weight:400;color:var(--text3)">(${propList.length})</span></td></tr>`;
+    let html = `<tr><td colspan="10" style="padding:8px 12px 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text2);background:var(--bg);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:2">${sectionLabel} <span style="font-weight:400;color:var(--text3)">(${propList.length})</span></td></tr>`;
     allPms.forEach(pm => {
       const props = groups[pm];
       if(!props || !props.length) return;
@@ -4540,7 +4549,7 @@ function renderPortfolio() {
         return `<span class="${pct>=0?'val-pos':'val-neg'}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
       })() : '—';
       html += `<tr class="ptbl-group-row" data-pm="${escHtml(stateKey)}" onclick="togglePortfolioGroup('${escHtml(stateKey)}')">
-        <td colspan="9">
+        <td colspan="10">
           <span class="ptbl-chevron ${isOpen?'open':''}" id="bch-${escHtml(stateKey)}">▶</span>
           <span class="prop-dot ${summaryDotClass}" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle"></span>
           ${pm}
@@ -4555,7 +4564,7 @@ function renderPortfolio() {
   }
 
   let tbody = renderSection(stabProps, 'Stabilized', 'stab') + renderSection(nonStabProps, 'Non-Stabilized', 'ns');
-  if(!properties.length) tbody=`<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
+  if(!properties.length) tbody=`<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
   document.getElementById('portfolio-tbody').innerHTML=tbody;
   document.getElementById('pk-loaded').textContent=loaded;
   document.getElementById('pk-ok').textContent=ok;
