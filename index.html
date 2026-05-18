@@ -273,7 +273,7 @@
         <div class="kpi-card"><div class="kpi-label">Properties loaded</div><div class="kpi-val" id="pk-loaded">0</div></div>
         <div class="kpi-card"><div class="kpi-label">On track</div><div class="kpi-val" style="color:#5ac87a" id="pk-ok">0</div></div>
         <div class="kpi-card"><div class="kpi-label">Watch</div><div class="kpi-val" style="color:#ffa040" id="pk-warn">0</div></div>
-        <div class="kpi-card"><div class="kpi-label">Flagged</div><div class="kpi-val" style="color:#ff6b6b" id="pk-flag">0</div></div>
+        <div class="kpi-card"><div class="kpi-label">Off Track</div><div class="kpi-val" style="color:#ff6b6b" id="pk-flag">0</div></div>
       </div>
       <div id="portfolio-table-wrap" class="portfolio-table-wrap">
         <table class="portfolio-table" id="portfolio-table">
@@ -4473,12 +4473,31 @@ function updateFlagsBadge(count) {
   }
 }
 
+function saveFlagNote(propId, group, text) {
+  if(!propData[propId]) return;
+  if(!propData[propId].flagNotes) propData[propId].flagNotes = {};
+  if(text) propData[propId].flagNotes[group] = text;
+  else delete propData[propId].flagNotes[group];
+  save();
+  // Refresh portfolio overview flag column to reflect note indicator
+  renderPortfolio();
+}
+
+function pushFlagNoteToNotes(propId, group, flagLabel, varDStr, varPctStr) {
+  const text = (propData[propId]?.flagNotes?.[group] || '').trim();
+  const noteText = `${flagLabel}: ${varDStr} over budget (+${varPctStr}) — ${text || '(no explanation added)'}`;
+  notes.push({propId, type:'concern', text:noteText, ts:Date.now() * 1000 + (_noteCounter++ % 1000)});
+  save();
+  renderNotesTab();
+  // Brief confirmation on the button
+  const btn = document.getElementById(`flag-push-${propId}-${group}`);
+  if(btn) { btn.textContent = '✓ Added'; btn.disabled = true; setTimeout(()=>{ if(btn){ btn.textContent='→ Push to meeting notes'; btn.disabled=false; } }, 2000); }
+}
+
 function renderFlagsTab() {
   const el = document.getElementById('tab-flags');
   if(!el) return;
-  const fmt = v => Math.abs(v) >= 1000
-    ? '$' + Math.abs(Math.round(v)).toLocaleString()
-    : '$' + Math.abs(v).toFixed(0);
+  const fmt = v => '$' + Math.abs(Math.round(v)).toLocaleString();
 
   if(!currentPropId) {
     el.innerHTML = '<p style="color:var(--text2);padding:20px 0">Select a property to view flags.</p>';
@@ -4500,6 +4519,7 @@ function renderFlagsTab() {
 
   const { flags, selMonth } = computeFlags(currentPropId);
   updateFlagsBadge(flags.length);
+  const flagNotes = d.flagNotes || {};
 
   if(!flags.length) {
     el.innerHTML = `
@@ -4511,39 +4531,64 @@ function renderFlagsTab() {
     return;
   }
 
-  const p = properties.find(x => x.id === currentPropId);
   const budgetSource = d.budget ? 'uploaded budget' : 'proforma';
+  const pid = currentPropId;
 
   let html = `
     <div class="bench-title" style="margin-bottom:4px">Expense flags — ${selMonth}</div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:16px">
       ${flags.length} line item${flags.length > 1 ? 's' : ''} over budget by ≥25% AND ≥$1,000 &nbsp;·&nbsp; Budget source: ${budgetSource}
-    </div>
-    <table class="bench-table" style="width:100%">
-      <thead>
-        <tr>
-          <th style="text-align:left">Line Item</th>
-          <th>Budget / Mo.</th>
-          <th>Actual / Mo.</th>
-          <th>Over by $</th>
-          <th>Over by %</th>
-        </tr>
-      </thead>
-      <tbody>`;
+    </div>`;
 
   flags.forEach(f => {
-    html += `<tr>
-      <td style="font-weight:500">${f.label}
-        ${f.stmtLabels.length > 1 ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">${f.stmtLabels.join(' + ')}</div>` : ''}
-      </td>
-      <td style="text-align:right">${fmt(f.budget)}</td>
-      <td style="text-align:right" class="val-neg">${fmt(f.actual)}</td>
-      <td style="text-align:right" class="val-neg">+${fmt(f.varD)}</td>
-      <td style="text-align:right" class="val-neg">+${(f.varPct * 100).toFixed(1)}%</td>
-    </tr>`;
+    const group = PF_LINE_ITEMS.find(i => i.label === f.label)?.group || f.label;
+    const savedNote = flagNotes[group] || '';
+    const varDStr = fmt(f.varD);
+    const varPctStr = (f.varPct * 100).toFixed(1) + '%';
+    const escapedGroup = group.replace(/'/g, "\\'");
+    const escapedLabel = f.label.replace(/'/g, "\\'");
+
+    html += `
+    <div style="border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden">
+      <table class="bench-table" style="width:100%;margin:0">
+        <thead>
+          <tr>
+            <th style="text-align:left;width:40%">Line Item</th>
+            <th style="text-align:right">Budget / Mo.</th>
+            <th style="text-align:right">Actual / Mo.</th>
+            <th style="text-align:right">Over by $</th>
+            <th style="text-align:right">Over by %</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="font-weight:500">${f.label}${f.stmtLabels.length > 1 ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">${f.stmtLabels.join(' + ')}</div>` : ''}</td>
+            <td style="text-align:right">${fmt(f.budget)}</td>
+            <td style="text-align:right" class="val-neg">${fmt(f.actual)}</td>
+            <td style="text-align:right" class="val-neg">+${varDStr}</td>
+            <td style="text-align:right" class="val-neg">+${varPctStr}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="padding:10px 12px;background:var(--bg2);border-top:1px solid var(--border);display:flex;align-items:center;gap:10px">
+        <input
+          type="text"
+          id="flagnote-${pid}-${group}"
+          value="${escHtml(savedNote)}"
+          placeholder="Add explanation..."
+          onblur="saveFlagNote('${pid}','${escapedGroup}',this.value.trim())"
+          onkeydown="if(event.key==='Enter'){this.blur()}"
+          style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none"
+        />
+        <button
+          id="flag-push-${pid}-${group}"
+          onclick="pushFlagNoteToNotes('${pid}','${escapedGroup}','${escapedLabel}','${varDStr}','${varPctStr}')"
+          style="font-size:11px;padding:5px 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text2);cursor:pointer;white-space:nowrap;font-family:inherit"
+        >→ Push to meeting notes</button>
+      </div>
+    </div>`;
   });
 
-  html += `</tbody></table>`;
   el.innerHTML = html;
 }
 
@@ -4586,7 +4631,7 @@ function updateDetailBadge() {
   if(dot==='dot-none') { badge.className='badge badge-neutral'; badge.textContent='No data'; }
   else if(dot==='dot-ok') { badge.className='badge badge-ok'; badge.textContent='On track'; }
   else if(dot==='dot-warn') { badge.className='badge badge-warn'; badge.textContent='Watch'; }
-  else { badge.className='badge badge-flag'; badge.textContent='Flagged'; }
+  else { badge.className='badge badge-flag'; badge.textContent='Off Track'; }
 }
 
 // ─── PORTFOLIO VIEW ───────────────────────────────────────────────────────────
@@ -4645,7 +4690,7 @@ function portfolioPropRow(p, pm, isOpen) {
   const statusBadge = dot==='dot-none'?'<span class="badge badge-neutral">No data</span>':
     dot==='dot-ok'?'<span class="badge badge-ok">On track</span>':
     dot==='dot-warn'?'<span class="badge badge-warn">Watch</span>':
-    '<span class="badge badge-flag">Flagged</span>';
+    '<span class="badge badge-flag">Off Track</span>';
   const purchaseDateStr = p.purchaseDate
     ? new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',year:'numeric'})
     : null;
@@ -4667,7 +4712,13 @@ function portfolioPropRow(p, pm, isOpen) {
     <td>${(() => {
       const { flags } = computeFlags(p.id);
       if(!flags.length) return '—';
-      return `<span class="badge badge-flag" style="cursor:pointer">${flags.length} flag${flags.length>1?'s':''}</span>`;
+      const flagNotes = (propData[p.id]||{}).flagNotes || {};
+      const notedCount = flags.filter(f => {
+        const grp = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label;
+        return !!flagNotes[grp];
+      }).length;
+      const noteIndicator = notedCount ? ` <span style="font-size:10px;color:var(--text3)" title="${notedCount} with explanation">✎${notedCount}</span>` : '';
+      return `<span class="badge badge-flag" style="cursor:pointer">${flags.length} flag${flags.length>1?'s':''}</span>${noteIndicator}`;
     })()}</td>
     <td>${propNoteCount?`<span class="badge badge-neutral">${propNoteCount} note${propNoteCount>1?'s':''}</span>`:'—'}</td>
   </tr>`;
