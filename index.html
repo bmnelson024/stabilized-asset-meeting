@@ -884,12 +884,11 @@ function getStatusDot(id) {
 }
 
 // ─── PROPERTY SELECTION ───────────────────────────────────────────────────────
-function selectProp(id) {
+function selectProp(id, tab) {
   currentPropId = id;
   const p = properties.find(x=>x.id===id);
   showView('detail');
-  // Default to Benchmarks tab when switching properties
-  switchTab('benchmarks');
+  switchTab(tab || 'benchmarks');
   document.getElementById('detail-prop-name').textContent = p.name;
   document.getElementById('breadcrumb-prop-name').textContent = p.name;
   const pfYear = p.purchaseDate ? getProformaYear(p.purchaseDate) : null;
@@ -1323,6 +1322,7 @@ function handleUpload(event, propId, fileKey) {
         const pd0 = propData[propId];
         if(pd0.proforma && pd0.statement && !pd0.pfMapping) {
           propData[propId].pfMapping = autoMatchProformaToStatement(pd0.proforma.rows, pd0.statement.rows, p?.system);
+          window._mappingCollapsed = false; // Auto-expand so user sees the mapping on first setup
         }
         save(propId); // fire-and-forget
         const prop = properties.find(x=>x.id===propId);
@@ -1461,7 +1461,8 @@ function handleUpload(event, propId, fileKey) {
       // Fix #7 - auto-match before saving so we only save once
       const pd2 = propData[propId];
       if(pd2.proforma && pd2.statement && !pd2.pfMapping) {
-        propData[propId].pfMapping = autoMatchProformaToStatement(pd2.proforma.rows, pd2.statement.rows, p?.system); // Fix #8 - reuse existing p
+        propData[propId].pfMapping = autoMatchProformaToStatement(pd2.proforma.rows, pd2.statement.rows, p?.system);
+        window._mappingCollapsed = false; // Auto-expand on first setup
       }
       save(propId); // fire-and-forget
       renderUploadTab(p);
@@ -3077,7 +3078,14 @@ function toggleBenchSection(propId, key) {
 }
 
 // ── Shared month-selection helper (used by both Benchmark and Flags tabs) ─────
-function getPrevMonthIdx(months) {
+window._propMonthOverride = window._propMonthOverride || {};
+
+function getPrevMonthIdx(months, propId) {
+  // Per-property manual override (from month selector dropdown)
+  if(propId !== undefined && window._propMonthOverride[propId] !== undefined) {
+    const ov = window._propMonthOverride[propId];
+    if(ov >= 0 && ov < months.length) return ov;
+  }
   const now = new Date();
   // Try previous month first
   const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -3092,11 +3100,20 @@ function getPrevMonthIdx(months) {
   return months.length - 1;
 }
 
+function setMonthOverride(propId, val) {
+  window._propMonthOverride = window._propMonthOverride || {};
+  if(val === '') delete window._propMonthOverride[propId];
+  else window._propMonthOverride[propId] = parseInt(val);
+  renderBenchmarkTab();
+  renderFlagsTab();
+}
+
 function renderBenchmarkTab() {
   if(!currentPropId) return;
-  // Keep the flags badge in sync whenever benchmark data refreshes
+  // Keep the flags badge in sync + build flagged-group set for indicators
   const { flags: _f } = computeFlags(currentPropId);
   updateFlagsBadge(_f.length);
+  const flaggedGroups = new Set(_f.map(f => PF_LINE_ITEMS.find(i=>i.label===f.label)?.group).filter(Boolean));
   const d = propData[currentPropId]||{};
   const stmt = d.statement;
   const container = document.getElementById('bench-container');
@@ -3110,10 +3127,10 @@ function renderBenchmarkTab() {
   }
 
   const p = properties.find(x=>x.id===currentPropId);
-  const pf = d.proforma ? rehydrateProforma(d.proforma, p.purchaseDate) : null;
+  const pf = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
   const bg = d.budget;
   const hasPF = !!pf, hasBG = !!bg;
-  const monthIdx = getPrevMonthIdx(stmt.months);
+  const monthIdx = getPrevMonthIdx(stmt.months, currentPropId);
   const selMonth = stmt.months[monthIdx];
 
   function buildLookup(parsed) {
@@ -3335,7 +3352,22 @@ function renderBenchmarkTab() {
     </div>`;
   })() : '';
 
-  let html = escrowBanner + `<div class="bench-section">
+  // Month selector + re-match toolbar
+  const monthSelectorHtml = `<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="font-size:12px;color:var(--text2)">Viewing:</span>
+      <select onchange="setMonthOverride('${currentPropId}',this.value)"
+        style="font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:3px 8px;color:var(--text);font-family:inherit;cursor:pointer">
+        ${stmt.months.map((m,i)=>`<option value="${i}"${i===monthIdx?' selected':''}>${m}</option>`).join('')}
+      </select>
+    </div>
+    ${d.pfMapping && Object.keys(d.pfMapping).length ? `<button onclick="resetPfMapping('${currentPropId}')"
+      style="font-size:11px;padding:3px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text2);cursor:pointer;font-family:inherit">
+      ↺ Re-match mapping
+    </button>` : ''}
+  </div>`;
+
+  let html = monthSelectorHtml + escrowBanner + `<div class="bench-section">
     <div class="bench-title">Month vs benchmarks — ${selMonth}</div>
     <div class="bench-wrap"><table class="bench-table">
     <thead><tr>${cols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
@@ -3510,8 +3542,11 @@ function renderBenchmarkTab() {
       cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td><td class="${vCls}">${t12VsPf!==null?fmtVar(t12VsPf):'—'}</td><td class="${vCls}">${t12VsPct!==null?t12VsPct.toFixed(1)+'%':'—'}</td>`;
     }
 
+    const flagPip = flaggedGroups.has(item.group)
+      ? `<span title="Expense flag: over budget by ≥25% and ≥$1,000" style="display:inline-block;background:var(--red,#e05454);color:#fff;border-radius:3px;font-size:9px;font-weight:700;padding:0px 4px;margin-left:5px;vertical-align:middle;line-height:16px">!</span>`
+      : '';
     return `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
-      <td style="padding-left:28px">${item.label}${rowNote}</td>${cells}
+      <td style="padding-left:28px">${item.label}${flagPip}${rowNote}</td>${cells}
     </tr>`;
   }
 
@@ -4398,7 +4433,7 @@ function computeFlags(propId) {
   const pf = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
   const bg = d.budget || null;
 
-  const monthIdx = getPrevMonthIdx(stmt.months);
+  const monthIdx = getPrevMonthIdx(stmt.months, propId);
   const selMonth = stmt.months[monthIdx] || '';
 
   const stmtLookup = {};
@@ -4479,7 +4514,21 @@ function saveFlagNote(propId, group, text) {
   if(text) propData[propId].flagNotes[group] = text;
   else delete propData[propId].flagNotes[group];
   save();
-  // Refresh portfolio overview flag column to reflect note indicator
+  renderPortfolio();
+  // Flash saved confirmation on the input
+  const input = document.getElementById(`flagnote-${propId}-${group}`);
+  if(input) {
+    input.style.borderColor = 'var(--green, #4caf7d)';
+    input.style.transition = 'border-color 0.3s';
+    setTimeout(() => { if(input) { input.style.borderColor = ''; input.style.transition = ''; } }, 1400);
+  }
+}
+
+function clearAllFlagNotes(propId) {
+  if(!propData[propId]) return;
+  propData[propId].flagNotes = {};
+  save();
+  renderFlagsTab();
   renderPortfolio();
 }
 
@@ -4520,9 +4569,20 @@ function renderFlagsTab() {
   const { flags, selMonth } = computeFlags(currentPropId);
   updateFlagsBadge(flags.length);
   const flagNotes = d.flagNotes || {};
+  const pid = currentPropId;
+
+  // Month selector (shared with benchmark tab)
+  const stmt = d.statement;
+  const monthSel = stmt ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:14px">
+    <span style="font-size:12px;color:var(--text2)">Viewing:</span>
+    <select onchange="setMonthOverride('${pid}',this.value)"
+      style="font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:3px 8px;color:var(--text);font-family:inherit;cursor:pointer">
+      ${stmt.months.map((m,i)=>`<option value="${i}"${i===getPrevMonthIdx(stmt.months,pid)?' selected':''}>${m}</option>`).join('')}
+    </select>
+  </div>` : '';
 
   if(!flags.length) {
-    el.innerHTML = `
+    el.innerHTML = monthSel + `
       <div style="text-align:center;padding:56px 0">
         <div style="font-size:28px;margin-bottom:10px">✓</div>
         <div style="font-size:14px;font-weight:600;color:var(--green,#4caf7d)">No flags for ${selMonth}</div>
@@ -4532,10 +4592,16 @@ function renderFlagsTab() {
   }
 
   const budgetSource = d.budget ? 'uploaded budget' : 'proforma';
-  const pid = currentPropId;
+  const hasAnyNotes = flags.some(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; return !!flagNotes[g]; });
 
-  let html = `
-    <div class="bench-title" style="margin-bottom:4px">Expense flags — ${selMonth}</div>
+  let html = monthSel + `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:8px">
+      <div class="bench-title" style="margin:0">Expense flags — ${selMonth}</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        ${hasAnyNotes ? `<button onclick="clearAllFlagNotes('${pid}')" style="font-size:11px;padding:3px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text2);cursor:pointer;font-family:inherit">Clear all explanations</button>` : ''}
+        <button onclick="exportFlags()" style="font-size:11px;padding:3px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text2);cursor:pointer;font-family:inherit">↓ Export flags</button>
+      </div>
+    </div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:16px">
       ${flags.length} line item${flags.length > 1 ? 's' : ''} over budget by ≥25% AND ≥$1,000 &nbsp;·&nbsp; Budget source: ${budgetSource}
     </div>`;
@@ -4718,7 +4784,7 @@ function portfolioPropRow(p, pm, isOpen) {
         return !!flagNotes[grp];
       }).length;
       const noteIndicator = notedCount ? ` <span style="font-size:10px;color:var(--text3)" title="${notedCount} with explanation">✎${notedCount}</span>` : '';
-      return `<span class="badge badge-flag" style="cursor:pointer">${flags.length} flag${flags.length>1?'s':''}</span>${noteIndicator}`;
+      return `<span class="badge badge-flag" style="cursor:pointer" onclick="event.stopPropagation();selectProp('${p.id}','flags')" title="View expense flags">${flags.length} flag${flags.length>1?'s':''}</span>${noteIndicator}`;
     })()}</td>
     <td>${propNoteCount?`<span class="badge badge-neutral">${propNoteCount} note${propNoteCount>1?'s':''}</span>`:'—'}</td>
   </tr>`;
@@ -4849,6 +4915,36 @@ function renderPortfolio() {
 }
 
 // ─── EXPORT NOTES ─────────────────────────────────────────────────────────────
+function exportFlags() {
+  const now = new Date();
+  const lines = ['EXPENSE FLAGS REPORT', now.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}), ''];
+  const orderedProps = [];
+  GROUP_ORDER.forEach(pm => { properties.forEach(p => { if((PM_MAP[p.name]||'Other')===pm) orderedProps.push(p); }); });
+  properties.forEach(p => { if(!orderedProps.find(x=>x.id===p.id)) orderedProps.push(p); });
+  let hasContent = false;
+  orderedProps.forEach(p => {
+    const { flags, selMonth } = computeFlags(p.id);
+    if(!flags.length) return;
+    hasContent = true;
+    const flagNotes = (propData[p.id]||{}).flagNotes || {};
+    lines.push(p.name.toUpperCase() + ' — ' + selMonth);
+    lines.push('─'.repeat(44));
+    flags.forEach(f => {
+      const group = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group || f.label;
+      const note = flagNotes[group] || '';
+      lines.push(`  ${f.label}: $${Math.round(f.actual).toLocaleString()} actual vs $${Math.round(f.budget).toLocaleString()} budget (+${(f.varPct*100).toFixed(1)}%)`);
+      if(note) lines.push(`  → ${note}`);
+    });
+    lines.push('');
+  });
+  if(!hasContent) { alert('No expense flags across portfolio.'); return; }
+  const blob = new Blob([lines.join('\n')], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'expense-flags-' + now.toISOString().slice(0,10) + '.txt';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
 function exportNotes() {
   if(!notes.length) { alert('No notes to export.'); return; }
   const now = new Date();
@@ -4871,7 +4967,12 @@ function exportNotes() {
   let hasContent = false;
   orderedProps.forEach(p => {
     const propNotes = notes.filter(n=>n.propId===p.id);
-    if(!propNotes.length) return;
+    const { flags } = computeFlags(p.id);
+    const flagNotes = (propData[p.id]||{}).flagNotes || {};
+    const flagLines = flags
+      .map(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; return flagNotes[g] ? `[EXPENSE FLAG] ${f.label} (+${(f.varPct*100).toFixed(1)}%): ${flagNotes[g]}` : null; })
+      .filter(Boolean);
+    if(!propNotes.length && !flagLines.length) return;
     hasContent = true;
     lines.push(p.name.toUpperCase());
     lines.push('─'.repeat(40));
@@ -4879,6 +4980,7 @@ function exportNotes() {
       const label = n.type==='action'?'[ACTION]':n.type==='concern'?'[CONCERN]':'[NOTE]';
       lines.push(`${label} ${n.text}`);
     });
+    flagLines.forEach(l => lines.push(l));
     lines.push('');
   });
 
