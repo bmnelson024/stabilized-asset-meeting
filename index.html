@@ -308,6 +308,7 @@
         <div class="tab" onclick="switchTab('proforma')">Proforma</div>
         <div class="tab" onclick="switchTab('rentroll')">Rent roll</div>
         <div class="tab" onclick="switchTab('rentprog')">Rent progression</div>
+        <div class="tab" id="tab-btn-flags" onclick="switchTab('flags')">Flags</div>
         <div class="tab" onclick="switchTab('notes')">Notes</div>
         <div class="tab" onclick="switchTab('upload')">Upload files</div>
       </div>
@@ -387,6 +388,9 @@
           </div>
         </div>
       </div>
+
+      <!-- FLAGS TAB -->
+      <div class="tab-content" id="tab-flags"></div>
 
       <!-- NOTES TAB -->
       <div class="tab-content" id="tab-notes">
@@ -895,6 +899,7 @@ function selectProp(id) {
   renderUploadTab(p);
   updateDetailBadge();
   renderNotesTab();
+  renderFlagsTab();
   renderStatementTab();
   renderBenchmarkTab();
   renderRentRollTab();
@@ -919,6 +924,7 @@ function switchTab(name) {
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='rentprog') renderRentProgressionTab();
   if(name==='proforma') renderProformaTab();
+  if(name==='flags') renderFlagsTab();
 }
 
 // ─── ADD / DELETE PROPERTY ────────────────────────────────────────────────────
@@ -3070,8 +3076,27 @@ function toggleBenchSection(propId, key) {
   });
 }
 
+// ── Shared month-selection helper (used by both Benchmark and Flags tabs) ─────
+function getPrevMonthIdx(months) {
+  const now = new Date();
+  // Try previous month first
+  const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const prevLabel = MONTH_NAMES[prevMonth.getMonth()] + ' ' + prevMonth.getFullYear();
+  let idx = months.indexOf(prevLabel);
+  if(idx >= 0) return idx;
+  // Try current month
+  const curLabel = MONTH_NAMES[now.getMonth()] + ' ' + now.getFullYear();
+  idx = months.indexOf(curLabel);
+  if(idx >= 0) return idx;
+  // Fall back to last month in file
+  return months.length - 1;
+}
+
 function renderBenchmarkTab() {
   if(!currentPropId) return;
+  // Keep the flags badge in sync whenever benchmark data refreshes
+  const { flags: _f } = computeFlags(currentPropId);
+  updateFlagsBadge(_f.length);
   const d = propData[currentPropId]||{};
   const stmt = d.statement;
   const container = document.getElementById('bench-container');
@@ -3088,20 +3113,6 @@ function renderBenchmarkTab() {
   const pf = d.proforma ? rehydrateProforma(d.proforma, p.purchaseDate) : null;
   const bg = d.budget;
   const hasPF = !!pf, hasBG = !!bg;
-  function getPrevMonthIdx(months) {
-    const now = new Date();
-    // Try previous month first
-    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const prevLabel = MONTH_NAMES[prevMonth.getMonth()] + ' ' + prevMonth.getFullYear();
-    let idx = months.indexOf(prevLabel);
-    if(idx >= 0) return idx;
-    // Try current month
-    const curLabel = MONTH_NAMES[now.getMonth()] + ' ' + now.getFullYear();
-    idx = months.indexOf(curLabel);
-    if(idx >= 0) return idx;
-    // Fall back to last month in file
-    return months.length - 1;
-  }
   const monthIdx = getPrevMonthIdx(stmt.months);
   const selMonth = stmt.months[monthIdx];
 
@@ -4374,6 +4385,167 @@ function renderRentProgressionTab() {
   container.innerHTML = html;
 }
 
+
+// ─── FLAGS TAB ────────────────────────────────────────────────────────────────
+
+function computeFlags(propId) {
+  const d = propData[propId] || {};
+  const stmt = d.statement;
+  const mapping = (d.pfMapping && Object.keys(d.pfMapping).length) ? d.pfMapping : null;
+  if(!stmt || !mapping) return { flags: [], selMonth: '' };
+
+  const p = properties.find(x => x.id === propId);
+  const pf = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
+  const bg = d.budget || null;
+
+  const monthIdx = getPrevMonthIdx(stmt.months);
+  const selMonth = stmt.months[monthIdx] || '';
+
+  const stmtLookup = {};
+  stmt.rows.forEach(r => { stmtLookup[r.label] = r; });
+
+  const bgMap = {};
+  if(bg) bg.rows.forEach(r => { bgMap[r.label.toLowerCase()] = r; });
+
+  function getMappedLabels(group) {
+    const v = mapping[group];
+    if(!v) return [];
+    return Array.isArray(v) ? v : [v];
+  }
+
+  function sumStmtMonth(labels) {
+    return labels.reduce((sum, lbl) => {
+      const r = stmtLookup[lbl];
+      return sum + (r ? (r.values[monthIdx] || 0) : 0);
+    }, 0);
+  }
+
+  const flags = [];
+
+  // Only operating expense groups (not income, not debt service, not AMF)
+  const expenseGroups = PF_LINE_ITEMS.filter(i => !i.isIncome && !i.isComputed && !i.isDebtService);
+
+  expenseGroups.forEach(item => {
+    const stmtLabels = getMappedLabels(item.group);
+    if(!stmtLabels.length) return;
+
+    const actual = sumStmtMonth(stmtLabels);
+
+    // Budget: prefer uploaded budget file, fall back to proforma
+    let budgetMonth = null;
+    if(bg) {
+      let bgSum = 0, anyFound = false;
+      stmtLabels.forEach(lbl => {
+        const bgRow = bgMap[lbl.toLowerCase()];
+        if(bgRow && bgRow.total) { bgSum += bgRow.total; anyFound = true; }
+      });
+      if(anyFound) budgetMonth = bgSum / 12;
+    }
+    if(budgetMonth === null && pf) {
+      const pfCandidates = pf.rows.filter(r => item.pfKeys.some(k => r.label.toLowerCase().includes(k)));
+      const pfRow = pfCandidates.find(r => r.total) || pfCandidates[pfCandidates.length - 1] || null;
+      if(pfRow && pfRow.total) budgetMonth = pfRow.total / 12;
+    }
+
+    if(budgetMonth === null || budgetMonth === 0) return;
+
+    const varD = actual - budgetMonth;
+    const varPct = varD / Math.abs(budgetMonth);
+
+    // Flag if over budget by ≥25% AND ≥$1,000
+    if(varD >= 1000 && varPct >= 0.25) {
+      flags.push({ label: item.label, stmtLabels, actual, budget: budgetMonth, varD, varPct });
+    }
+  });
+
+  // Sort worst % first
+  flags.sort((a, b) => b.varPct - a.varPct);
+  return { flags, selMonth };
+}
+
+function updateFlagsBadge(count) {
+  const btn = document.getElementById('tab-btn-flags');
+  if(!btn) return;
+  if(count > 0) {
+    btn.innerHTML = `Flags <span style="background:var(--red,#e05454);color:#fff;border-radius:9px;font-size:10px;padding:1px 6px;font-weight:700;margin-left:3px;vertical-align:middle">${count}</span>`;
+  } else {
+    btn.textContent = 'Flags';
+  }
+}
+
+function renderFlagsTab() {
+  const el = document.getElementById('tab-flags');
+  if(!el) return;
+  const fmt = v => Math.abs(v) >= 1000
+    ? '$' + Math.abs(Math.round(v)).toLocaleString()
+    : '$' + Math.abs(v).toFixed(0);
+
+  if(!currentPropId) {
+    el.innerHTML = '<p style="color:var(--text2);padding:20px 0">Select a property to view flags.</p>';
+    updateFlagsBadge(0); return;
+  }
+  const d = propData[currentPropId] || {};
+  if(!d.statement) {
+    el.innerHTML = '<p style="color:var(--text2);padding:20px 0">Upload a cash flow statement to generate flags.</p>';
+    updateFlagsBadge(0); return;
+  }
+  if(!d.pfMapping || !Object.keys(d.pfMapping).length) {
+    el.innerHTML = '<p style="color:var(--text2);padding:20px 0">Complete the proforma line item mapping to enable flags.</p>';
+    updateFlagsBadge(0); return;
+  }
+  if(!d.budget && !d.proforma) {
+    el.innerHTML = '<p style="color:var(--text2);padding:20px 0">Upload a proforma or budget file to enable variance flags.</p>';
+    updateFlagsBadge(0); return;
+  }
+
+  const { flags, selMonth } = computeFlags(currentPropId);
+  updateFlagsBadge(flags.length);
+
+  if(!flags.length) {
+    el.innerHTML = `
+      <div style="text-align:center;padding:56px 0">
+        <div style="font-size:28px;margin-bottom:10px">✓</div>
+        <div style="font-size:14px;font-weight:600;color:var(--green,#4caf7d)">No flags for ${selMonth}</div>
+        <div style="font-size:12px;color:var(--text3);margin-top:6px">All mapped expense line items are within 25% of budget or under $1,000 variance</div>
+      </div>`;
+    return;
+  }
+
+  const p = properties.find(x => x.id === currentPropId);
+  const budgetSource = d.budget ? 'uploaded budget' : 'proforma';
+
+  let html = `
+    <div class="bench-title" style="margin-bottom:4px">Expense flags — ${selMonth}</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:16px">
+      ${flags.length} line item${flags.length > 1 ? 's' : ''} over budget by ≥25% AND ≥$1,000 &nbsp;·&nbsp; Budget source: ${budgetSource}
+    </div>
+    <table class="bench-table" style="width:100%">
+      <thead>
+        <tr>
+          <th style="text-align:left">Line Item</th>
+          <th>Budget / Mo.</th>
+          <th>Actual / Mo.</th>
+          <th>Over by $</th>
+          <th>Over by %</th>
+        </tr>
+      </thead>
+      <tbody>`;
+
+  flags.forEach(f => {
+    html += `<tr>
+      <td style="font-weight:500">${f.label}
+        ${f.stmtLabels.length > 1 ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">${f.stmtLabels.join(' + ')}</div>` : ''}
+      </td>
+      <td style="text-align:right">${fmt(f.budget)}</td>
+      <td style="text-align:right" class="val-neg">${fmt(f.actual)}</td>
+      <td style="text-align:right" class="val-neg">+${fmt(f.varD)}</td>
+      <td style="text-align:right" class="val-neg">+${(f.varPct * 100).toFixed(1)}%</td>
+    </tr>`;
+  });
+
+  html += `</tbody></table>`;
+  el.innerHTML = html;
+}
 
 function renderNotesTab() {
   const p = properties.find(x=>x.id===currentPropId);
