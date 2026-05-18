@@ -437,6 +437,21 @@
         <option value="nonstabilized">Non-Stabilized</option>
       </select>
     </div>
+    <div class="modal-field">
+      <label>Property manager</label>
+      <select id="modal-pm">
+        <option value="">— Auto-detect from name —</option>
+        <option value="Point Guard">Point Guard</option>
+        <option value="Point Guard Sioux Falls">Point Guard Sioux Falls</option>
+        <option value="Kouri">Kouri</option>
+        <option value="Arrow">Arrow</option>
+        <option value="RPME">RPME</option>
+        <option value="Bender">Bender</option>
+        <option value="J&M">J&amp;M</option>
+        <option value="Orange">Orange</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
     <div class="modal-btns">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="addProperty()">Add property</button>
@@ -522,33 +537,35 @@ const BUILDIUM_BUDGET_SHEET_MAP = {
 
 // ─── PROPERTY MANAGER MAPPING ─────────────────────────────────────────────────
 const PM_MAP = {
-  // Point Guard — all Buildium properties
+  // Point Guard — Omaha/Nebraska Buildium properties
   '321 Townhomes':                'Point Guard',
   '9447 J Street':                'Point Guard',
   'Aksarben Villas':              'Point Guard',
-  'Bancroft Place':               'Point Guard',
-  'Boulder Pointe':               'Point Guard',
   'Brent Village':                'Point Guard',
   'Carter Place (1003-1005 Ave K)':'Point Guard',
   'Cedar Haven':                  'Point Guard',
   'College Heights':              'Point Guard',
   'Copperleaf':                   'Point Guard',
   'Cordes':                       'Point Guard',
-  'Eagle Creek':                  'Point Guard',
-  'Judee Estates':                'Point Guard',
+  'Greenway':                     'Point Guard',
   'Langston Apartments':          'Point Guard',
-  'Maple Park / The Enclave':     'Point Guard',
   'Park Place':                   'Point Guard',
   "Patrick's Place":              'Point Guard',
   'Sandra Ann':                   'Point Guard',
   'Tall Oaks':                    'Point Guard',
-  'The Landmark on Dakota':       'Point Guard',
-  'The Preserve':                 'Point Guard',
   'The Todd':                     'Point Guard',
   'The Vincent':                  'Point Guard',
   'Venice':                       'Point Guard',
   'Villa Blanca':                 'Point Guard',
   '60th Street Duplexes':         'Point Guard',
+  // Point Guard Sioux Falls
+  'Bancroft Place':               'Point Guard Sioux Falls',
+  'Boulder Pointe':               'Point Guard Sioux Falls',
+  'Eagle Creek':                  'Point Guard Sioux Falls',
+  'Judee Estates':                'Point Guard Sioux Falls',
+  'Maple Park / The Enclave':     'Point Guard Sioux Falls',
+  'The Landmark on Dakota':       'Point Guard Sioux Falls',
+  'The Preserve':                 'Point Guard Sioux Falls',
   // Appfolio properties by manager
   'Adventureland':                'Kouri',
   'Altoona Terrace':              'Kouri',
@@ -607,7 +624,7 @@ let _noteCounter = 0; // ensures unique timestamps even when notes are added wit
 let currentPropId = null;
 
 const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const GROUP_ORDER = ['Point Guard','Kouri','Arrow','RPME','Bender','J&M','Orange'];
+const GROUP_ORDER = ['Point Guard','Point Guard Sioux Falls','Kouri','Arrow','RPME','Bender','J&M','Orange'];
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 async function sendMagicLink() {
@@ -937,14 +954,18 @@ function addProperty() {
   const units = parseInt(document.getElementById('modal-units').value)||null;
   const purchaseDate = document.getElementById('modal-purchase-date').value || null;
   const stabilized = document.getElementById('modal-stabilized').value !== 'nonstabilized';
+  const pmSel = document.getElementById('modal-pm').value || null;
   const id = 'prop_'+Date.now();
-  properties.push({id,name,system,units,purchaseDate,stabilized});
+  const prop = {id,name,system,units,purchaseDate,stabilized};
+  if(pmSel) prop.pm = pmSel;
+  properties.push(prop);
   save(); // fire-and-forget
   closeModal();
   document.getElementById('modal-name').value='';
   document.getElementById('modal-units').value='';
   document.getElementById('modal-purchase-date').value='';
   document.getElementById('modal-stabilized').value='stabilized';
+  document.getElementById('modal-pm').value='';
   renderPortfolio();
   selectProp(id);
 }
@@ -1093,10 +1114,6 @@ function renderUploadTab(p) {
     const lineItems = pf.rows.filter(r=>r.isExpenseLine||r.isIncomeLine);
     const hasLineItems = lineItems.length > 0;
 
-    // Check if proforma has zero-value debt service rows (array formula limitation)
-    const pfDebtRows = pf.rows.filter(r=>r.isDebtService);
-    const hasZeroDebt = pfDebtRows.length > 0 && pfDebtRows.every(r=>r.total===0);
-    const dsOverride = d.debtServiceOverride || {};
 
     pfEl.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
@@ -1139,41 +1156,7 @@ function renderUploadTab(p) {
         ${occCard}
       </div>`;
       })()}
-      ${p.purchaseDate?`<div style="font-size:11px;color:var(--text3);margin-top:10px">Purchase date: ${new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</div>`:''}
-      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-          <div>
-            <div style="font-size:12px;font-weight:500;color:var(--text2)">Debt service (proforma)</div>
-            <div style="font-size:11px;color:var(--text3);margin-top:2px">${hasZeroDebt ? '⚠ Could not be read from file — enter manually below' : 'Enter to override values from file'}</div>
-          </div>
-          ${dsOverride.interest||dsOverride.principal ? `<span class="badge badge-ok">Saved</span>` : (hasZeroDebt?`<span class="badge badge-warn">Needs entry</span>`:'')}
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-          <div class="kpi-card" style="padding:10px">
-            <div class="kpi-label">Annual interest</div>
-            <input type="number" placeholder="e.g. 24000"
-              value="${dsOverride.interest||''}"
-              style="width:100%;margin-top:6px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;background:var(--bg3);color:var(--text);outline:none"
-              onchange="saveDebtServiceOverride('${p.id}','interest',this.value)"
-              onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border)'">
-            <div style="font-size:10px;color:var(--text3);margin-top:4px">${dsOverride.interest?fmt(dsOverride.interest/12)+' / mo':'—'}</div>
-          </div>
-          <div class="kpi-card" style="padding:10px">
-            <div class="kpi-label">Annual principal</div>
-            <input type="number" placeholder="e.g. 8000"
-              value="${dsOverride.principal||''}"
-              style="width:100%;margin-top:6px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;background:var(--bg3);color:var(--text);outline:none"
-              onchange="saveDebtServiceOverride('${p.id}','principal',this.value)"
-              onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border)'">
-            <div style="font-size:10px;color:var(--text3);margin-top:4px">${dsOverride.principal?fmt(dsOverride.principal/12)+' / mo':'—'}</div>
-          </div>
-          <div class="kpi-card" style="padding:10px;border:1px solid var(--border2)">
-            <div class="kpi-label">Total debt service</div>
-            <div style="font-size:15px;font-weight:500;margin-top:8px">${(dsOverride.interest||dsOverride.principal)?fmt((dsOverride.interest||0)+(dsOverride.principal||0)):'—'}</div>
-            <div style="font-size:10px;color:var(--text3);margin-top:4px">${(dsOverride.interest||dsOverride.principal)?fmt(((dsOverride.interest||0)+(dsOverride.principal||0))/12)+' / mo':'—'}</div>
-          </div>
-        </div>
-      </div>`;
+      ${p.purchaseDate?`<div style="font-size:11px;color:var(--text3);margin-top:10px">Purchase date: ${new Date(p.purchaseDate+'T12:00:00').toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</div>`:''}`;
     pfEl.style.display = 'block';
 
     // Show mapping editor if proforma has line items and statement exists
@@ -2835,18 +2818,6 @@ function renderProformaTab() {
 }
 
 
-function saveDebtServiceOverride(propId, field, val) {
-  if(!propData[propId]) propData[propId]={};
-  if(!propData[propId].debtServiceOverride) propData[propId].debtServiceOverride={};
-  const num = parseFloat(val)||0;
-  if(num) propData[propId].debtServiceOverride[field] = num;
-  else delete propData[propId].debtServiceOverride[field];
-  save(propId); // fire-and-forget
-  // Refresh the upload tab card to update totals and badge
-  const p = properties.find(x=>x.id===propId);
-  if(p) renderUploadTab(p);
-  renderBenchmarkTab();
-}
 
 // ─── MAPPING EDITOR ───────────────────────────────────────────────────────────
 function renderMappingEditor(propId) {
@@ -3187,18 +3158,15 @@ function renderBenchmarkTab() {
     (idxExpense < 0 || ri < idxExpense)
   );
 
-  // If statement has no debt service rows, synthesize them from override or proforma
-  const dsOverride = d.debtServiceOverride || {};
+  // If statement has no debt service rows, synthesize them from proforma
   // Helper: find interest/principal annual values from the parsed proforma's isDebtService rows
   const pfDSRows = pf ? pf.rows.filter(r => r.isDebtService && r.total) : [];
   function pfDSAnnual(type) {
     if(type === 'interest') {
-      if(dsOverride.interest) return dsOverride.interest;
       const row = pfDSRows.find(r => r.label.toLowerCase().includes('interest'));
       return row ? row.total : null;
     }
     if(type === 'principal') {
-      if(dsOverride.principal) return dsOverride.principal;
       const row = pfDSRows.find(r =>
         r.label.toLowerCase().includes('principal') ||
         (r.label.toLowerCase().includes('mortgage') && !r.label.toLowerCase().includes('interest'))
@@ -3442,9 +3410,7 @@ function renderBenchmarkTab() {
       if(innerPfDSRows.length) {
         totalPfAnnual = innerPfDSRows.reduce((s,r)=>s+r.total, 0);
       }
-      if(!totalPfAnnual) {
-        totalPfAnnual = (dsOverride.interest||0) + (dsOverride.principal||0) || null;
-      }
+      // totalPfAnnual remains null if no DS rows found in proforma
     }
 
     // Build subtotal cells (debt service is expense — lower is better)
@@ -4885,7 +4851,7 @@ function renderPortfolio() {
     const groups = {};
     GROUP_ORDER.forEach(pm => groups[pm] = []);
     propList.forEach(p => {
-      const pm = PM_MAP[p.name] || 'Other';
+      const pm = p.pm || PM_MAP[p.name] || 'Other';
       if(!groups[pm]) groups[pm] = [];
       groups[pm].push(p);
     });
@@ -4947,7 +4913,7 @@ function exportFlags() {
   const now = new Date();
   const lines = ['EXPENSE FLAGS REPORT', now.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}), ''];
   const orderedProps = [];
-  GROUP_ORDER.forEach(pm => { properties.forEach(p => { if((PM_MAP[p.name]||'Other')===pm) orderedProps.push(p); }); });
+  GROUP_ORDER.forEach(pm => { properties.forEach(p => { if((p.pm||PM_MAP[p.name]||'Other')===pm) orderedProps.push(p); }); });
   properties.forEach(p => { if(!orderedProps.find(x=>x.id===p.id)) orderedProps.push(p); });
   let hasContent = false;
   orderedProps.forEach(p => {
@@ -4986,7 +4952,7 @@ function exportNotes() {
   const orderedProps = [];
   GROUP_ORDER.forEach(pm => {
     properties.forEach(p => {
-      if((PM_MAP[p.name]||'Other') === pm) orderedProps.push(p);
+      if((p.pm||PM_MAP[p.name]||'Other') === pm) orderedProps.push(p);
     });
   });
   // Catch any properties not in group order
