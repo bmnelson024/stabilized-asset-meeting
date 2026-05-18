@@ -4667,12 +4667,40 @@ function renderNotesTab() {
   const propNotes = notes.filter(n=>n.propId===currentPropId);
   list.innerHTML = propNotes.length ? propNotes.map((n)=>{
     return `
-    <div class="note-item">
+    <div class="note-item" id="note-item-${n.ts}">
       <span class="flag-chip ${n.type==='action'?'flag-action':n.type==='concern'?'flag-concern':'flag-ok'}">${n.type==='action'?'Action':n.type==='concern'?'Concern':'Note'}</span>
-      <div class="note-text">${n.text}</div>
-      <span class="note-delete" onclick="deleteNote(${n.ts})">✕</span>
+      <div class="note-text">${escHtml(n.text)}</div>
+      <span class="note-delete" title="Edit" onclick="editNote(${n.ts})" style="margin-right:2px">✏</span>
+      <span class="note-delete" title="Delete" onclick="deleteNote(${n.ts})">✕</span>
     </div>`;
   }).join('') : '<div style="color:var(--text3);font-size:13px;padding:12px 0">No notes yet for this property.</div>';
+}
+
+function editNote(ts) {
+  const n = notes.find(x => x.ts === ts);
+  if(!n) return;
+  const item = document.getElementById(`note-item-${ts}`);
+  if(!item) return;
+  item.innerHTML = `
+    <span class="flag-chip ${n.type==='action'?'flag-action':n.type==='concern'?'flag-concern':'flag-ok'}">${n.type==='action'?'Action':n.type==='concern'?'Concern':'Note'}</span>
+    <textarea id="note-edit-${ts}" style="flex:1;font-size:13px;background:var(--bg);border:1px solid var(--accent,#4a90d9);border-radius:var(--radius);padding:6px 8px;color:var(--text);font-family:inherit;resize:vertical;min-height:48px;outline:none">${escHtml(n.text)}</textarea>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      <button onclick="saveEditedNote(${ts})" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--accent,#4a90d9);color:#fff;cursor:pointer;font-family:inherit;white-space:nowrap">Save</button>
+      <button onclick="renderNotesTab()" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text2);cursor:pointer;font-family:inherit">Cancel</button>
+    </div>`;
+  const ta = document.getElementById(`note-edit-${ts}`);
+  if(ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+
+function saveEditedNote(ts) {
+  const ta = document.getElementById(`note-edit-${ts}`);
+  if(!ta) return;
+  const newText = ta.value.trim();
+  if(!newText) return;
+  const n = notes.find(x => x.ts === ts);
+  if(n) n.text = newText;
+  save();
+  renderNotesTab();
 }
 
 function addNote(type) {
