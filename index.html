@@ -321,10 +321,10 @@
           <div class="upload-grid" id="monthly-upload-grid"></div>
         </div>
         <div class="upload-section">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-            <div class="upload-section-title" style="margin-bottom:0">Benchmarks &amp; reference (saved — only re-upload when changed)</div>
-            <button onclick="downloadProformaTemplate()" style="font-size:11px;padding:4px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--bg2);color:var(--text2);cursor:pointer;display:flex;align-items:center;gap:5px;white-space:nowrap">
-              <span>↓</span> Download Pro Forma Template
+          <div class="upload-section-title">Benchmarks &amp; reference (saved — only re-upload when changed)</div>
+          <div style="margin-bottom:10px">
+            <button onclick="downloadProformaTemplate()" style="font-size:12px;padding:5px 12px;border:1px solid var(--accent);border-radius:6px;background:var(--bg);color:var(--accent);cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-family:inherit">
+              <span style="font-size:14px">↓</span> Download LW Pro Forma Template
             </button>
           </div>
           <div class="upload-grid" id="benchmark-upload-grid"></div>
@@ -2884,20 +2884,24 @@ function renderMappingEditor(propId) {
       </div>`;
     });
 
+    const bldCollapsed = window._mappingCollapsed || false;
     el.innerHTML = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-        <div>
-          <div style="font-size:13px;font-weight:500">Proforma line item mapping</div>
-          <div style="font-size:11px;color:var(--text3);margin-top:2px">Buildium — using standard mapping · ${matchedCount} of ${itemsToShow.length} matched</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${bldCollapsed?'0':'12px'}">
+        <div style="display:flex;align-items:center;gap:10px">
+          <button onclick="window._mappingCollapsed=!window._mappingCollapsed;renderMappingEditor('${propId}')" style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;padding:0;line-height:1">${bldCollapsed?'▶':'▼'}</button>
+          <div>
+            <div style="font-size:13px;font-weight:500">Proforma line item mapping</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">Buildium — using standard mapping · ${matchedCount} of ${itemsToShow.length} matched</div>
+          </div>
         </div>
         <button class="btn" style="font-size:11px;padding:3px 8px" onclick="resetPfMapping('${propId}')">Re-apply defaults</button>
       </div>
-      <div style="display:grid;grid-template-columns:200px 16px 1fr;gap:6px;align-items:baseline;padding:4px 0;margin-bottom:4px">
+      ${bldCollapsed ? '' : `<div style="display:grid;grid-template-columns:200px 16px 1fr;gap:6px;align-items:baseline;padding:4px 0;margin-bottom:4px">
         <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Line item</div>
         <div></div>
         <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Statement row(s)</div>
       </div>
-      ${rows}
+      ${rows}`}
     </div>`;
     el.style.display = 'block';
     return;
@@ -2919,45 +2923,51 @@ function renderMappingEditor(propId) {
     return pf.rows.find(r => item.pfKeys.some(k => r.label.toLowerCase().includes(k)));
   }
 
+  const isCollapsed = window._mappingCollapsed || false;
   let html = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div>
-        <div style="font-size:13px;font-weight:500">Proforma line item mapping</div>
-        <div style="font-size:11px;color:var(--text3);margin-top:2px">${matchedCount} of ${itemsToShow.length} matched</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${isCollapsed?'0':'12px'}">
+      <div style="display:flex;align-items:center;gap:10px">
+        <button onclick="window._mappingCollapsed=!window._mappingCollapsed;renderMappingEditor('${propId}')" style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;padding:0;line-height:1">${isCollapsed?'▶':'▼'}</button>
+        <div>
+          <div style="font-size:13px;font-weight:500">Proforma line item mapping</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${matchedCount} of ${itemsToShow.length} matched</div>
+        </div>
       </div>
       <button class="btn" style="font-size:11px;padding:3px 8px" onclick="resetPfMapping('${propId}')">Re-auto-match</button>
     </div>
-    <div style="display:grid;grid-template-columns:200px 20px 1fr;gap:8px;align-items:center;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
+    ${isCollapsed ? '' : `<div style="display:grid;grid-template-columns:200px 20px 1fr;gap:8px;align-items:center;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
       <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Line item</div>
       <div></div>
       <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em">Statement row</div>
-    </div>`;
+    </div>`}`;
 
-  itemsToShow.forEach(item => {
-    const selected = getSelected(item.group);
-    const matched = selected[0] || '';
-    const pfRow = findPfRow(item);
-    const pfFoundLabel = pfRow ? pfRow.label : null;
-    const badge = matched
-      ? `<span class="badge badge-ok" style="font-size:10px">matched</span>`
-      : `<span class="badge badge-warn" style="font-size:10px">unmatched</span>`;
-    const pfHint = pfFoundLabel
-      ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">Proforma: "${pfFoundLabel.slice(0,40)}"</div>`
-      : `<div style="font-size:10px;color:var(--text3);margin-top:2px">Not in proforma file</div>`;
+  if(!isCollapsed) {
+    itemsToShow.forEach(item => {
+      const selected = getSelected(item.group);
+      const matched = selected[0] || '';
+      const pfRow = findPfRow(item);
+      const pfFoundLabel = pfRow ? pfRow.label : null;
+      const badge = matched
+        ? `<span class="badge badge-ok" style="font-size:10px">matched</span>`
+        : `<span class="badge badge-warn" style="font-size:10px">unmatched</span>`;
+      const pfHint = pfFoundLabel
+        ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">Proforma: "${pfFoundLabel.slice(0,40)}"</div>`
+        : `<div style="font-size:10px;color:var(--text3);margin-top:2px">Not in proforma file</div>`;
 
-    html += `<div style="display:grid;grid-template-columns:200px 20px 1fr;gap:8px;align-items:start;margin-bottom:10px">
-      <div>
-        <div style="font-size:12px;font-weight:500;display:flex;align-items:center;gap:5px">${item.label} ${badge}</div>
-        ${pfHint}
-      </div>
-      <div style="text-align:center;color:var(--text3);font-size:14px;padding-top:2px">→</div>
-      <select style="font-size:12px;padding:5px 8px;border:1px solid ${matched?'var(--green)':'var(--border)'};border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit;width:100%"
-        onchange="savePfMappingByGroup('${propId}','${item.group}',this.value)">
-        <option value="">— no match —</option>
-        ${stmtNonCat.map(r=>`<option value="${escHtml(r.label)}" ${matched===r.label?'selected':''}>${stmtRowDisplayLabel(r)}</option>`).join('')}
-      </select>
-    </div>`;
-  });
+      html += `<div style="display:grid;grid-template-columns:200px 20px 1fr;gap:8px;align-items:start;margin-bottom:10px">
+        <div>
+          <div style="font-size:12px;font-weight:500;display:flex;align-items:center;gap:5px">${item.label} ${badge}</div>
+          ${pfHint}
+        </div>
+        <div style="text-align:center;color:var(--text3);font-size:14px;padding-top:2px">→</div>
+        <select style="font-size:12px;padding:5px 8px;border:1px solid ${matched?'var(--green)':'var(--border)'};border-radius:6px;background:var(--bg);color:var(--text);font-family:inherit;width:100%"
+          onchange="savePfMappingByGroup('${propId}','${item.group}',this.value)">
+          <option value="">— no match —</option>
+          ${stmtNonCat.map(r=>`<option value="${escHtml(r.label)}" ${matched===r.label?'selected':''}>${stmtRowDisplayLabel(r)}</option>`).join('')}
+        </select>
+      </div>`;
+    });
+  }
 
   html += `</div>`;
   el.innerHTML = html;
