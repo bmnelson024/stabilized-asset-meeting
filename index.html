@@ -489,15 +489,15 @@ const SEED_PROPERTIES = [
   {name:'Villa Blanca',system:'buildium',units:24,purchaseDate:'2022-08-12',proforma:null},
   {name:'60th Street Duplexes',system:'buildium',units:10,purchaseDate:'2024-06-08',proforma:null},
   {name:'15th Street 9 Plex',system:'appfolio',units:9,purchaseDate:'2021-10-08',proforma:null},
-  {name:'Adventureland',system:'appfolio',units:72,purchaseDate:'2024-08-30',proforma:null},
-  {name:'Altoona Terrace',system:'appfolio',units:83,purchaseDate:'2024-08-30',proforma:null},
+  {name:'Adventureland',system:'appfolio',units:72,purchaseDate:'2024-08-30',proforma:null,stabilized:false},
+  {name:'Altoona Terrace',system:'appfolio',units:83,purchaseDate:'2024-08-30',proforma:null,stabilized:false},
   {name:'BG Flats',system:'appfolio',units:42,purchaseDate:'2022-08-10',proforma:null},
   {name:'Boulder Ridge',system:'appfolio',units:46,purchaseDate:'2021-11-18',proforma:null},
   {name:'Capitol City Villas',system:'appfolio',units:67,purchaseDate:'2022-03-15',proforma:null},
   {name:'Champion Villas',system:'appfolio',units:81,purchaseDate:'2022-09-21',proforma:null},
   {name:'Dakota Bend',system:'appfolio',units:56,purchaseDate:'2022-04-21',proforma:null},
   {name:'Dundee Village',system:'appfolio',units:20,purchaseDate:'2017-12-01',proforma:null},
-  {name:'Franklin Court',system:'appfolio',units:172,purchaseDate:'2024-08-30',proforma:null},
+  {name:'Franklin Court',system:'appfolio',units:172,purchaseDate:'2024-08-30',proforma:null,stabilized:false},
   {name:'Grandview',system:'appfolio',units:15,purchaseDate:'2022-07-15',proforma:null},
   {name:'Lions Gate',system:'appfolio',units:38,purchaseDate:'2022-11-10',proforma:null},
   {name:'The Whitney',system:'appfolio',units:28,purchaseDate:'2021-12-19',proforma:null},
@@ -807,7 +807,7 @@ async function loadAndRender() {
     dirty = true;
   }
 
-  // Always sync seeded property metadata (purchaseDate, units) — self-heals stale data
+  // Always sync seeded property metadata (purchaseDate, units, stabilized) — self-heals stale data
   SEED_PROPERTIES.forEach((p,i)=>{
     const id = 'prop_seed_'+i;
     const existing = properties.find(x=>x.id===id);
@@ -815,6 +815,8 @@ async function loadAndRender() {
       if(!existing.purchaseDate && p.purchaseDate) { existing.purchaseDate = p.purchaseDate; dirty = true; }
       if(!existing.units && p.units) { existing.units = p.units; dirty = true; }
       if(existing.name !== p.name) { existing.name = p.name; dirty = true; }
+      // Sync stabilized flag when seed explicitly defines it
+      if(p.stabilized === false && existing.stabilized !== false) { existing.stabilized = false; dirty = true; }
     }
   });
 
