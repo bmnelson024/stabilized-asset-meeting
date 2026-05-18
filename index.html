@@ -281,7 +281,7 @@
             <tr>
               <th>Property</th><th>System</th><th>Status</th><th>Occupancy</th>
               <th>Total income / mo</th><th>Total expense / mo</th><th>NOI / mo</th>
-              <th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Notes</th>
+              <th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
             </tr>
           </thead>
           <tbody id="portfolio-tbody"></tbody>
@@ -4664,6 +4664,11 @@ function portfolioPropRow(p, pm, isOpen) {
     <td>${noi!==null?fmt(noi):'—'}</td>
     <td>${varHTML}</td>
     <td>${t12VsPfHTML}</td>
+    <td>${(() => {
+      const { flags } = computeFlags(p.id);
+      if(!flags.length) return '—';
+      return `<span class="badge badge-flag" style="cursor:pointer">${flags.length} flag${flags.length>1?'s':''}</span>`;
+    })()}</td>
     <td>${propNoteCount?`<span class="badge badge-neutral">${propNoteCount} note${propNoteCount>1?'s':''}</span>`:'—'}</td>
   </tr>`;
 }
@@ -4746,7 +4751,7 @@ function renderPortfolio() {
     if(!propList.length) return '';
     const groups = buildPmGroups(propList);
     const allPms = [...GROUP_ORDER, ...Object.keys(groups).filter(k=>!GROUP_ORDER.includes(k))];
-    let html = `<tr><td colspan="10" style="padding:8px 12px 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text2);background:var(--bg);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:2">${sectionLabel} <span style="font-weight:400;color:var(--text3)">(${propList.length})</span></td></tr>`;
+    let html = `<tr><td colspan="11" style="padding:8px 12px 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text2);background:var(--bg);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:2">${sectionLabel} <span style="font-weight:400;color:var(--text3)">(${propList.length})</span></td></tr>`;
     allPms.forEach(pm => {
       const props = groups[pm];
       if(!props || !props.length) return;
@@ -4766,7 +4771,7 @@ function renderPortfolio() {
         return `<span class="${pct>=0?'val-pos':'val-neg'}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
       })() : '—';
       html += `<tr class="ptbl-group-row" data-pm="${escHtml(stateKey)}" onclick="togglePortfolioGroup('${escHtml(stateKey)}')">
-        <td colspan="10">
+        <td colspan="11">
           <span class="ptbl-chevron ${isOpen?'open':''}" id="bch-${escHtml(stateKey)}">▶</span>
           <span class="prop-dot ${summaryDotClass}" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle"></span>
           ${pm}
@@ -4781,7 +4786,7 @@ function renderPortfolio() {
   }
 
   let tbody = renderSection(stabProps, 'Stabilized', 'stab') + renderSection(nonStabProps, 'Non-Stabilized', 'ns');
-  if(!properties.length) tbody=`<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
+  if(!properties.length) tbody=`<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
   document.getElementById('portfolio-tbody').innerHTML=tbody;
   document.getElementById('pk-loaded').textContent=loaded;
   document.getElementById('pk-ok').textContent=ok;
