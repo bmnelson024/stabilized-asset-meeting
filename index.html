@@ -1888,6 +1888,13 @@ const PF_LINE_ITEMS = [
     isIncome: false,
   },
   {
+    group: 'hoa',
+    label: 'HOA Dues',
+    pfKeys:   ['hoa','hoa dues','homeowners association','association dues'],
+    stmtKeys: ['hoa','homeowners association','association dues'],
+    isIncome: false,
+  },
+  {
     group: 'mortgage',
     label: 'Monthly Mortgage',
     pfKeys:   ['mortgage','loan payment','debt service','monthly mortgage'],
@@ -1936,6 +1943,7 @@ const MATCH_KEYWORDS = [
   {keys:['landscap','lawn','grounds','snow'], group:'landscaping'},
   {keys:['repair','maintenance','maint'], group:'repairs'},
   {keys:['admin','marketing','advertising'], group:'admin'},
+  {keys:['hoa','homeowners association','association dues'], group:'hoa'},
   {keys:['rental income','total rental income','gross rent'], group:'rental_income'},
   {keys:['utility reimbursement','utility reimb','rubs'], group:'utility_reimb'},
   {keys:['mortgage','loan payment','debt service'], group:'mortgage'},
