@@ -1896,7 +1896,9 @@ function parseDelinquencyReport(ws) {
     if(!unit || unit.toLowerCase() === 'total') continue;
     if(unit.toLowerCase().startsWith('total')) { continue; }
     // Property header rows are long descriptive strings — skip them
-    if(unit.length > 10 && /[A-Za-z]{4,}/.test(unit) && !/^\d/.test(unit)) continue;
+    // Skip property header rows (long address strings) — but allow if there's a non-zero AR value in the AR column
+    const hasARValue = arCol >= 0 && row[arCol] !== null && row[arCol] !== undefined && parseFloat(row[arCol]) !== 0;
+    if(!hasARValue && unit.length > 10 && /[A-Za-z]{4,}/.test(unit) && !/^\d/.test(unit)) continue;
 
     const ar     = arCol     >= 0 ? parseFloat(row[arCol])     || 0 : 0;
     const a0     = aging0Col >= 0 ? parseFloat(row[aging0Col]) || 0 : 0;
@@ -3405,14 +3407,15 @@ function setMonthlyReview(propId, month, isReviewed) {
   // Update just this property's row in the portfolio table if it's visible
   const tbody = document.getElementById('portfolio-tbody');
   if(tbody) {
-    // Re-render only this prop's row without destroying the whole table
-    const pm = properties.find(p=>p.id===propId)?.pm || '';
-    tbody.querySelectorAll(`.ptbl-prop-row[data-pm]`).forEach(row => {
-      if(row.getAttribute('data-propid') === propId) {
-        const prop = properties.find(p=>p.id===propId);
-        const isOpen = !row.classList.contains('hidden');
-        if(prop) row.outerHTML = portfolioPropRow(prop, pm, isOpen);
-      }
+    // Re-render only this prop's row without destroying the whole table.
+    // Capture data-pm from the DOM node BEFORE outerHTML replacement
+    // (data-pm is the stateKey used for group toggle, not raw p.pm)
+    const rows = tbody.querySelectorAll(`.ptbl-prop-row[data-propid="${CSS.escape(propId)}"]`);
+    rows.forEach(row => {
+      const stateKey = row.getAttribute('data-pm');   // e.g. "stab_Point Guard"
+      const isOpen   = !row.classList.contains('hidden');
+      const prop     = properties.find(p => p.id === propId);
+      if(prop) row.outerHTML = portfolioPropRow(prop, stateKey, isOpen);
     });
   }
 }
@@ -5222,7 +5225,8 @@ function computeFlags(propId) {
       let bgSum = 0, anyFound = false;
       stmtLabels.forEach(lbl => {
         const bgRow = bgMap[lbl.toLowerCase()];
-        if(bgRow && bgRow.total) { bgSum += bgRow.total; anyFound = true; }
+        // Use bgRow.total !== undefined to catch intentionally zero-budgeted lines
+        if(bgRow && bgRow.total !== undefined) { bgSum += bgRow.total; anyFound = true; }
       });
       if(anyFound) budgetMonth = bgSum / 12;
     }
@@ -5266,8 +5270,8 @@ function computeFlags(propId) {
   });
 
   // ── Also flag total income vs budget using isTotalIncome row ────────────
-  // Only runs if neither income line item above was already flagged on rental_income
-  const alreadyFlaggedIncome = flags.some(f => f.isIncome && f.label === 'Total Rental Income');
+  // Only runs if NO income line was already flagged (avoids redundant/overlapping flags)
+  const alreadyFlaggedIncome = flags.some(f => f.isIncome);
   if(!alreadyFlaggedIncome) {
     const totalIncRow = stmt.rows.find(r => r.isTotalIncome);
     if(totalIncRow) {
@@ -6293,7 +6297,7 @@ function renderFlagsTab() {
             onkeydown="if(event.key==='Enter'){this.blur()}"
             style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none;margin-bottom:8px"/>
           <div style="display:flex;gap:8px;justify-content:flex-end">
-            <button id="flag-cu-${pid}-${group}" onclick="copyFlagClickUpTask('${pid}','${eg}','${el2}','${varDStr}','${varPctStr}')" style="${btnStyle('#ffa040')}">📋 Copy ClickUp task</button>
+            <button id="flag-cu-${pid}-${group}" onclick="copyFlagClickUpTask('${pid}','${eg}','${el2}','${varSign}${varDStr}','${varSign}${varPctStr}')" style="${btnStyle('#ffa040')}">📋 Copy ClickUp task</button>
             <button onclick="setFlagStatus('${pid}','${eg}','reviewed')" style="${btnStyle('var(--green)')}">✓ Mark reviewed</button>
           </div>
         </div>
@@ -6987,6 +6991,14 @@ function downloadParsedFile(propId, fileKey) {
     (parsed.units || []).forEach(u => {
       aoa.push([u.unitNum, u.unitType, u.tier || '', u.isVacant ? 'Vacant' : 'Occupied', u.marketRent, u.actualRent]);
     });
+  } else if(fileKey === 'delinquency') {
+    sheetName = 'Delinquency';
+    aoa = [['Unit', 'Tenant', 'Status', 'Total AR', '0-30 Days', '30+ Days']];
+    if(parsed.asOfDate) aoa.unshift(['As Of', parsed.asOfDate]);
+    (parsed.units || []).forEach(u => {
+      aoa.push([u.unit, u.name, u.status, u.amountReceivable, u.aging0_30, u.aging30Plus]);
+    });
+    aoa.push(['Total', '', '', parsed.totalAR, parsed.aging0_30, parsed.aging30Plus]);
   } else if(fileKey === 'proforma') {
     sheetName = 'Proforma';
     const prop = properties ? properties.find(p => p.id === propId) : null;
