@@ -36,6 +36,9 @@
   .topbar-search{flex:1;max-width:260px}
   .topbar-search input{width:100%;padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;background:var(--bg2);color:var(--text);outline:none}
   .topbar-search input:focus{border-color:var(--blue)}
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+  input[type=number]{-moz-appearance:textfield}
   .topbar-breadcrumb{display:none;align-items:center;gap:6px;font-size:13px;color:var(--text2)}
   .topbar-breadcrumb.visible{display:flex}
   .topbar-breadcrumb-back{color:var(--blue);cursor:pointer;font-weight:500}
@@ -4755,16 +4758,19 @@ function renderCashReviewTab() {
   const pf   = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
   const cb   = d.cashbalance;
 
-  // ── Extract last 3 months of actual NOI from statement ───────────────────
-  const stmtNoiMonths = []; // [{label, value, key}] most recent first
+  // ── Trailing 3-month average NOI from statement ───────────────────────────
+  let stmtNoiTrailingAvg = null, stmtNoiMonthsUsed = 0;
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
     const noiRow = stmt.rows.find(r => r.isNOI);
     if(noiRow) {
       const nMonths = Math.min(3, stmt.months.length);
+      let sum = 0;
       for(let i = 0; i < nMonths; i++) {
         const mIdx = stmt.months.length - 1 - i;
-        stmtNoiMonths.push({ label: stmt.months[mIdx], value: noiRow.values[mIdx] || 0, key: `stmt_${i}` });
+        sum += noiRow.values[mIdx] || 0;
       }
+      stmtNoiTrailingAvg = sum / nMonths;
+      stmtNoiMonthsUsed = nMonths;
     }
   }
 
@@ -4782,10 +4788,8 @@ function renderCashReviewTab() {
   // ── Derive NOI/month (respects crNoiSource override) ─────────────────────
   let noiMonthly = null, noiSource = '';
   const noiSrcKey = d.crNoiSource || null;
-  if(noiSrcKey && noiSrcKey.startsWith('stmt_')) {
-    const idx = parseInt(noiSrcKey.split('_')[1]);
-    const sm = stmtNoiMonths[idx];
-    if(sm) { noiMonthly = sm.value; noiSource = sm.label; }
+  if(noiSrcKey === 'stmt_avg' && stmtNoiTrailingAvg !== null) {
+    noiMonthly = stmtNoiTrailingAvg; noiSource = `T${stmtNoiMonthsUsed} Avg`;
   } else if(noiSrcKey === 'proforma' && pfNoiMonthly !== null) {
     noiMonthly = pfNoiMonthly; noiSource = 'Proforma';
   } else if(noiSrcKey === 'budget' && bgNoiMonthly !== null) {
@@ -4935,14 +4939,14 @@ function renderCashReviewTab() {
     const active = effectiveNOISrc === 'budget';
     noiChips.push(`<button style="${active ? chipActive : chipInactive}" onclick="setCashReviewNOI('${currentPropId}','budget')">Budget: ${fmt(bgNoiMonthly)}/mo</button>`);
   }
-  if(pfNoiMonthly !== null) {
+  if(pfNoiMonthly !== null && bgNoiMonthly === null) {
     const active = effectiveNOISrc === 'proforma';
     noiChips.push(`<button style="${active ? chipActive : chipInactive}" onclick="setCashReviewNOI('${currentPropId}','proforma')">Proforma: ${fmt(pfNoiMonthly)}/mo</button>`);
   }
-  stmtNoiMonths.forEach(sm => {
-    const active = effectiveNOISrc === sm.key;
-    noiChips.push(`<button style="${active ? chipActive : chipInactive}" onclick="setCashReviewNOI('${currentPropId}','${sm.key}')">${sm.label}: ${fmt(sm.value)}/mo</button>`);
-  });
+  if(stmtNoiTrailingAvg !== null) {
+    const active = effectiveNOISrc === 'stmt_avg';
+    noiChips.push(`<button style="${active ? chipActive : chipInactive}" onclick="setCashReviewNOI('${currentPropId}','stmt_avg')">T${stmtNoiMonthsUsed} Avg: ${fmt(stmtNoiTrailingAvg)}/mo</button>`);
+  }
   const noiSelectorHtml = noiChips.length > 1 ? `
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap">NOI / mo</div>
