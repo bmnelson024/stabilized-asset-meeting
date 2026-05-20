@@ -290,6 +290,9 @@
           <tbody id="portfolio-tbody"></tbody>
         </table>
       </div>
+
+      <!-- PORTFOLIO FLAGS REVIEW -->
+      <div id="portfolio-flags-section" style="margin-top:28px"></div>
     </div>
 
     <!-- DETAIL VIEW -->
@@ -5275,6 +5278,7 @@ function setFlagStatus(propId, group, status) {
   }
   save();
   renderFlagsTab();
+  renderPortfolioFlags(); // keep portfolio view in sync
 }
 
 function copyFlagClickUpTask(propId, group, label, varDStr, varPctStr) {
@@ -6096,6 +6100,163 @@ function togglePortfolioGroup(pm) {
   });
 }
 
+// ─── PORTFOLIO FLAGS REVIEW ───────────────────────────────────────────────────
+
+let _pflagsShowAll = false; // module-level toggle state
+
+function togglePortfolioFlagsFilter() {
+  _pflagsShowAll = !_pflagsShowAll;
+  renderPortfolioFlags();
+}
+
+function portfolioFlagsNavTo(propId) {
+  // Navigate to the property's flags tab
+  const prop = properties.find(p => p.id === propId);
+  if(!prop) return;
+  showDetail(prop);
+  setTimeout(() => switchTab('flags'), 50);
+}
+
+function renderPortfolioFlags() {
+  const el = document.getElementById('portfolio-flags-section');
+  if(!el) return;
+
+  const fmt = v => '$' + Math.round(Math.abs(v)).toLocaleString();
+  const propsWithData = properties.filter(p => {
+    const d = propData[p.id] || {};
+    return d.statement && d.pfMapping && Object.keys(d.pfMapping).length;
+  });
+
+  if(!propsWithData.length) { el.innerHTML = ''; return; }
+
+  // ── Collect flags per property ────────────────────────────────────────────
+  const propertyResults = propsWithData.map(p => {
+    const { flags, selMonth } = computeFlags(p.id);
+    const flagReviews = (propData[p.id] || {}).flagReviews || {};
+    const flagNotes   = (propData[p.id] || {}).flagNotes   || {};
+
+    const annotated = flags.map(f => {
+      const group  = PF_LINE_ITEMS.find(i => i.label === f.label)?.group || f.label;
+      const status = flagReviews[group]?.status || 'unreviewed';
+      const note   = flagNotes[group] || '';
+      return { ...f, group, status, note };
+    });
+
+    const activeFlags    = annotated.filter(f => f.status !== 'reviewed');
+    const reviewedFlags  = annotated.filter(f => f.status === 'reviewed');
+    const unreviewedCount = annotated.filter(f => f.status === 'unreviewed').length;
+    const todoCount       = annotated.filter(f => f.status === 'todo').length;
+
+    return { p, selMonth, annotated, activeFlags, reviewedFlags, unreviewedCount, todoCount, totalFlags: flags.length };
+  });
+
+  // ── Counts for header ─────────────────────────────────────────────────────
+  const totalUnreviewed = propertyResults.reduce((s, r) => s + r.unreviewedCount, 0);
+  const totalTodo       = propertyResults.reduce((s, r) => s + r.todoCount, 0);
+  const totalClean      = propertyResults.filter(r => r.totalFlags === 0).length;
+  const totalReviewed   = propertyResults.reduce((s, r) => s + r.reviewedFlags.length, 0);
+
+  // ── Filter chips ──────────────────────────────────────────────────────────
+  const chipBase    = 'padding:4px 12px;border-radius:14px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid;font-family:inherit';
+  const chipActive  = chipBase + ';background:var(--blue,#4a90d9);color:#fff;border-color:var(--blue,#4a90d9)';
+  const chipInactive= chipBase + ';background:var(--bg2);color:var(--text2);border-color:var(--border)';
+
+  const filterBar = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+    <button style="${!_pflagsShowAll?chipActive:chipInactive}" onclick="togglePortfolioFlagsFilter()">
+      Active · ${totalUnreviewed + totalTodo}
+    </button>
+    <button style="${_pflagsShowAll?chipActive:chipInactive}" onclick="togglePortfolioFlagsFilter()">
+      All · ${propertyResults.reduce((s,r)=>s+r.totalFlags,0)}
+    </button>
+    ${totalClean > 0 ? `<span style="font-size:12px;color:var(--text3);margin-left:4px">${totalClean} propert${totalClean===1?'y':'ies'} clean</span>` : ''}
+    ${totalReviewed > 0 && !_pflagsShowAll ? `<span style="font-size:12px;color:var(--text3)">(${totalReviewed} reviewed — hidden)</span>` : ''}
+  </div>`;
+
+  // ── Property rows ─────────────────────────────────────────────────────────
+  const statusBadge = (status) => {
+    if(status === 'todo')     return `<span style="font-size:10px;font-weight:700;background:#f59e0b;color:#fff;padding:1px 7px;border-radius:9px;white-space:nowrap">TO-DO</span>`;
+    if(status === 'reviewed') return `<span style="font-size:10px;font-weight:700;background:var(--green,#3ab08b);color:#fff;padding:1px 7px;border-radius:9px;white-space:nowrap">REVIEWED</span>`;
+    return `<span style="font-size:10px;font-weight:700;background:var(--red,#e05454);color:#fff;padding:1px 7px;border-radius:9px;white-space:nowrap">NEEDS REVIEW</span>`;
+  };
+
+  const propertyCards = propertyResults.map(({ p, selMonth, annotated, activeFlags, unreviewedCount, todoCount, totalFlags }) => {
+    const displayFlags = _pflagsShowAll ? annotated : activeFlags;
+
+    // ── Clean property ────────────────────────────────────────────────────
+    if(totalFlags === 0) {
+      return `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:8px">
+        <span style="font-size:14px">✓</span>
+        <span style="font-size:13px;font-weight:600;color:var(--green,#3ab08b)">${escHtml(p.name)}</span>
+        <span style="font-size:12px;color:var(--text3)">No flags · ${selMonth || 'no data'}</span>
+      </div>`;
+    }
+
+    // ── Property with flags ───────────────────────────────────────────────
+    if(!_pflagsShowAll && activeFlags.length === 0) {
+      // All flags reviewed — show compact "all reviewed" row
+      return `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:8px;opacity:0.6">
+        <span style="font-size:13px">✓</span>
+        <span style="font-size:13px;font-weight:600;color:var(--text2)">${escHtml(p.name)}</span>
+        <span style="font-size:12px;color:var(--text3)">All ${totalFlags} flag${totalFlags!==1?'s':''} reviewed · ${selMonth}</span>
+      </div>`;
+    }
+
+    // ── Header ────────────────────────────────────────────────────────────
+    const headerBadges = [];
+    if(unreviewedCount > 0) headerBadges.push(`<span style="font-size:11px;font-weight:700;background:var(--red,#e05454);color:#fff;padding:1px 8px;border-radius:9px">${unreviewedCount} unreviewed</span>`);
+    if(todoCount > 0)       headerBadges.push(`<span style="font-size:11px;font-weight:700;background:#f59e0b;color:#fff;padding:1px 8px;border-radius:9px">${todoCount} to-do</span>`);
+
+    // ── Flag rows ─────────────────────────────────────────────────────────
+    const flagRows = displayFlags.map(f => {
+      const noteHtml = f.note
+        ? `<div style="font-size:11px;color:var(--text3);margin-top:3px;font-style:italic">${escHtml(f.note)}</div>`
+        : '';
+      return `<tr style="${f.status==='reviewed'?'opacity:0.5':''}">
+        <td style="padding:7px 10px;font-size:12px;color:var(--text2)">${statusBadge(f.status)}</td>
+        <td style="padding:7px 10px;font-size:13px;font-weight:500;color:var(--text)">${escHtml(f.label)}${noteHtml}</td>
+        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">+${fmt(f.varD)}</td>
+        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">+${(f.varPct*100).toFixed(1)}%</td>
+        <td style="padding:7px 10px;font-size:12px;color:var(--text3)">${f.note ? '' : '<span style="color:var(--border2)">—</span>'}</td>
+      </tr>`;
+    }).join('');
+
+    return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:10px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap;cursor:pointer" onclick="portfolioFlagsNavTo('${p.id}')">
+        <span style="font-size:13px;font-weight:700;color:var(--text);flex:1;min-width:120px">${escHtml(p.name)}</span>
+        ${headerBadges.join('')}
+        <span style="font-size:11px;color:var(--text3)">${selMonth}</span>
+        <span style="font-size:11px;color:var(--blue,#4a90d9)">Open flags tab →</span>
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--bg2)">
+          <th style="padding:5px 10px;font-size:10px;font-weight:600;color:var(--text3);text-align:left;text-transform:uppercase;letter-spacing:0.05em;width:110px">Status</th>
+          <th style="padding:5px 10px;font-size:10px;font-weight:600;color:var(--text3);text-align:left;text-transform:uppercase;letter-spacing:0.05em">Line item</th>
+          <th style="padding:5px 10px;font-size:10px;font-weight:600;color:var(--text3);text-align:left;text-transform:uppercase;letter-spacing:0.05em">Over $</th>
+          <th style="padding:5px 10px;font-size:10px;font-weight:600;color:var(--text3);text-align:left;text-transform:uppercase;letter-spacing:0.05em">Over %</th>
+          <th style="padding:5px 10px;font-size:10px;font-weight:600;color:var(--text3);text-align:left;text-transform:uppercase;letter-spacing:0.05em">Note</th>
+        </tr></thead>
+        <tbody>${flagRows}</tbody>
+      </table>
+    </div>`;
+  }).join('');
+
+  // ── Section header ────────────────────────────────────────────────────────
+  const headerColor = totalUnreviewed > 0 ? 'var(--red,#e05454)' : totalTodo > 0 ? '#f59e0b' : 'var(--green,#3ab08b)';
+  const headerSummary = totalUnreviewed > 0
+    ? `${totalUnreviewed} unreviewed${totalTodo > 0 ? ` · ${totalTodo} to-do` : ''}`
+    : totalTodo > 0 ? `${totalTodo} to-do` : 'All reviewed';
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div>
+        <h3 style="margin:0;font-size:15px;font-weight:700;color:var(--text)">Monthly Flag Review</h3>
+        <div style="font-size:12px;color:${headerColor};margin-top:3px;font-weight:600">${headerSummary}</div>
+      </div>
+    </div>
+    ${filterBar}
+    ${propertyCards || '<div style="font-size:13px;color:var(--text3)">No flags to show.</div>'}`;
+}
+
 function renderPortfolio() {
   if(!properties) return; // guard against call before first load completes
   let loaded=0, ok=0, warn=0, flag=0;
@@ -6181,6 +6342,7 @@ function renderPortfolio() {
   const bld = properties.filter(p=>p.system==='buildium').length;
   const afp = properties.filter(p=>p.system==='appfolio').length;
   document.getElementById('portfolio-sub').textContent=`${properties.length} properties · ${bld} Buildium · ${afp} Appfolio · ${loaded} with data loaded`;
+  renderPortfolioFlags();
 }
 
 // ─── EXPORT NOTES ─────────────────────────────────────────────────────────────
