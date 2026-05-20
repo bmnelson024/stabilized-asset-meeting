@@ -3751,52 +3751,6 @@ function renderBenchmarkTab() {
   const hasIncomeSubs  = mapping ? PF_LINE_ITEMS.some(i => i.isIncome && !i.isComputed && mapping[i.group]) : incomeSubs.length > 0;
   const hasExpenseSubs = mapping ? PF_LINE_ITEMS.some(i => !i.isIncome && !i.isComputed && !i.isDebtService && mapping[i.group]) : expenseSubs.length > 0;
 
-  // ── Occupancy row (computed from rent roll, not from statement) ──────────────
-  const rrUnitsB = d.rentroll?.units || d.acqrentroll?.units || null;
-  if(rrUnitsB && rrUnitsB.length) {
-    const occOccupied = rrUnitsB.filter(u=>!u.isVacant).length;
-    const occTotal    = rrUnitsB.length;
-    const occActual   = occOccupied / occTotal * 100;
-    const occColor    = occActual >= 90 ? 'var(--green)' : occActual >= 85 ? '#ffa040' : 'var(--red)';
-    const fmtOcc      = v => `${v.toFixed(1)}%`;
-
-    // Proforma occupancy: look for vacancy/credit loss row and back-calculate,
-    // or use the infosheet vacancy rate if available
-    let pfOccPct = null;
-    if(pf) {
-      const pfVacRow = pf.rows.find(r => {
-        const lc = r.label.toLowerCase();
-        return lc.includes('vacancy') || lc.includes('credit loss');
-      });
-      if(pfVacRow && pfVacRow.total && anchorIncome && anchorIncome.total) {
-        // vacancy as % of gross potential = 1 - (effective income / gross)
-        pfOccPct = (1 - Math.abs(pfVacRow.total) / anchorIncome.total) * 100;
-      }
-      // Fallback: look for a row explicitly labeling occupancy or vacancy rate
-      if(pfOccPct === null) {
-        const pfOccRow = pf.rows.find(r => r.label.toLowerCase().includes('occupancy'));
-        if(pfOccRow && pfOccRow.total) pfOccPct = pfOccRow.total * 100;
-      }
-    }
-
-    let occCells = `<td style="text-align:right;font-weight:500;color:${occColor}">${fmtOcc(occActual)} <span style="color:var(--text3);font-size:11px;font-weight:400">${occOccupied}/${occTotal}</span></td>`;
-    if(hasBG) occCells += `<td colspan="3" style="text-align:right;color:var(--text3);font-size:11px">—</td>`;
-    occCells += `<td style="text-align:right;color:var(--text3)">—</td>`; // T12 avg
-    if(hasPF) {
-      if(pfOccPct !== null) {
-        const pfVarPct = occActual - pfOccPct;
-        const pfVarCls = pfVarPct >= 0 ? 'val-pos' : 'val-neg';
-        occCells += `<td style="text-align:right;color:var(--text3)">${fmtOcc(pfOccPct)}</td>`;
-        occCells += `<td colspan="2" style="text-align:right" class="${pfVarCls}">${pfVarPct>=0?'+':''}${pfVarPct.toFixed(1)}pp</td>`;
-      } else {
-        occCells += `<td colspan="3" style="text-align:right;color:var(--text3);font-size:11px">—</td>`;
-      }
-    }
-    html += `<tr class="bench-summary-row" style="border-bottom:2px solid var(--border)">
-      <td><span style="display:inline-block;width:16px"></span>Occupancy</td>${occCells}
-    </tr>`;
-  }
-
   if(anchorIncome)  html += summaryRow(anchorIncome,  'income',  'row-total', hasIncomeSubs,              'Total Operating Income')  + incomeDetailRows('income');
   if(anchorExpense) html += summaryRow(anchorExpense, 'expense', 'row-total', hasExpenseSubs,             'Total Operating Expense') + expenseDetailRows('expense');
   if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',   amfSubs.length>0||capexSubs.length>0||effectiveDebtSubs.length>0, 'Net Operating Income') + amfDetailRows(amfSubs,'noi') + capexDetailRows(capexSubs,'noi') + debtDetailRows(effectiveDebtSubs,'noi');
