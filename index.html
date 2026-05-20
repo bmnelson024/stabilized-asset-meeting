@@ -738,7 +738,7 @@ async function loadFromSupabase() {
 
   // Unpack propData
   if(pdRes.data) {
-    pdRes.data.forEach(row => { propData[row.prop_id] = row.data; });
+    pdRes.data.forEach(row => { if(row.prop_id && row.data) propData[row.prop_id] = row.data; });
   }
 }
 
@@ -915,8 +915,10 @@ function getStatusDot(id) {
   const budgetNoi = getKeyMetric(id, 'budget_noi');
   if(!budgetNoi || !noiRow) return 'dot-none';
 
-  // Use the most recent month's actual NOI vs budget/mo
-  const lastMonthIdx = noiRow.values.map((v,i)=>v!==0?i:-1).filter(i=>i>=0).pop() ?? noiRow.values.length - 1;
+  // Use the most recent non-zero month's actual NOI vs budget/mo
+  if(!noiRow.values.length) return 'dot-none';
+  const nonZeroIdxs = noiRow.values.map((v,i)=>v!==0?i:-1).filter(i=>i>=0);
+  const lastMonthIdx = nonZeroIdxs.length ? nonZeroIdxs[nonZeroIdxs.length-1] : noiRow.values.length - 1;
   const currentMonthNoi = noiRow.values[lastMonthIdx];
   const budgetMonthlyNoi = budgetNoi / 12;
 
@@ -1347,12 +1349,7 @@ function handleUpload(event, propId, fileKey) {
         if(!propData[propId]) propData[propId]={};
         propData[propId][fileKey] = parsed;
         propData[propId][fileKey+'_filename'] = file.name;
-        // Fix #7 - auto-match before saving so we only save once
-        const pd0 = propData[propId];
-        if(pd0.proforma && pd0.statement && !pd0.pfMapping) {
-          propData[propId].pfMapping = autoMatchProformaToStatement(pd0.proforma.rows, pd0.statement.rows, p?.system);
-          window._mappingCollapsed = false; // Auto-expand so user sees the mapping on first setup
-        }
+        maybeAutoMatch(propId, p);
         save(propId); // fire-and-forget
         const prop = properties.find(x=>x.id===propId);
         renderUploadTab(prop);
@@ -1497,12 +1494,7 @@ function handleUpload(event, propId, fileKey) {
       if(!propData[propId]) propData[propId]={};
       propData[propId][fileKey] = parsed;
       propData[propId][fileKey+'_filename'] = file.name;
-      // Fix #7 - auto-match before saving so we only save once
-      const pd2 = propData[propId];
-      if(pd2.proforma && pd2.statement && !pd2.pfMapping) {
-        propData[propId].pfMapping = autoMatchProformaToStatement(pd2.proforma.rows, pd2.statement.rows, p?.system);
-        window._mappingCollapsed = false; // Auto-expand on first setup
-      }
+      maybeAutoMatch(propId, p);
       save(propId); // fire-and-forget
       renderUploadTab(p);
       updateDetailBadge();
@@ -2115,6 +2107,15 @@ function getStmtMatchGroup(label) {
     if(keys.some(k=>lc.includes(k))) return group;
   }
   return null;
+}
+
+// Single shared helper — called after any upload that could complete a proforma+statement pair
+function maybeAutoMatch(propId, prop) {
+  const pd = propData[propId];
+  if(pd && pd.proforma && pd.statement && !pd.pfMapping) {
+    pd.pfMapping = autoMatchProformaToStatement(pd.proforma.rows, pd.statement.rows, prop?.system);
+    window._mappingCollapsed = false; // Auto-expand so user sees the mapping on first setup
+  }
 }
 
 function autoMatchProformaToStatement(pfRows, stmtRows, system) {
@@ -5121,8 +5122,8 @@ function renderDebtTab() {
         <div>
           <div style="${labelStyle}">Loan start date</div>
           <input type="date" value="${loan.loanStartDate||''}" style="${inputStyle}"
-            onchange="updateDebtLoan('${currentPropId}','${loan.id}','loanStartDate',this.value)"
-            onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+            onfocus="this.style.borderColor='var(--blue)'"
+            onblur="this.style.borderColor='var(--border2)';updateDebtLoan('${currentPropId}','${loan.id}','loanStartDate',this.value)">
           <div style="font-size:10px;color:var(--text3);margin-top:3px">Used to calculate est. balance</div>
         </div>
 
@@ -5159,8 +5160,8 @@ function renderDebtTab() {
         <div>
           <div style="${labelStyle}">Maturity / balloon date</div>
           <input type="date" value="${loan.maturityDate||''}" style="${inputStyle}"
-            onchange="updateDebtLoan('${currentPropId}','${loan.id}','maturityDate',this.value)"
-            onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+            onfocus="this.style.borderColor='var(--blue)'"
+            onblur="this.style.borderColor='var(--border2)';updateDebtLoan('${currentPropId}','${loan.id}','maturityDate',this.value)">
           ${loan.maturityDate ? `<div style="font-size:11px;font-weight:600;color:${mat.color};margin-top:4px">${mat.label}${mat.urgency==='critical'?' ⚠️':mat.urgency==='past'?' 🔴':''}</div>` : ''}
         </div>
 
@@ -5179,8 +5180,8 @@ function renderDebtTab() {
               <span style="font-size:12px;color:var(--text3)">Converts to P&I:</span>
               <input type="date" value="${loan.ioEndDate||''}"
                 style="padding:4px 8px;border:1px solid var(--border2);border-radius:var(--radius);font-size:12px;background:var(--bg2);color:var(--text);font-family:inherit;outline:none"
-                onchange="updateDebtLoan('${currentPropId}','${loan.id}','ioEndDate',this.value)"
-                onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+                onfocus="this.style.borderColor='var(--blue)'"
+                onblur="this.style.borderColor='var(--border2)';updateDebtLoan('${currentPropId}','${loan.id}','ioEndDate',this.value)">
             </div>` : ''}
         </div>
       </div>
@@ -5997,8 +5998,9 @@ function portfolioPropRow(p, pm, isOpen) {
     const monthsWithData = noiRow ? (noiRow.values.filter(v=>v!==0).length || 1) : 1;
     if(noiRow) {
       annualizedNoi = noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
-      const lastIdx = noiRow.values.map((v,i)=>v!==0?i:-1).filter(i=>i>=0).pop() ?? noiRow.values.length-1;
-      currentMonthNoi = noiRow.values[lastIdx];
+      const nonZeroIdxs2 = noiRow.values.map((v,i)=>v!==0?i:-1).filter(i=>i>=0);
+      const lastIdx = nonZeroIdxs2.length ? nonZeroIdxs2[nonZeroIdxs2.length-1] : Math.max(0, noiRow.values.length-1);
+      currentMonthNoi = noiRow.values.length ? noiRow.values[lastIdx] : 0;
     }
     if(incRow) annualizedIncome = incRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
     if(expRow) annualizedExpense = expRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
