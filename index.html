@@ -4758,19 +4758,25 @@ function renderCashReviewTab() {
   const pf   = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
   const cb   = d.cashbalance;
 
-  // ── Trailing 3-month average NOI from statement ───────────────────────────
+  // ── Trailing 3 and 6-month average NOI from statement ────────────────────
   let stmtNoiTrailingAvg = null, stmtNoiMonthsUsed = 0;
+  let stmtNoiT6Avg = null, stmtNoiT6MonthsUsed = 0;
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
     const noiRow = stmt.rows.find(r => r.isNOI);
     if(noiRow) {
-      const nMonths = Math.min(3, stmt.months.length);
-      let sum = 0;
-      for(let i = 0; i < nMonths; i++) {
-        const mIdx = stmt.months.length - 1 - i;
-        sum += noiRow.values[mIdx] || 0;
+      const n3 = Math.min(3, stmt.months.length);
+      let sum3 = 0;
+      for(let i = 0; i < n3; i++) sum3 += noiRow.values[stmt.months.length - 1 - i] || 0;
+      stmtNoiTrailingAvg = sum3 / n3;
+      stmtNoiMonthsUsed = n3;
+
+      const n6 = Math.min(6, stmt.months.length);
+      if(n6 >= 4) { // only show T6 if we have enough months to be meaningful
+        let sum6 = 0;
+        for(let i = 0; i < n6; i++) sum6 += noiRow.values[stmt.months.length - 1 - i] || 0;
+        stmtNoiT6Avg = sum6 / n6;
+        stmtNoiT6MonthsUsed = n6;
       }
-      stmtNoiTrailingAvg = sum / nMonths;
-      stmtNoiMonthsUsed = nMonths;
     }
   }
 
@@ -4788,7 +4794,9 @@ function renderCashReviewTab() {
   // ── Derive NOI/month (respects crNoiSource override) ─────────────────────
   let noiMonthly = null, noiSource = '';
   const noiSrcKey = d.crNoiSource || null;
-  if(noiSrcKey === 'stmt_avg' && stmtNoiTrailingAvg !== null) {
+  if(noiSrcKey === 'stmt_t6' && stmtNoiT6Avg !== null) {
+    noiMonthly = stmtNoiT6Avg; noiSource = `T${stmtNoiT6MonthsUsed} Avg`;
+  } else if(noiSrcKey === 'stmt_avg' && stmtNoiTrailingAvg !== null) {
     noiMonthly = stmtNoiTrailingAvg; noiSource = `T${stmtNoiMonthsUsed} Avg`;
   } else if(noiSrcKey === 'proforma' && pfNoiMonthly !== null) {
     noiMonthly = pfNoiMonthly; noiSource = 'Proforma';
@@ -4947,6 +4955,10 @@ function renderCashReviewTab() {
     const active = effectiveNOISrc === 'stmt_avg';
     noiChips.push(`<button style="${active ? chipActive : chipInactive}" onclick="setCashReviewNOI('${currentPropId}','stmt_avg')">T${stmtNoiMonthsUsed} Avg: ${fmt(stmtNoiTrailingAvg)}/mo</button>`);
   }
+  if(stmtNoiT6Avg !== null) {
+    const active = effectiveNOISrc === 'stmt_t6';
+    noiChips.push(`<button style="${active ? chipActive : chipInactive}" onclick="setCashReviewNOI('${currentPropId}','stmt_t6')">T${stmtNoiT6MonthsUsed} Avg: ${fmt(stmtNoiT6Avg)}/mo</button>`);
+  }
   const noiSelectorHtml = noiChips.length > 1 ? `
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap">NOI / mo</div>
@@ -4975,6 +4987,51 @@ function renderCashReviewTab() {
       <div class="kpi-label">Pre-capex FCF / mo</div>
       <div style="font-size:15px;font-weight:700;color:${preCapexFCF>=0?'var(--green)':'var(--red)'}">${preCapexFCF>=0?'+':''}${fmt(preCapexFCF)}</div>
       <div style="font-size:10px;color:var(--text3);margin-top:2px">NOI − DS − AMF</div>
+    </div>
+  </div>`;
+
+  // ── Derived insight cards (DSCR, Breakeven, Runway) ──────────────────────
+  // DSCR
+  let dscrVal = null;
+  if(noiMonthly !== null && dsMonthly && dsMonthly > 0) dscrVal = noiMonthly / dsMonthly;
+  const dscrColor = dscrVal === null ? 'var(--text3)' : dscrVal >= 1.25 ? 'var(--green)' : dscrVal >= 1.0 ? '#ffa040' : 'var(--red)';
+  const dscrDisplay = dscrVal !== null ? dscrVal.toFixed(2) + 'x' : '—';
+  const dscrNote = dscrVal === null ? 'No debt service data'
+    : dscrVal >= 1.25 ? 'Healthy coverage' : dscrVal >= 1.0 ? 'Thin coverage' : 'Below 1.0x — monitor closely';
+
+  // Breakeven capex
+  const breakevenColor = preCapexFCF > 0 ? 'var(--green)' : 'var(--red)';
+  const breakevenDisplay = preCapexFCF > 0 ? fmt(preCapexFCF) : '(' + fmt(Math.abs(preCapexFCF)) + ')';
+  const breakevenNote = preCapexFCF > 0 ? 'Max capex before negative FCF' : 'Pre-capex already negative';
+
+  // Runway
+  let runwayDisplay = '', runwayColor = 'var(--text2)', runwayNote = '';
+  if(netMonthly < 0 && cb.cash > 0) {
+    const months = Math.floor(cb.cash / Math.abs(netMonthly));
+    runwayDisplay = months + ' mo';
+    runwayColor = months < 6 ? 'var(--red)' : months < 12 ? '#ffa040' : 'var(--green)';
+    runwayNote = months < 6 ? 'Critical — review capex plan' : months < 12 ? 'Watch closely' : 'Adequate runway';
+  } else if(netMonthly < 0 && cb.cash <= 0) {
+    runwayDisplay = '0 mo'; runwayColor = 'var(--red)'; runwayNote = 'Capital injection needed';
+  } else {
+    runwayDisplay = '∞'; runwayColor = 'var(--green)'; runwayNote = 'Cash growing';
+  }
+
+  const insightCards = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
+    <div style="${cardStyle}">
+      <div class="kpi-label">DSCR</div>
+      <div style="font-size:15px;font-weight:600;color:${dscrColor}">${dscrDisplay}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${dscrNote}</div>
+    </div>
+    <div style="${cardStyle}">
+      <div class="kpi-label">Breakeven capex / mo</div>
+      <div style="font-size:15px;font-weight:600;color:${breakevenColor}">${breakevenDisplay}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${breakevenNote}</div>
+    </div>
+    <div style="${cardStyle}">
+      <div class="kpi-label">Cash runway</div>
+      <div style="font-size:15px;font-weight:600;color:${runwayColor}">${runwayDisplay}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${runwayNote}</div>
     </div>
   </div>`;
 
@@ -5042,6 +5099,7 @@ function renderCashReviewTab() {
     ${noiSelectorHtml}
     <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em;font-size:11px">Fixed costs</div>
     ${fixedCards}
+    ${insightCards}
     <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Capex assumption</div>
     ${capexEditor}
     <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em;font-size:11px">12-Month projection</div>
