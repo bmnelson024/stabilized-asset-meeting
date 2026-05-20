@@ -308,6 +308,7 @@
         <div class="tab" onclick="switchTab('proforma')">Proforma</div>
         <div class="tab" onclick="switchTab('rentroll')">Rent roll</div>
         <div class="tab" onclick="switchTab('rentprog')">Rent progression</div>
+        <div class="tab" onclick="switchTab('cashreview')">Cash review</div>
         <div class="tab" id="tab-btn-flags" onclick="switchTab('flags')">Flags</div>
         <div class="tab" onclick="switchTab('notes')">Notes</div>
         <div class="tab" onclick="switchTab('upload')">Upload files</div>
@@ -385,6 +386,16 @@
           <div class="upload-notice">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
             <p>Upload a current rent roll, then set acquisition rents below to see rent progression by unit type.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- CASH REVIEW TAB -->
+      <div class="tab-content" id="tab-cashreview">
+        <div id="cr-container">
+          <div class="upload-notice">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            <p>Upload a Trial Balance (AppFolio) or Bank Account Balance (Buildium) on the Upload tab to enable cash review.</p>
           </div>
         </div>
       </div>
@@ -924,6 +935,7 @@ function selectProp(id, tab) {
   renderBenchmarkTab();
   renderRentRollTab();
   renderRentProgressionTab();
+  renderCashReviewTab();
   renderProformaTab();
 }
 
@@ -943,6 +955,7 @@ function switchTab(name) {
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='rentprog') renderRentProgressionTab();
+  if(name==='cashreview') renderCashReviewTab();
   if(name==='proforma') renderProformaTab();
   if(name==='flags') renderFlagsTab();
 }
@@ -4611,6 +4624,241 @@ function pushFlagNoteToNotes(propId, group, flagLabel, varDStr, varPctStr) {
   // Brief confirmation on the button
   const btn = document.getElementById(`flag-push-${propId}-${group}`);
   if(btn) { btn.textContent = '✓ Added'; btn.disabled = true; setTimeout(()=>{ if(btn){ btn.textContent='→ Push to meeting notes'; btn.disabled=false; } }, 2000); }
+}
+
+// ─── CASH REVIEW TAB ──────────────────────────────────────────────────────────
+function renderCashReviewTab() {
+  const el = document.getElementById('cr-container');
+  if(!currentPropId || !el) return;
+  const d = propData[currentPropId] || {};
+  const p = properties.find(x => x.id === currentPropId);
+
+  // ── Require cash balance ──────────────────────────────────────────────────
+  if(!d.cashbalance) {
+    const reportLabel = p && p.system === 'appfolio' ? 'Trial Balance by Property' : 'Bank Account Balance Breakdown';
+    el.innerHTML = `<div class="upload-notice">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+      <p>Upload a <strong>${reportLabel}</strong> on the Upload tab to enable cash review and projection.</p>
+    </div>`;
+    return;
+  }
+
+  const stmt  = d.statement;
+  const bg    = d.budget;
+  const pf    = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
+  const cb    = d.cashbalance;
+
+  // ── Derive NOI/month ──────────────────────────────────────────────────────
+  // Prefer budget NOI; fall back to proforma NOI
+  let noiMonthly = null, noiSource = '';
+  if(bg) {
+    const bgNOI = bestRow(bg.rows.filter(r => r.isNOI));
+    if(bgNOI && bgNOI.total) { noiMonthly = bgNOI.total / 12; noiSource = 'Budget'; }
+  }
+  if(noiMonthly === null && pf) {
+    const pfNOI = bestRow(pf.rows.filter(r => r.isNOI));
+    if(pfNOI && pfNOI.total) { noiMonthly = pfNOI.total / 12; noiSource = 'Proforma'; }
+  }
+
+  // ── Derive Debt Service/month ─────────────────────────────────────────────
+  // Prefer proforma DS rows; fall back to budget DS rows
+  let dsMonthly = null, dsSource = '';
+  if(pf) {
+    const pfDS = pf.rows.filter(r => r.isDebtService && r.total);
+    if(pfDS.length) { dsMonthly = pfDS.reduce((s,r) => s + r.total, 0) / 12; dsSource = 'Proforma'; }
+  }
+  if(dsMonthly === null && bg) {
+    const bgDS = bg.rows.filter(r => r.isDebtService && r.total);
+    if(bgDS.length) { dsMonthly = bgDS.reduce((s,r) => s + r.total, 0) / 12; dsSource = 'Budget'; }
+  }
+
+  // ── Derive AMF/month ──────────────────────────────────────────────────────
+  let amfMonthly = null, amfSource = '';
+  if(pf) {
+    const pfAMF = pf.rows.filter(r => r.isAssetMgmt && r.total);
+    if(pfAMF.length) { amfMonthly = pfAMF.reduce((s,r) => s + r.total, 0) / 12; amfSource = 'Proforma'; }
+  }
+  if(amfMonthly === null && bg) {
+    const bgAMF = bg.rows.filter(r => r.isAssetMgmt && r.total);
+    if(bgAMF.length) { amfMonthly = bgAMF.reduce((s,r) => s + r.total, 0) / 12; amfSource = 'Budget'; }
+  }
+
+  // ── Trailing 3-month capex average from statement ─────────────────────────
+  let capexMonthly = null, capexSource = '', capexMonthsUsed = 0;
+  if(stmt && stmt.rows && stmt.months && stmt.months.length) {
+    const isCapexRow = r => {
+      const lc = r.label.toLowerCase();
+      return lc.includes('capex') || lc.includes('capital expenditure') || lc.includes('capital improvement');
+    };
+    const capexRows = stmt.rows.filter(r => isCapexRow(r) && !r.isCategory && !r.isTotal && !r.isSubtotal);
+    if(capexRows.length) {
+      const nMonths = Math.min(3, stmt.months.length);
+      const lastN = stmt.months.length - nMonths;
+      let total = 0;
+      capexRows.forEach(r => {
+        for(let m = lastN; m < stmt.months.length; m++) {
+          total += Math.abs(r.values[m] || 0);
+        }
+      });
+      capexMonthly = total / nMonths;
+      capexMonthsUsed = nMonths;
+      capexSource = `${nMonths}-mo avg from statement`;
+    }
+  }
+
+  // ── Net monthly free cash flow ─────────────────────────────────────────────
+  const netMonthly = (noiMonthly || 0) - (dsMonthly || 0) - (amfMonthly || 0) - (capexMonthly || 0);
+
+  // ── Build 12-month projection ─────────────────────────────────────────────
+  const PROJ_MONTHS = 12;
+  const projection = [];
+  // Determine starting month from cashbalance dateRange
+  let startDate = new Date();
+  if(cb.dateRange) {
+    // dateRange like "04/01/2026 to 04/30/2026"
+    const m = cb.dateRange.match(/(\d{2})\/\d{2}\/(\d{4})\s+to/);
+    if(m) startDate = new Date(parseInt(m[2]), parseInt(m[1])-1, 1);
+  }
+  let runningCash = cb.cash;
+  for(let i = 0; i < PROJ_MONTHS; i++) {
+    const d2 = new Date(startDate.getFullYear(), startDate.getMonth() + i + 1, 1);
+    const label = d2.toLocaleDateString('en-US', {month:'short', year:'numeric'});
+    runningCash += netMonthly;
+    projection.push({ label, cash: runningCash });
+  }
+
+  // ── Warnings ──────────────────────────────────────────────────────────────
+  const warnings = [];
+  if(!noiMonthly)  warnings.push('No budget or proforma NOI found — NOI assumed $0.');
+  if(!dsMonthly)   warnings.push('No debt service found in proforma or budget — DS assumed $0.');
+  if(!amfMonthly)  warnings.push('No asset management fee found — AMF assumed $0.');
+  if(!capexMonthly) warnings.push('No capex rows found in statement — capex assumed $0.');
+
+  const minProjected = Math.min(...projection.map(x => x.cash));
+  const injectionNeeded = minProjected < 0;
+  const maxProjected = Math.max(...projection.map(x => x.cash));
+  const distOpportunity = !injectionNeeded && maxProjected > cb.cash * 1.5 && maxProjected > 50000;
+
+  // ── SVG Chart ─────────────────────────────────────────────────────────────
+  const allValues = [cb.cash, ...projection.map(x => x.cash)];
+  const chartMin = Math.min(0, ...allValues);
+  const chartMax = Math.max(0, ...allValues);
+  const chartRange = chartMax - chartMin || 1;
+  const W = 640, H = 180, PAD_L = 70, PAD_R = 16, PAD_T = 12, PAD_B = 32;
+  const cW = W - PAD_L - PAD_R, cH = H - PAD_T - PAD_B;
+  const pts = [cb.cash, ...projection.map(x => x.cash)];
+  const labels = ['Now', ...projection.map(x => x.label)];
+  const xStep = cW / (pts.length - 1);
+  const yPx = v => PAD_T + cH - ((v - chartMin) / chartRange) * cH;
+  const zeroY = yPx(0);
+
+  // Bar chart
+  const barW = Math.max(4, xStep * 0.55);
+  const bars = pts.map((v, i) => {
+    const x = PAD_L + i * xStep - barW/2;
+    const y0 = zeroY;
+    const y1 = yPx(v);
+    const barH = Math.abs(y1 - y0);
+    const barY = Math.min(y0, y1);
+    const color = v < 0 ? 'var(--red)' : i === 0 ? 'var(--blue,#4a90d9)' : 'var(--green)';
+    return `<rect x="${x.toFixed(1)}" y="${barY.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1,barH).toFixed(1)}" fill="${color}" opacity="0.82" rx="2"/>`;
+  }).join('');
+
+  // X-axis labels (every other to avoid crowding)
+  const xLabels = labels.map((lbl, i) => {
+    if(i % 2 !== 0 && i !== labels.length - 1) return '';
+    const x = PAD_L + i * xStep;
+    return `<text x="${x.toFixed(1)}" y="${(H - 6).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--text3)">${lbl}</text>`;
+  }).join('');
+
+  // Y-axis
+  const yTicks = 4;
+  const yAxisLines = Array.from({length:yTicks+1}, (_,i) => {
+    const v = chartMin + (chartRange / yTicks) * i;
+    const y = yPx(v);
+    const label = v >= 1000 || v <= -1000 ? `$${(v/1000).toFixed(0)}k` : `$${v.toFixed(0)}`;
+    return `<line x1="${PAD_L}" y1="${y.toFixed(1)}" x2="${W-PAD_R}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-width="0.5"/>
+      <text x="${(PAD_L-4).toFixed(1)}" y="${(y+3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">${label}</text>`;
+  }).join('');
+
+  // Zero line (bold if in range)
+  const zeroLine = (chartMin < 0 && chartMax > 0) ?
+    `<line x1="${PAD_L}" y1="${zeroY.toFixed(1)}" x2="${W-PAD_R}" y2="${zeroY.toFixed(1)}" stroke="var(--text2)" stroke-width="1" stroke-dasharray="3,2"/>` : '';
+
+  const chartSvg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;display:block;overflow:visible">
+    ${yAxisLines}${zeroLine}${bars}${xLabels}
+  </svg>`;
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  const warnHtml = warnings.length ? `<div style="background:var(--amber-bg,#fff8e6);border:1px solid var(--amber,#ffa040);border-radius:var(--radius-lg);padding:10px 14px;font-size:12px;color:var(--text2);margin-bottom:14px">
+    <strong style="color:var(--amber)">⚠ Assumptions with missing data:</strong> ${warnings.join(' ')}
+  </div>` : '';
+
+  const alertHtml = injectionNeeded ? `<div style="background:#2d1a1a;border:1px solid var(--red);border-radius:var(--radius-lg);padding:10px 14px;font-size:12px;color:var(--red);margin-bottom:14px;font-weight:600">
+    ⚠ Capital injection may be needed — projected cash goes negative within 12 months (low: ${fmt(minProjected)})
+  </div>` : distOpportunity ? `<div style="background:#1a2d1a;border:1px solid var(--green);border-radius:var(--radius-lg);padding:10px 14px;font-size:12px;color:var(--green);margin-bottom:14px">
+    ✦ Cash builds to ${fmt(maxProjected)} over 12 months — potential distribution opportunity
+  </div>` : '';
+
+  const kpiCards = `<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px">
+    <div class="kpi-card" style="border-color:var(--border2)">
+      <div class="kpi-label">Current cash</div>
+      <div style="font-size:16px;font-weight:600;color:${cb.cash>=0?'var(--green)':'var(--red)'}">${fmt(cb.cash)}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${cb.dateRange||''}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">NOI / mo</div>
+      <div style="font-size:15px;font-weight:500">${noiMonthly!==null?fmt(noiMonthly):'—'}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${noiSource}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Debt service / mo</div>
+      <div style="font-size:15px;font-weight:500;color:var(--red)">${dsMonthly!==null?'('+fmt(dsMonthly)+')':'—'}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${dsSource}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">AMF / mo</div>
+      <div style="font-size:15px;font-weight:500;color:var(--red)">${amfMonthly!==null?'('+fmt(amfMonthly)+')':'—'}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${amfSource}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Avg capex / mo</div>
+      <div style="font-size:15px;font-weight:500;color:var(--red)">${capexMonthly!==null?'('+fmt(capexMonthly)+')':'—'}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${capexSource}</div>
+    </div>
+  </div>`;
+
+  const netCls = netMonthly >= 0 ? 'val-pos' : 'val-neg';
+  const netCard = `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:10px 16px;margin-bottom:16px;display:flex;align-items:center;gap:16px">
+    <div>
+      <div style="font-size:12px;color:var(--text2);font-weight:500">Estimated net monthly cash change</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:1px">NOI less debt service, AMF, and trailing capex average</div>
+    </div>
+    <div style="margin-left:auto;font-size:20px;font-weight:700" class="${netCls}">${netMonthly>=0?'+':''}${fmt(netMonthly)} / mo</div>
+  </div>`;
+
+  // Projection table
+  const tableRows = projection.map(row => {
+    const cls = row.cash < 0 ? 'style="color:var(--red);font-weight:600"' : row.cash > cb.cash ? 'style="color:var(--green)"' : '';
+    return `<tr><td>${row.label}</td><td ${cls}>${fmt(row.cash)}</td><td class="${row.cash >= cb.cash ? 'val-pos' : 'val-neg'}">${row.cash >= cb.cash ? '+' : ''}${fmt(row.cash - cb.cash)}</td></tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    ${warnHtml}${alertHtml}
+    <div style="font-size:13px;font-weight:600;margin-bottom:10px">12-Month Cash Projection</div>
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:16px">
+      ${chartSvg}
+    </div>
+    ${kpiCards}
+    ${netCard}
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;font-style:italic">
+      Projection assumes constant monthly cash change of ${fmt(netMonthly)} applied to starting balance of ${fmt(cb.cash)}.
+      Capex based on ${capexMonthsUsed>0?capexMonthsUsed+'-month':'no'} trailing average from statement.
+    </div>
+    <table class="bench-table" style="width:100%;max-width:340px">
+      <thead><tr><th>Month</th><th>Projected Cash</th><th>vs. Today</th></tr></thead>
+      <tbody>${tableRows}</tbody>
+    </table>`;
 }
 
 function renderFlagsTab() {
