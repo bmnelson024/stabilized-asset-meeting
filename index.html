@@ -4718,6 +4718,15 @@ function pushFlagNoteToNotes(propId, group, flagLabel, varDStr, varPctStr) {
 }
 
 // ─── CASH REVIEW TAB ──────────────────────────────────────────────────────────
+function setCashReviewCapex(propId, val) {
+  if(!propData[propId]) propData[propId] = {};
+  const num = parseFloat(val);
+  if(!isNaN(num) && num >= 0) propData[propId].crCapexOverride = num;
+  else delete propData[propId].crCapexOverride;
+  save(propId);
+  renderCashReviewTab();
+}
+
 function renderCashReviewTab() {
   const el = document.getElementById('cr-container');
   if(!currentPropId || !el) return;
@@ -4734,13 +4743,12 @@ function renderCashReviewTab() {
     return;
   }
 
-  const stmt  = d.statement;
-  const bg    = d.budget;
-  const pf    = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
-  const cb    = d.cashbalance;
+  const stmt = d.statement;
+  const bg   = d.budget;
+  const pf   = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
+  const cb   = d.cashbalance;
 
   // ── Derive NOI/month ──────────────────────────────────────────────────────
-  // Prefer budget NOI; fall back to proforma NOI
   let noiMonthly = null, noiSource = '';
   if(bg) {
     const bgNOI = bestRow(bg.rows.filter(r => r.isNOI));
@@ -4752,7 +4760,6 @@ function renderCashReviewTab() {
   }
 
   // ── Derive Debt Service/month ─────────────────────────────────────────────
-  // Prefer proforma DS rows; fall back to budget DS rows
   let dsMonthly = null, dsSource = '';
   if(pf) {
     const pfDS = pf.rows.filter(r => r.isDebtService && r.total);
@@ -4774,8 +4781,11 @@ function renderCashReviewTab() {
     if(bgAMF.length) { amfMonthly = bgAMF.reduce((s,r) => s + r.total, 0) / 12; amfSource = 'Budget'; }
   }
 
+  // ── Pre-capex FCF (the "fixed cost" floor) ────────────────────────────────
+  const preCapexFCF = (noiMonthly || 0) - (dsMonthly || 0) - (amfMonthly || 0);
+
   // ── Trailing 3-month capex average from statement ─────────────────────────
-  let capexMonthly = null, capexSource = '', capexMonthsUsed = 0;
+  let trailingCapex = null, capexMonthsUsed = 0;
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
     const isCapexRow = r => {
       const lc = r.label.toLowerCase();
@@ -4787,27 +4797,26 @@ function renderCashReviewTab() {
       const lastN = stmt.months.length - nMonths;
       let total = 0;
       capexRows.forEach(r => {
-        for(let m = lastN; m < stmt.months.length; m++) {
-          total += Math.abs(r.values[m] || 0);
-        }
+        for(let m = lastN; m < stmt.months.length; m++) total += Math.abs(r.values[m] || 0);
       });
-      capexMonthly = total / nMonths;
+      trailingCapex = total / nMonths;
       capexMonthsUsed = nMonths;
-      capexSource = `${nMonths}-mo avg from statement`;
     }
   }
 
-  // ── Net monthly free cash flow ─────────────────────────────────────────────
-  const netMonthly = (noiMonthly || 0) - (dsMonthly || 0) - (amfMonthly || 0) - (capexMonthly || 0);
+  // ── Capex assumption: use saved override if set, otherwise trailing avg ───
+  const hasOverride = d.crCapexOverride !== undefined && d.crCapexOverride !== null;
+  const capexForProjection = hasOverride ? d.crCapexOverride : (trailingCapex || 0);
+
+  // ── Net monthly FCF ───────────────────────────────────────────────────────
+  const netMonthly = preCapexFCF - capexForProjection;
 
   // ── Build 12-month projection ─────────────────────────────────────────────
   const PROJ_MONTHS = 12;
   const projection = [];
-  // Determine starting month from cashbalance dateRange
   let startDate = new Date();
   if(cb.dateRange) {
-    // dateRange like "04/01/2026 to 04/30/2026"
-    const m = cb.dateRange.match(/(\d{2})\/\d{2}\/(\d{4})\s+to/);
+    const m = cb.dateRange.match(/(\d{1,2})\/\d{1,2}\/(\d{4})/);
     if(m) startDate = new Date(parseInt(m[2]), parseInt(m[1])-1, 1);
   }
   let runningCash = cb.cash;
@@ -4815,19 +4824,18 @@ function renderCashReviewTab() {
     const d2 = new Date(startDate.getFullYear(), startDate.getMonth() + i + 1, 1);
     const label = d2.toLocaleDateString('en-US', {month:'short', year:'numeric'});
     runningCash += netMonthly;
-    projection.push({ label, cash: runningCash });
+    projection.push({ label, cash: runningCash, preCapex: cb.cash + preCapexFCF * (i+1) });
   }
 
-  // ── Warnings ──────────────────────────────────────────────────────────────
+  // ── Alerts ────────────────────────────────────────────────────────────────
   const warnings = [];
-  if(!noiMonthly)  warnings.push('No budget or proforma NOI found — NOI assumed $0.');
-  if(!dsMonthly)   warnings.push('No debt service found in proforma or budget — DS assumed $0.');
-  if(!amfMonthly)  warnings.push('No asset management fee found — AMF assumed $0.');
-  if(!capexMonthly) warnings.push('No capex rows found in statement — capex assumed $0.');
+  if(!noiMonthly) warnings.push('No budget or proforma NOI — assumed $0.');
+  if(!dsMonthly)  warnings.push('No debt service in proforma or budget — assumed $0.');
+  if(!amfMonthly) warnings.push('No AMF in proforma or budget — assumed $0.');
 
   const minProjected = Math.min(...projection.map(x => x.cash));
-  const injectionNeeded = minProjected < 0;
   const maxProjected = Math.max(...projection.map(x => x.cash));
+  const injectionNeeded = minProjected < 0;
   const distOpportunity = !injectionNeeded && maxProjected > cb.cash * 1.5 && maxProjected > 50000;
 
   // ── SVG Chart ─────────────────────────────────────────────────────────────
@@ -4837,117 +4845,147 @@ function renderCashReviewTab() {
   const chartRange = chartMax - chartMin || 1;
   const W = 640, H = 180, PAD_L = 70, PAD_R = 16, PAD_T = 12, PAD_B = 32;
   const cW = W - PAD_L - PAD_R, cH = H - PAD_T - PAD_B;
-  const pts = [cb.cash, ...projection.map(x => x.cash)];
+  const pts    = [cb.cash, ...projection.map(x => x.cash)];
+  const ptsPre = [cb.cash, ...projection.map(x => x.preCapex)];
   const labels = ['Now', ...projection.map(x => x.label)];
-  const xStep = cW / (pts.length - 1);
-  const yPx = v => PAD_T + cH - ((v - chartMin) / chartRange) * cH;
-  const zeroY = yPx(0);
+  const xStep  = cW / (pts.length - 1);
+  const yPx    = v => PAD_T + cH - ((v - chartMin) / chartRange) * cH;
+  const zeroY  = yPx(0);
+  const barW   = Math.max(4, xStep * 0.55);
 
-  // Bar chart
-  const barW = Math.max(4, xStep * 0.55);
   const bars = pts.map((v, i) => {
     const x = PAD_L + i * xStep - barW/2;
-    const y0 = zeroY;
-    const y1 = yPx(v);
-    const barH = Math.abs(y1 - y0);
-    const barY = Math.min(y0, y1);
+    const barH = Math.abs(yPx(v) - zeroY);
+    const barY = Math.min(yPx(v), zeroY);
     const color = v < 0 ? 'var(--red)' : i === 0 ? 'var(--blue,#4a90d9)' : 'var(--green)';
     return `<rect x="${x.toFixed(1)}" y="${barY.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1,barH).toFixed(1)}" fill="${color}" opacity="0.82" rx="2"/>`;
   }).join('');
 
-  // X-axis labels (every other to avoid crowding)
+  // Pre-capex line overlay
+  const preCapexLine = ptsPre.map((v, i) => `${i===0?'M':'L'}${(PAD_L + i*xStep).toFixed(1)},${yPx(v).toFixed(1)}`).join(' ');
+
   const xLabels = labels.map((lbl, i) => {
-    if(i % 2 !== 0 && i !== labels.length - 1) return '';
-    const x = PAD_L + i * xStep;
-    return `<text x="${x.toFixed(1)}" y="${(H - 6).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--text3)">${lbl}</text>`;
+    if(i % 2 !== 0 && i !== labels.length-1) return '';
+    return `<text x="${(PAD_L+i*xStep).toFixed(1)}" y="${(H-6).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--text3)">${lbl}</text>`;
   }).join('');
 
-  // Y-axis
-  const yTicks = 4;
-  const yAxisLines = Array.from({length:yTicks+1}, (_,i) => {
-    const v = chartMin + (chartRange / yTicks) * i;
+  const yAxisLines = Array.from({length:5}, (_,i) => {
+    const v = chartMin + (chartRange/4)*i;
     const y = yPx(v);
-    const label = v >= 1000 || v <= -1000 ? `$${(v/1000).toFixed(0)}k` : `$${v.toFixed(0)}`;
+    const lbl = Math.abs(v)>=1000 ? `$${(v/1000).toFixed(0)}k` : `$${v.toFixed(0)}`;
     return `<line x1="${PAD_L}" y1="${y.toFixed(1)}" x2="${W-PAD_R}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-width="0.5"/>
-      <text x="${(PAD_L-4).toFixed(1)}" y="${(y+3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">${label}</text>`;
+      <text x="${(PAD_L-4).toFixed(1)}" y="${(y+3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">${lbl}</text>`;
   }).join('');
 
-  // Zero line (bold if in range)
-  const zeroLine = (chartMin < 0 && chartMax > 0) ?
-    `<line x1="${PAD_L}" y1="${zeroY.toFixed(1)}" x2="${W-PAD_R}" y2="${zeroY.toFixed(1)}" stroke="var(--text2)" stroke-width="1" stroke-dasharray="3,2"/>` : '';
+  const zeroLine = (chartMin < 0 && chartMax > 0)
+    ? `<line x1="${PAD_L}" y1="${zeroY.toFixed(1)}" x2="${W-PAD_R}" y2="${zeroY.toFixed(1)}" stroke="var(--text2)" stroke-width="1" stroke-dasharray="3,2"/>` : '';
 
   const chartSvg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;display:block;overflow:visible">
-    ${yAxisLines}${zeroLine}${bars}${xLabels}
-  </svg>`;
+    ${yAxisLines}${zeroLine}${bars}
+    <path d="${preCapexLine}" fill="none" stroke="var(--amber,#ffa040)" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.8"/>
+    ${xLabels}
+  </svg>
+  <div style="display:flex;align-items:center;gap:16px;margin-top:6px;font-size:11px;color:var(--text3)">
+    <span><span style="display:inline-block;width:12px;height:10px;background:var(--green);border-radius:2px;vertical-align:middle;margin-right:4px;opacity:0.82"></span>Projected cash (with capex)</span>
+    <span><span style="display:inline-block;width:20px;height:0;border-top:2px dashed var(--amber,#ffa040);vertical-align:middle;margin-right:4px"></span>Pre-capex (fixed costs only)</span>
+  </div>`;
 
-  // ── Render ─────────────────────────────────────────────────────────────────
-  const warnHtml = warnings.length ? `<div style="background:var(--amber-bg,#fff8e6);border:1px solid var(--amber,#ffa040);border-radius:var(--radius-lg);padding:10px 14px;font-size:12px;color:var(--text2);margin-bottom:14px">
-    <strong style="color:var(--amber)">⚠ Assumptions with missing data:</strong> ${warnings.join(' ')}
-  </div>` : '';
-
-  const alertHtml = injectionNeeded ? `<div style="background:#2d1a1a;border:1px solid var(--red);border-radius:var(--radius-lg);padding:10px 14px;font-size:12px;color:var(--red);margin-bottom:14px;font-weight:600">
-    ⚠ Capital injection may be needed — projected cash goes negative within 12 months (low: ${fmt(minProjected)})
-  </div>` : distOpportunity ? `<div style="background:#1a2d1a;border:1px solid var(--green);border-radius:var(--radius-lg);padding:10px 14px;font-size:12px;color:var(--green);margin-bottom:14px">
-    ✦ Cash builds to ${fmt(maxProjected)} over 12 months — potential distribution opportunity
-  </div>` : '';
-
-  const kpiCards = `<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px">
-    <div class="kpi-card" style="border-color:var(--border2)">
-      <div class="kpi-label">Current cash</div>
-      <div style="font-size:16px;font-weight:600;color:${cb.cash>=0?'var(--green)':'var(--red)'}">${fmt(cb.cash)}</div>
-      <div style="font-size:10px;color:var(--text3);margin-top:2px">${cb.dateRange||''}</div>
-    </div>
-    <div class="kpi-card">
+  // ── Fixed cost waterfall cards ────────────────────────────────────────────
+  const cardStyle = 'background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:11px 14px';
+  const fixedCards = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
+    <div style="${cardStyle}">
       <div class="kpi-label">NOI / mo</div>
-      <div style="font-size:15px;font-weight:500">${noiMonthly!==null?fmt(noiMonthly):'—'}</div>
-      <div style="font-size:10px;color:var(--text3);margin-top:2px">${noiSource}</div>
+      <div style="font-size:15px;font-weight:600;color:var(--green)">${noiMonthly!==null?fmt(noiMonthly):'—'}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${noiSource||'—'}</div>
     </div>
-    <div class="kpi-card">
+    <div style="${cardStyle}">
       <div class="kpi-label">Debt service / mo</div>
-      <div style="font-size:15px;font-weight:500;color:var(--red)">${dsMonthly!==null?'('+fmt(dsMonthly)+')':'—'}</div>
-      <div style="font-size:10px;color:var(--text3);margin-top:2px">${dsSource}</div>
+      <div style="font-size:15px;font-weight:600;color:var(--red)">${dsMonthly!==null?'('+fmt(dsMonthly)+')':'—'}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${dsSource||'—'}</div>
     </div>
-    <div class="kpi-card">
+    <div style="${cardStyle}">
       <div class="kpi-label">AMF / mo</div>
-      <div style="font-size:15px;font-weight:500;color:var(--red)">${amfMonthly!==null?'('+fmt(amfMonthly)+')':'—'}</div>
-      <div style="font-size:10px;color:var(--text3);margin-top:2px">${amfSource}</div>
+      <div style="font-size:15px;font-weight:600;color:var(--red)">${amfMonthly!==null?'('+fmt(amfMonthly)+')':'—'}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">${amfSource||'—'}</div>
     </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Avg capex / mo</div>
-      <div style="font-size:15px;font-weight:500;color:var(--red)">${capexMonthly!==null?'('+fmt(capexMonthly)+')':'—'}</div>
-      <div style="font-size:10px;color:var(--text3);margin-top:2px">${capexSource}</div>
+    <div style="background:var(--bg);border:2px solid ${preCapexFCF>=0?'var(--green)':'var(--red)'};border-radius:var(--radius-lg);padding:11px 14px">
+      <div class="kpi-label">Pre-capex FCF / mo</div>
+      <div style="font-size:15px;font-weight:700;color:${preCapexFCF>=0?'var(--green)':'var(--red)'}">${preCapexFCF>=0?'+':''}${fmt(preCapexFCF)}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">NOI − DS − AMF</div>
     </div>
   </div>`;
 
-  const netCls = netMonthly >= 0 ? 'val-pos' : 'val-neg';
-  const netCard = `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:10px 16px;margin-bottom:16px;display:flex;align-items:center;gap:16px">
-    <div>
-      <div style="font-size:12px;color:var(--text2);font-weight:500">Estimated net monthly cash change</div>
-      <div style="font-size:11px;color:var(--text3);margin-top:1px">NOI less debt service, AMF, and trailing capex average</div>
+  // ── Capex assumption editor ───────────────────────────────────────────────
+  const trailingLabel = trailingCapex !== null
+    ? `${capexMonthsUsed}-mo trailing avg: ${fmt(trailingCapex)}`
+    : 'No capex rows found in statement';
+  const inputVal = hasOverride ? d.crCapexOverride.toFixed(0) : (trailingCapex !== null ? trailingCapex.toFixed(0) : '0');
+  const isEdited = hasOverride && trailingCapex !== null && Math.abs(d.crCapexOverride - trailingCapex) > 1;
+
+  const capexEditor = `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:180px">
+        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:2px">Projected monthly capex</div>
+        <div style="font-size:11px;color:var(--text3)">${trailingLabel}${isEdited?' · <span style="color:var(--amber)">manually adjusted</span>':''}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:13px;color:var(--text2)">$</span>
+        <input type="number" min="0" value="${inputVal}"
+          id="cr-capex-input-${currentPropId}"
+          style="width:110px;padding:6px 10px;border:1px solid var(--border2);border-radius:var(--radius);font-size:14px;font-weight:600;background:var(--bg2);color:var(--text);font-family:inherit;outline:none;text-align:right"
+          onchange="setCashReviewCapex('${currentPropId}',this.value)"
+          onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+        <span style="font-size:12px;color:var(--text3)">/&nbsp;mo</span>
+        ${hasOverride && trailingCapex !== null ? `<button onclick="delete propData['${currentPropId}'].crCapexOverride;save('${currentPropId}');renderCashReviewTab()"
+          style="font-size:11px;padding:4px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text3);cursor:pointer;font-family:inherit">
+          Reset to avg
+        </button>` : ''}
+      </div>
+      <div style="text-align:right;min-width:120px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:2px">Net monthly FCF</div>
+        <div style="font-size:18px;font-weight:700;color:${netMonthly>=0?'var(--green)':'var(--red)'}">${netMonthly>=0?'+':''}${fmt(netMonthly)}</div>
+      </div>
     </div>
-    <div style="margin-left:auto;font-size:20px;font-weight:700" class="${netCls}">${netMonthly>=0?'+':''}${fmt(netMonthly)} / mo</div>
   </div>`;
 
-  // Projection table
+  // ── Alerts ────────────────────────────────────────────────────────────────
+  const warnHtml = warnings.length ? `<div style="background:var(--amber-bg,#fff8e6);border:1px solid var(--amber,#ffa040);border-radius:var(--radius-lg);padding:9px 14px;font-size:12px;color:var(--text2);margin-bottom:12px">
+    <strong style="color:var(--amber)">⚠ Missing data:</strong> ${warnings.join(' ')}
+  </div>` : '';
+
+  const alertHtml = injectionNeeded
+    ? `<div style="background:#2d1a1a;border:1px solid var(--red);border-radius:var(--radius-lg);padding:9px 14px;font-size:12px;color:var(--red);margin-bottom:12px;font-weight:600">
+        ⚠ Capital injection may be needed — projected cash reaches ${fmt(minProjected)} within 12 months
+      </div>`
+    : distOpportunity
+    ? `<div style="background:#1a2d1a;border:1px solid var(--green);border-radius:var(--radius-lg);padding:9px 14px;font-size:12px;color:var(--green);margin-bottom:12px">
+        ✦ Cash builds to ${fmt(maxProjected)} over 12 months — potential distribution opportunity
+      </div>` : '';
+
+  // ── Projection table ──────────────────────────────────────────────────────
   const tableRows = projection.map(row => {
-    const cls = row.cash < 0 ? 'style="color:var(--red);font-weight:600"' : row.cash > cb.cash ? 'style="color:var(--green)"' : '';
-    return `<tr><td>${row.label}</td><td ${cls}>${fmt(row.cash)}</td><td class="${row.cash >= cb.cash ? 'val-pos' : 'val-neg'}">${row.cash >= cb.cash ? '+' : ''}${fmt(row.cash - cb.cash)}</td></tr>`;
+    const cashCls = row.cash < 0 ? 'style="color:var(--red);font-weight:600"' : row.cash > cb.cash ? 'style="color:var(--green)"' : '';
+    const vsCls = row.cash >= cb.cash ? 'val-pos' : 'val-neg';
+    return `<tr>
+      <td>${row.label}</td>
+      <td ${cashCls}>${fmt(row.cash)}</td>
+      <td class="${vsCls}">${row.cash >= cb.cash?'+':''}${fmt(row.cash - cb.cash)}</td>
+      <td style="color:var(--text3)">${fmt(row.preCapex)}</td>
+    </tr>`;
   }).join('');
 
   el.innerHTML = `
     ${warnHtml}${alertHtml}
-    <div style="font-size:13px;font-weight:600;margin-bottom:10px">12-Month Cash Projection</div>
-    <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:16px">
+    <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em;font-size:11px">Fixed costs</div>
+    ${fixedCards}
+    <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Capex assumption</div>
+    ${capexEditor}
+    <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em;font-size:11px">12-Month projection</div>
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:14px">
       ${chartSvg}
     </div>
-    ${kpiCards}
-    ${netCard}
-    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;font-style:italic">
-      Projection assumes constant monthly cash change of ${fmt(netMonthly)} applied to starting balance of ${fmt(cb.cash)}.
-      Capex based on ${capexMonthsUsed>0?capexMonthsUsed+'-month':'no'} trailing average from statement.
-    </div>
-    <table class="bench-table" style="width:100%;max-width:340px">
-      <thead><tr><th>Month</th><th>Projected Cash</th><th>vs. Today</th></tr></thead>
+    <table class="bench-table" style="width:100%;max-width:460px">
+      <thead><tr><th>Month</th><th>Projected Cash</th><th>vs. Today</th><th style="color:var(--text3)">Pre-capex</th></tr></thead>
       <tbody>${tableRows}</tbody>
     </table>`;
 }
