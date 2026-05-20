@@ -294,7 +294,7 @@
             <tr>
               <th>Property</th><th>System</th><th>Status</th><th>Occupancy</th>
               <th>Total income / mo</th><th>Total expense / mo</th><th>NOI / mo</th>
-              <th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
+              <th>Trend</th><th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
             </tr>
           </thead>
           <tbody id="portfolio-tbody"></tbody>
@@ -310,8 +310,9 @@
           <h2 id="detail-prop-name">—</h2>
           <div class="detail-meta" id="detail-prop-meta">—</div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <span id="detail-status-badge" class="badge badge-neutral">No data</span>
+          <button id="detail-review-btn" class="btn" style="font-size:12px;display:none" onclick="handleReviewBtnClick()">Mark reviewed</button>
           <button id="detail-stab-toggle" class="btn" onclick="toggleStabilized()" style="font-size:12px">Stabilized</button>
           <button class="btn" onclick="deleteProperty()" style="color:var(--red);border-color:var(--red-bg)">Remove</button>
         </div>
@@ -963,10 +964,17 @@ function selectProp(id, tab) {
   document.getElementById('breadcrumb-prop-name').textContent = p.name;
   const pfYear = p.purchaseDate ? getProformaYear(p.purchaseDate) : null;
   const pfYearStr = pfYear ? ` · Proforma Year ${pfYear}` : ' · No purchase date set';
-  document.getElementById('detail-prop-meta').textContent = `${p.system==='buildium'?'Buildium':'Appfolio'} · ${p.units||'?'} units${pfYearStr}`;
+  const stalenessMeta = (() => {
+    const s = getDataStaleness(id);
+    if(!s || s.level === 'fresh') return '';
+    const color = s.level === 'stale' ? 'var(--red)' : '#e07b00';
+    return ` &nbsp;<span style="color:${color};font-weight:600;font-size:11px">⚠ Data through ${s.lastMonth} (${s.monthsOld}mo old)</span>`;
+  })();
+  document.getElementById('detail-prop-meta').innerHTML = `${p.system==='buildium'?'Buildium':'Appfolio'} · ${p.units||'?'} units${pfYearStr}${stalenessMeta}`;
   updateStabToggle(p);
   renderUploadTab(p);
   updateDetailBadge();
+  updateDetailReviewButton();
   renderNotesTab();
   renderFlagsTab();
   renderStatementTab();
@@ -1094,6 +1102,7 @@ function renderUploadTab(p) {
   const monthly = [
     {key:'statement', label:stmtLabel, sub:'Monthly .xlsx export'},
     {key:'rentroll', label:'Rent roll', sub:'Monthly .xlsx export'},
+    {key:'delinquency', label:'Delinquency report', sub:'AppFolio "Delinquency As Of" .xlsx'},
   ];
   const benchmarks = [
     {key:'budget', label:'Budget', sub:'Annual — re-upload each year'},
@@ -1390,7 +1399,13 @@ function handleUpload(event, propId, fileKey) {
           document.getElementById('breadcrumb-prop-name').textContent = prop.name;
           const pfYear2 = prop.purchaseDate ? getProformaYear(prop.purchaseDate) : null;
           const pfYearStr2 = pfYear2 ? ` · Proforma Year ${pfYear2}` : ' · No purchase date set';
-          document.getElementById('detail-prop-meta').textContent = `${prop.system==='buildium'?'Buildium':'Appfolio'} · ${prop.units||'?'} units${pfYearStr2}`;
+          const stalenessMeta2 = (() => {
+            const s = getDataStaleness(prop.id);
+            if(!s || s.level === 'fresh') return '';
+            const color = s.level === 'stale' ? 'var(--red)' : '#e07b00';
+            return ` &nbsp;<span style="color:${color};font-weight:600;font-size:11px">⚠ Data through ${s.lastMonth} (${s.monthsOld}mo old)</span>`;
+          })();
+          document.getElementById('detail-prop-meta').innerHTML = `${prop.system==='buildium'?'Buildium':'Appfolio'} · ${prop.units||'?'} units${pfYearStr2}${stalenessMeta2}`;
         }
       } catch(err) {
         alert('Error parsing CSV proforma: '+err.message);
@@ -1485,6 +1500,9 @@ function handleUpload(event, propId, fileKey) {
             }
           }
         }
+      } else if(fileKey==='delinquency') {
+        const ws0 = wb.Sheets[wb.SheetNames[0]];
+        parsed = parseDelinquencyReport(ws0);
       } else if(fileKey==='cashbalance') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
         // Auto-detect: Buildium has "Bank Account Balance Breakdown" in cell; AppFolio has "Trial Balance"
@@ -1833,6 +1851,91 @@ function parseRentRoll(ws, system) {
   return parseBuildiumRentRoll(data);
 }
 
+// ─── DELINQUENCY REPORT PARSER ───────────────────────────────────────────────
+// Parses AppFolio "Delinquency (As Of)" report
+// Returns { asOfDate, totalAR, aging0_30, aging30Plus, units: [...] }
+function parseDelinquencyReport(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+
+  // Extract "As of" date from metadata rows
+  let asOfDate = null;
+  for(let i = 0; i < Math.min(12, data.length); i++) {
+    const cell = data[i] && data[i][0] ? data[i][0].toString() : '';
+    const m = cell.match(/as of:\s*(\d{1,2}\/\d{1,2}\/\d{4})/i);
+    if(m) { asOfDate = m[1]; break; }
+  }
+
+  // Find header row: row with "Unit" in col 0 and "Amount Receivable" somewhere
+  let headerRow = -1;
+  for(let i = 0; i < data.length; i++) {
+    const row = data[i];
+    if(!row) continue;
+    const first = (row[0] || '').toString().trim().toLowerCase();
+    if(first === 'unit' && row.some(c => c && c.toString().toLowerCase().includes('amount receivable'))) {
+      headerRow = i; break;
+    }
+  }
+  if(headerRow < 0) throw new Error('Could not find delinquency report header row.');
+
+  const hdr = data[headerRow].map(c => (c || '').toString().trim().toLowerCase());
+  const unitCol    = 0;
+  const nameCol    = hdr.indexOf('name');
+  const statusCol  = hdr.findIndex(h => h === 'tenant status');
+  const arCol      = hdr.findIndex(h => h.includes('amount receivable'));
+  const aging0Col  = hdr.findIndex(h => h === '0-30');
+  const aging30Col = hdr.findIndex(h => h === '30+');
+
+  const units = [];
+  let totalAR = 0, aging0_30 = 0, aging30Plus = 0;
+
+  for(let i = headerRow + 1; i < data.length; i++) {
+    const row = data[i];
+    if(!row || !row[unitCol]) continue;
+    const unit = row[unitCol].toString().trim();
+    // Skip property header rows (long strings with address), total rows, blank rows
+    if(!unit || unit.toLowerCase() === 'total') continue;
+    if(unit.toLowerCase().startsWith('total')) { continue; }
+    // Property header rows are long descriptive strings — skip them
+    if(unit.length > 10 && /[A-Za-z]{4,}/.test(unit) && !/^\d/.test(unit)) continue;
+
+    const ar     = arCol     >= 0 ? parseFloat(row[arCol])     || 0 : 0;
+    const a0     = aging0Col >= 0 ? parseFloat(row[aging0Col]) || 0 : 0;
+    const a30    = aging30Col>= 0 ? parseFloat(row[aging30Col])|| 0 : 0;
+    const name   = nameCol   >= 0 && row[nameCol] ? row[nameCol].toString().trim() : '';
+    const status = statusCol >= 0 && row[statusCol] ? row[statusCol].toString().trim() : '';
+
+    if(ar === 0 && a0 === 0 && a30 === 0) continue; // skip zero-balance rows
+
+    units.push({ unit, name, status, amountReceivable: ar, aging0_30: a0, aging30Plus: a30 });
+    totalAR    += ar;
+    aging0_30  += a0;
+    aging30Plus+= a30;
+  }
+
+  return { asOfDate, totalAR, aging0_30, aging30Plus, units };
+}
+
+// Parse a date cell from a rent roll into YYYY-MM-DD or null
+function parseRentRollDate(val) {
+  if(val === null || val === undefined || val === '') return null;
+  // Excel serial number (number > 1000)
+  if(typeof val === 'number' && val > 1000) {
+    const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+    if(!isNaN(d)) return d.toISOString().slice(0,10);
+  }
+  const s = val.toString().trim();
+  if(!s || s === '-' || s.toLowerCase() === 'n/a') return null;
+  // ISO: 2025-04-30
+  if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+  // MM/DD/YYYY or M/D/YYYY
+  const slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(slash) return `${slash[3]}-${slash[1].padStart(2,'0')}-${slash[2].padStart(2,'0')}`;
+  // Fallback: let Date.parse handle it (e.g. "Apr 30, 2025")
+  const d = new Date(s);
+  if(!isNaN(d.getTime())) return d.toISOString().slice(0,10);
+  return null;
+}
+
 function parseAppfolioRentRoll(data) {
   // Find header row — look for "Unit" in col 0 and "BD/BA" anywhere in the row
   let headerRow = -1;
@@ -1862,6 +1965,8 @@ function parseAppfolioRentRoll(data) {
   // Tags column: typically the column between Unit and BD/BA in the old format
   // In newer format there may be no tags column — fall back to -1
   const tagsCol      = bdbaCol > 1 ? bdbaCol - 1 : -1;
+  // Lease end date column
+  const leaseEndCol  = hdr.findIndex(h => h==='lease to' || h==='lease end' || h.includes('lease end') || h==='move out');
 
   const units = [];
   for(let i=headerRow+1;i<data.length;i++){
@@ -1878,15 +1983,16 @@ function parseAppfolioRentRoll(data) {
     // Must have a BD/BA value to be a real unit
     const bdba = bdbaCol >= 0 && row[bdbaCol] ? row[bdbaCol].toString().trim() : '';
     if(!bdba) continue;
-    const unitType  = normalizeUnitType(bdba, 'appfolio');
-    const tags      = tagsCol >= 0 && row[tagsCol] ? row[tagsCol].toString() : '';
-    const tier      = normalizeRenovTier(tags);
-    const status    = statusCol >= 0 && row[statusCol] ? row[statusCol].toString() : '';
-    const isVacant  = status.toLowerCase().includes('vacant');
-    const marketRent= marketCol >= 0 ? parseFloat(row[marketCol]) || 0 : 0;
-    const actualRent= actualCol >= 0 ? parseFloat(row[actualCol]) || 0 : 0;
-    const sqft      = sqftCol  >= 0 ? parseInt(row[sqftCol])  || 0 : 0;
-    units.push({unitNum, unitType, tier, isVacant, marketRent, actualRent, sqft, status, tags});
+    const unitType    = normalizeUnitType(bdba, 'appfolio');
+    const tags        = tagsCol >= 0 && row[tagsCol] ? row[tagsCol].toString() : '';
+    const tier        = normalizeRenovTier(tags);
+    const status      = statusCol >= 0 && row[statusCol] ? row[statusCol].toString() : '';
+    const isVacant    = status.toLowerCase().includes('vacant');
+    const marketRent  = marketCol >= 0 ? parseFloat(row[marketCol]) || 0 : 0;
+    const actualRent  = actualCol >= 0 ? parseFloat(row[actualCol]) || 0 : 0;
+    const sqft        = sqftCol  >= 0 ? parseInt(row[sqftCol])  || 0 : 0;
+    const leaseEndDate = leaseEndCol >= 0 ? parseRentRollDate(row[leaseEndCol]) : null;
+    units.push({unitNum, unitType, tier, isVacant, marketRent, actualRent, sqft, status, tags, leaseEndDate});
   }
   return {units, system:'appfolio'};
 }
@@ -1904,6 +2010,7 @@ function parseBuildiumRentRoll(data) {
   const marketRentCol = hdr.findIndex(h => h.includes('market rent') || h === 'market');
   const bdbaCol       = hdr.findIndex(h => h === 'bed/bath');
   const tenantsCol    = hdr.findIndex(h => h === 'tenants');
+  const leaseEndColBd = hdr.findIndex(h => h==='lease end date' || h==='lease end' || h.includes('lease end') || h==='move out');
   // Fall back to fixed positions if headers not found
   const _rentCol   = rentCol   >= 0 ? rentCol   : 7;
   const _bdbaCol   = bdbaCol   >= 0 ? bdbaCol   : 4;
@@ -1924,9 +2031,10 @@ function parseBuildiumRentRoll(data) {
     const unitType = normalizeUnitType(bdba, 'buildium');
     // "Rent" column = contracted base rent (actual rent paid)
     // Market rent only present if file has explicit market rent column
-    const actualRent = parseFloat(row[_rentCol]) || 0;
-    const marketRent = marketRentCol >= 0 ? (parseFloat(row[marketRentCol]) || 0) : actualRent;
-    units.push({unitNum, unitType, tier:'Classic', isVacant, marketRent, actualRent, sqft:0, status: isVacant?'Vacant':'Current', tags:''});
+    const actualRent  = parseFloat(row[_rentCol]) || 0;
+    const marketRent  = marketRentCol >= 0 ? (parseFloat(row[marketRentCol]) || 0) : actualRent;
+    const leaseEndDate = leaseEndColBd >= 0 ? parseRentRollDate(row[leaseEndColBd]) : null;
+    units.push({unitNum, unitType, tier:'Classic', isVacant, marketRent, actualRent, sqft:0, status: isVacant?'Vacant':'Current', tags:'', leaseEndDate});
   }
   return {units, system:'buildium'};
 }
@@ -3279,6 +3387,74 @@ function setMonthOverride(propId, val) {
   else window._propMonthOverride[propId] = parseInt(val);
   renderBenchmarkTab();
   renderFlagsTab();
+  updateDetailReviewButton();
+}
+
+// ─── MONTHLY REVIEW STAMP ─────────────────────────────────────────────────────
+function setMonthlyReview(propId, month, isReviewed) {
+  if(!propData[propId]) propData[propId] = {};
+  if(!propData[propId].monthlyReviews) propData[propId].monthlyReviews = {};
+  if(isReviewed) {
+    propData[propId].monthlyReviews[month] = { reviewedAt: new Date().toISOString(), reviewedBy: 'Brian Nelson' };
+  } else {
+    delete propData[propId].monthlyReviews[month];
+  }
+  save(propId);
+  updateDetailReviewButton();
+  renderPortfolioFlags(); // keep tile counts fresh
+  // Update just this property's row in the portfolio table if it's visible
+  const tbody = document.getElementById('portfolio-tbody');
+  if(tbody) {
+    // Re-render only this prop's row without destroying the whole table
+    const pm = properties.find(p=>p.id===propId)?.pm || '';
+    tbody.querySelectorAll(`.ptbl-prop-row[data-pm]`).forEach(row => {
+      if(row.getAttribute('data-propid') === propId) {
+        const prop = properties.find(p=>p.id===propId);
+        const isOpen = !row.classList.contains('hidden');
+        if(prop) row.outerHTML = portfolioPropRow(prop, pm, isOpen);
+      }
+    });
+  }
+}
+
+function updateDetailReviewButton() {
+  const btn = document.getElementById('detail-review-btn');
+  if(!btn || !currentPropId) return;
+  const d = propData[currentPropId] || {};
+  const stmt = d.statement;
+  if(!stmt || !stmt.months || !stmt.months.length) { btn.style.display = 'none'; return; }
+  const monthIdx = getPrevMonthIdx(stmt.months, currentPropId);
+  const month = stmt.months[monthIdx];
+  const isReviewed = !!(d.monthlyReviews && d.monthlyReviews[month]);
+  btn.style.display = '';
+  if(isReviewed) {
+    const rev = d.monthlyReviews[month];
+    const revDate = rev.reviewedAt ? new Date(rev.reviewedAt).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
+    btn.innerHTML = `✓ ${month} reviewed${revDate?' · '+revDate:''}`;
+    btn.style.cssText = 'font-size:12px;color:var(--green);border-color:var(--green);background:rgba(90,200,122,0.08)';
+    btn._reviewedMonth = month;
+  } else {
+    btn.textContent = `Mark ${month} reviewed`;
+    btn.style.cssText = 'font-size:12px';
+    btn._reviewedMonth = null;
+  }
+}
+
+function handleReviewBtnClick() {
+  const btn = document.getElementById('detail-review-btn');
+  if(!btn || !currentPropId) return;
+  const d = propData[currentPropId] || {};
+  const stmt = d.statement;
+  if(!stmt || !stmt.months || !stmt.months.length) return;
+  const monthIdx = getPrevMonthIdx(stmt.months, currentPropId);
+  const month = stmt.months[monthIdx];
+  const isReviewed = !!(d.monthlyReviews && d.monthlyReviews[month]);
+  if(isReviewed) {
+    // Toggle off on second click
+    setMonthlyReview(currentPropId, month, false);
+  } else {
+    setMonthlyReview(currentPropId, month, true);
+  }
 }
 
 function renderBenchmarkTab() {
@@ -3298,6 +3474,21 @@ function renderBenchmarkTab() {
     container.innerHTML = `<div class="upload-notice"><p>Statement loaded but no monthly columns were detected. Please check the file format.</p></div>`;
     return;
   }
+
+  // ── Data staleness banner ──────────────────────────────────────────────────
+  const _stalenessInfo = getDataStaleness(currentPropId);
+  const stalenessBanner = (_stalenessInfo && _stalenessInfo.level !== 'fresh') ? (() => {
+    const isCrit = _stalenessInfo.level === 'stale';
+    const bg = isCrit ? 'rgba(220,60,60,0.08)' : 'rgba(255,160,64,0.10)';
+    const border = isCrit ? 'rgba(220,60,60,0.3)' : 'rgba(255,160,64,0.4)';
+    const color = isCrit ? 'var(--red)' : '#c96a00';
+    const msg = isCrit
+      ? `Data is ${_stalenessInfo.monthsOld} months old (last updated ${_stalenessInfo.lastMonth}). Variance figures may not reflect current performance.`
+      : `Data through ${_stalenessInfo.lastMonth} — ${_stalenessInfo.monthsOld} months old. Consider uploading a more recent statement.`;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;margin-bottom:12px;border-radius:6px;background:${bg};border:1px solid ${border};color:${color};font-size:12px;font-weight:500">
+      <span style="font-size:14px">⚠</span><span>${msg}</span>
+    </div>`;
+  })() : '';
 
   const p = properties.find(x=>x.id===currentPropId);
   const pf = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
@@ -3596,7 +3787,7 @@ function renderBenchmarkTab() {
     </button>` : ''}
   </div>`;
 
-  let html = cashCardHtml + monthSelectorHtml + escrowBanner + `<div class="bench-section">
+  let html = stalenessBanner + cashCardHtml + monthSelectorHtml + escrowBanner + `<div class="bench-section">
     <div class="bench-title">Month vs benchmarks — ${selMonth}</div>
     <div class="bench-wrap"><table class="bench-table">
     <thead><tr>${cols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
@@ -3938,15 +4129,36 @@ function renderRentRollTab() {
   }
   const rrUnits = rr.units.filter(u => !(u.unitType === 'Unknown' && u.marketRent === 0 && u.actualRent === 0));
   const occupied = rrUnits.filter(u=>!u.isVacant).length;
+  const vacant = rrUnits.length - occupied;
   const total = rrUnits.length;
   const occPct = total ? (occupied/total*100).toFixed(1) : 0;
   const totalMarket = rrUnits.reduce((a,u)=>a+u.marketRent,0);
   const totalActual = rrUnits.filter(u=>!u.isVacant).reduce((a,u)=>a+u.actualRent,0);
-  let html = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
+
+  // Loss to lease: occupied units where actual < market
+  const lossToLease = rrUnits
+    .filter(u=>!u.isVacant && u.marketRent > 0 && u.actualRent < u.marketRent)
+    .reduce((a,u)=>a+(u.marketRent - u.actualRent), 0);
+  // Vacancy loss: market rent for vacant units
+  const vacancyLoss = rrUnits.filter(u=>u.isVacant).reduce((a,u)=>a+u.marketRent, 0);
+  // Economic occupancy: actual collected / gross potential
+  const econOcc = totalMarket > 0 ? (totalActual / totalMarket * 100) : null;
+  const ltlPct  = totalMarket > 0 ? (lossToLease / totalMarket * 100) : null;
+
+  const econOccColor = econOcc === null ? '' : econOcc >= 92 ? 'var(--green)' : econOcc >= 85 ? '#ffa040' : 'var(--red)';
+  const ltlColor = ltlPct === null ? '' : ltlPct < 2 ? 'var(--green)' : ltlPct < 5 ? '#ffa040' : 'var(--red)';
+
+  let html = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:8px">
     <div class="kpi-card"><div class="kpi-label">Total units</div><div class="kpi-val">${total}</div></div>
-    <div class="kpi-card"><div class="kpi-label">Occupancy</div><div class="kpi-val">${occPct}%</div></div>
+    <div class="kpi-card"><div class="kpi-label">Physical occupancy</div><div class="kpi-val">${occPct}%</div><div style="font-size:11px;color:var(--text3);margin-top:3px">${occupied} occ · ${vacant} vacant</div></div>
     <div class="kpi-card"><div class="kpi-label">Gross potential rent</div><div class="kpi-val">${fmt(totalMarket)}</div></div>
     <div class="kpi-card"><div class="kpi-label">Actual rent collected</div><div class="kpi-val">${fmt(totalActual)}</div></div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
+    <div class="kpi-card"><div class="kpi-label">Loss to lease</div><div class="kpi-val" style="color:${ltlColor}">${lossToLease > 0 ? fmt(lossToLease) : '$0'}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">${ltlPct !== null ? ltlPct.toFixed(1)+'% of GPR' : ''}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Vacancy loss</div><div class="kpi-val" style="color:${vacancyLoss>0?'var(--red)':'var(--green)'}">${fmt(vacancyLoss)}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">${totalMarket>0?(vacancyLoss/totalMarket*100).toFixed(1)+'% of GPR':''}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Economic occupancy</div><div class="kpi-val" style="color:${econOccColor}">${econOcc !== null ? econOcc.toFixed(1)+'%' : '—'}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">actual / potential</div></div>
+    <div class="kpi-card"><div class="kpi-label">Total revenue gap</div><div class="kpi-val" style="color:var(--text2)">${fmt(lossToLease + vacancyLoss)}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">LTL + vacancy</div></div>
   </div>
   <div class="rr-wrap"><table class="rr-table">
   <thead><tr><th>Unit</th><th>Type</th>${rr.system==='appfolio'?'<th>Tier</th>':''}<th>Status</th><th>Market rent</th><th>Actual rent</th><th>vs Market</th></tr></thead><tbody>`;
@@ -3954,7 +4166,10 @@ function renderRentRollTab() {
     const var_ = u.isVacant ? null : u.actualRent - u.marketRent;
     const varCls = var_===null?'':(var_>=0?'val-pos':'val-neg');
     const tierBadge = rr.system==='appfolio' ? `<td><span class="badge ${u.tier==='Full remodel'?'badge-ok':u.tier==='Partial remodel'?'badge-warn':'badge-neutral'}">${u.tier}</span></td>` : '';
-    html+=`<tr ${u.isVacant?'style="color:var(--text3)"':''}>
+    // Highlight occupied units that are below market
+    const isBelowMarket = !u.isVacant && u.marketRent > 0 && u.actualRent < u.marketRent;
+    const rowStyle = u.isVacant ? 'color:var(--text3)' : isBelowMarket ? 'background:rgba(255,160,64,0.05)' : '';
+    html+=`<tr ${rowStyle?`style="${rowStyle}"`:''}>
       <td>${u.unitNum}</td><td>${u.unitType}</td>${tierBadge}
       <td>${u.isVacant?'<span class="badge badge-flag">Vacant</span>':'<span class="badge badge-ok">Occupied</span>'}</td>
       <td>${fmt(u.marketRent)}</td>
@@ -3963,6 +4178,132 @@ function renderRentRollTab() {
     </tr>`;
   });
   html+=`</tbody></table></div>`;
+
+  // ── Lease expiration analysis ──────────────────────────────────────────────
+  const unitsWithLease = rrUnits.filter(u => !u.isVacant && u.leaseEndDate);
+  if(unitsWithLease.length) {
+    const now = new Date();
+    const nowMs = now.getTime();
+    const day = 1000 * 60 * 60 * 24;
+
+    // Bucket units into urgency tiers
+    const critical = unitsWithLease.filter(u => {
+      const ms = new Date(u.leaseEndDate+'T12:00:00').getTime() - nowMs;
+      return ms >= 0 && ms <= 30 * day;
+    });
+    const warning = unitsWithLease.filter(u => {
+      const ms = new Date(u.leaseEndDate+'T12:00:00').getTime() - nowMs;
+      return ms > 30 * day && ms <= 90 * day;
+    });
+    const upcoming = unitsWithLease.filter(u => {
+      const ms = new Date(u.leaseEndDate+'T12:00:00').getTime() - nowMs;
+      return ms > 90 * day && ms <= 365 * day;
+    });
+    const expired = unitsWithLease.filter(u => new Date(u.leaseEndDate+'T12:00:00').getTime() < nowMs);
+
+    // Group by month (YYYY-MM) for the bar chart — next 12 months
+    const byMonth = {};
+    for(let m=0; m<12; m++) {
+      const d = new Date(now.getFullYear(), now.getMonth() + m, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      byMonth[key] = { label: d.toLocaleDateString('en-US',{month:'short',year:'numeric'}), units: [] };
+    }
+    unitsWithLease.forEach(u => {
+      const key = u.leaseEndDate.slice(0,7);
+      if(byMonth[key]) byMonth[key].units.push(u);
+    });
+    const monthKeys = Object.keys(byMonth);
+    const maxCount = Math.max(1, ...monthKeys.map(k => byMonth[k].units.length));
+
+    const summaryCards = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
+      <div class="kpi-card"><div class="kpi-label">Expiring ≤ 30 days</div><div class="kpi-val" style="color:${critical.length?'var(--red)':'var(--text2)'}">${critical.length}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Expiring 30–90 days</div><div class="kpi-val" style="color:${warning.length?'#ffa040':'var(--text2)'}">${warning.length}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Expiring 90–365 days</div><div class="kpi-val">${upcoming.length}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Lease dates on file</div><div class="kpi-val">${unitsWithLease.length}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">of ${rrUnits.filter(u=>!u.isVacant).length} occupied</div></div>
+    </div>`;
+
+    const barRows = monthKeys.map(k => {
+      const m = byMonth[k];
+      if(!m.units.length) return '';
+      const pct = (m.units.length / maxCount * 100).toFixed(0);
+      const msToEnd = new Date(k+'-28T12:00:00').getTime() - nowMs;
+      const barColor = msToEnd <= 30*day ? 'var(--red)' : msToEnd <= 90*day ? '#ffa040' : 'var(--blue,#4a90d9)';
+      const unitList = m.units.map(u => `<span style="font-size:10px;background:var(--bg2);padding:1px 5px;border-radius:3px;white-space:nowrap">${u.unitNum}</span>`).join(' ');
+      return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
+        <div style="width:90px;font-size:12px;color:var(--text2);flex-shrink:0">${m.label}</div>
+        <div style="flex:1;background:var(--bg2);border-radius:3px;height:16px;position:relative">
+          <div style="height:100%;width:${pct}%;background:${barColor};border-radius:3px;opacity:0.7"></div>
+        </div>
+        <div style="width:20px;text-align:right;font-size:12px;font-weight:600;color:${barColor};flex-shrink:0">${m.units.length}</div>
+        <div style="flex:2;display:flex;flex-wrap:wrap;gap:3px">${unitList}</div>
+      </div>`;
+    }).filter(Boolean).join('');
+
+    if(expired.length) {
+      const expiredList = expired.map(u=>`<span style="font-size:10px;background:rgba(220,60,60,0.1);color:var(--red);padding:1px 5px;border-radius:3px">${u.unitNum} (${u.leaseEndDate})</span>`).join(' ');
+      html += `<div style="margin-top:4px;padding:6px 10px;background:rgba(220,60,60,0.07);border:1px solid rgba(220,60,60,0.25);border-radius:6px;font-size:11px;color:var(--red);margin-bottom:4px">
+        <strong>${expired.length} expired lease${expired.length>1?'s':''}</strong> still showing as occupied: ${expiredList}
+      </div>`;
+    }
+
+    html += `<div style="margin-top:16px">
+      <div class="bench-title" style="margin-bottom:12px">Lease expirations — next 12 months</div>
+      ${summaryCards}
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px">
+        ${barRows || '<div style="font-size:12px;color:var(--text3)">No leases expiring in the next 12 months.</div>'}
+      </div>
+    </div>`;
+  }
+
+  // ── Delinquency / AR aging section ──────────────────────────────────────────
+  const dq = (propData[currentPropId] || {}).delinquency;
+  if(dq && dq.units) {
+    const fmtD = v => v < 0 ? '($'+Math.abs(Math.round(v)).toLocaleString()+')' : '$'+Math.round(v).toLocaleString();
+    const arColor  = dq.totalAR > 5000 ? 'var(--red)' : dq.totalAR > 1000 ? '#ffa040' : 'var(--text)';
+    const a30Color = dq.aging30Plus > 2000 ? 'var(--red)' : dq.aging30Plus > 500 ? '#ffa040' : 'var(--green)';
+
+    const unitRows = dq.units
+      .slice()
+      .sort((a,b) => b.amountReceivable - a.amountReceivable)
+      .map(u => {
+        const arUColor = u.amountReceivable > 1000 ? 'var(--red)' : u.amountReceivable > 200 ? '#ffa040' : 'var(--text2)';
+        const statusBadgeD = u.status === 'Notice'
+          ? `<span class="badge badge-warn">${u.status}</span>`
+          : `<span class="badge badge-neutral">${u.status || 'Current'}</span>`;
+        return `<tr>
+          <td style="padding:6px 10px;font-weight:500">${escHtml(u.unit)}</td>
+          <td style="padding:6px 10px;color:var(--text2)">${escHtml(u.name)}</td>
+          <td style="padding:6px 10px">${statusBadgeD}</td>
+          <td style="padding:6px 10px;text-align:right;font-weight:600;color:${arUColor}">${fmtD(u.amountReceivable)}</td>
+          <td style="padding:6px 10px;text-align:right;color:var(--text2)">${fmtD(u.aging0_30)}</td>
+          <td style="padding:6px 10px;text-align:right;color:${u.aging30Plus > 0 ? 'var(--red)' : 'var(--text2)'}">${fmtD(u.aging30Plus)}</td>
+        </tr>`;
+      }).join('');
+
+    html += `<div style="margin-top:16px">
+      <div class="bench-title" style="margin-bottom:12px">Delinquency / AR aging${dq.asOfDate ? ` <span style="font-size:12px;font-weight:400;color:var(--text3)">as of ${dq.asOfDate}</span>` : ''}</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
+        <div class="kpi-card"><div class="kpi-label">Total AR</div><div class="kpi-val" style="color:${arColor}">${fmtD(dq.totalAR)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">0–30 days</div><div class="kpi-val">${fmtD(dq.aging0_30)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">30+ days</div><div class="kpi-val" style="color:${a30Color}">${fmtD(dq.aging30Plus)}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">${dq.totalAR > 0 ? (dq.aging30Plus/dq.totalAR*100).toFixed(0)+'% of total' : ''}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Delinquent units</div><div class="kpi-val">${dq.units.length}</div></div>
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--bg2)">
+            <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Unit</th>
+            <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Tenant</th>
+            <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Status</th>
+            <th style="padding:6px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Total AR</th>
+            <th style="padding:6px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">0–30</th>
+            <th style="padding:6px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">30+</th>
+          </tr></thead>
+          <tbody>${unitRows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
   container.innerHTML=html;
 }
 
@@ -4874,16 +5215,8 @@ function computeFlags(propId) {
 
   const flags = [];
 
-  // Only operating expense groups (not income, not debt service, not AMF)
-  const expenseGroups = PF_LINE_ITEMS.filter(i => !i.isIncome && !i.isComputed && !i.isDebtService);
-
-  expenseGroups.forEach(item => {
-    const stmtLabels = getMappedLabels(item.group);
-    if(!stmtLabels.length) return;
-
-    const actual = sumStmtMonth(stmtLabels);
-
-    // Budget: prefer uploaded budget file, fall back to proforma
+  // Helper: resolve budget/month for any group item
+  function resolveBudgetMonth(item, stmtLabels) {
     let budgetMonth = null;
     if(bg) {
       let bgSum = 0, anyFound = false;
@@ -4898,21 +5231,72 @@ function computeFlags(propId) {
       const pfRow = pfCandidates.find(r => r.total) || pfCandidates[pfCandidates.length - 1] || null;
       if(pfRow && pfRow.total) budgetMonth = pfRow.total / 12;
     }
+    return budgetMonth;
+  }
 
+  // ── Expense flags: over budget by ≥25% AND ≥$1,000 ──────────────────────
+  const expenseGroups = PF_LINE_ITEMS.filter(i => !i.isIncome && !i.isComputed && !i.isDebtService);
+  expenseGroups.forEach(item => {
+    const stmtLabels = getMappedLabels(item.group);
+    if(!stmtLabels.length) return;
+    const actual = sumStmtMonth(stmtLabels);
+    const budgetMonth = resolveBudgetMonth(item, stmtLabels);
     if(budgetMonth === null || budgetMonth === 0) return;
-
-    const varD = actual - budgetMonth;
+    const varD   = actual - budgetMonth;
     const varPct = varD / Math.abs(budgetMonth);
-
-    // Flag if over budget by ≥25% AND ≥$1,000
     if(varD >= 1000 && varPct >= 0.25) {
-      flags.push({ label: item.label, stmtLabels, actual, budget: budgetMonth, varD, varPct });
+      flags.push({ label: item.label, stmtLabels, actual, budget: budgetMonth, varD, varPct, isIncome: false });
     }
   });
 
-  // Sort worst % first
-  flags.sort((a, b) => b.varPct - a.varPct);
-  return { flags, selMonth };
+  // ── Income flags: under budget by ≥10% AND ≥$300 shortfall ──────────────
+  const incomeGroups = PF_LINE_ITEMS.filter(i => i.isIncome && !i.isComputed);
+  incomeGroups.forEach(item => {
+    const stmtLabels = getMappedLabels(item.group);
+    if(!stmtLabels.length) return;
+    const actual = sumStmtMonth(stmtLabels);
+    const budgetMonth = resolveBudgetMonth(item, stmtLabels);
+    if(budgetMonth === null || budgetMonth === 0) return;
+    const varD   = actual - budgetMonth; // negative = underperforming
+    const varPct = varD / Math.abs(budgetMonth);
+    // Flag if under budget by ≥10% AND ≥$300 monthly shortfall
+    if(varD <= -300 && varPct <= -0.10) {
+      flags.push({ label: item.label, stmtLabels, actual, budget: budgetMonth, varD, varPct, isIncome: true });
+    }
+  });
+
+  // ── Also flag total income vs budget using isTotalIncome row ────────────
+  // Only runs if neither income line item above was already flagged on rental_income
+  const alreadyFlaggedIncome = flags.some(f => f.isIncome && f.label === 'Total Rental Income');
+  if(!alreadyFlaggedIncome) {
+    const totalIncRow = stmt.rows.find(r => r.isTotalIncome);
+    if(totalIncRow) {
+      const actual = totalIncRow.values[monthIdx] || 0;
+      // Sum proforma/budget total income
+      let budgetMonth = null;
+      if(bg) {
+        const bgTotRow = bg.rows.find(r => r.isTotalIncome);
+        if(bgTotRow && bgTotRow.total) budgetMonth = bgTotRow.total / 12;
+      }
+      if(budgetMonth === null && pf) {
+        const pfTotRow = pf.rows.find(r => r.isTotalIncome);
+        if(pfTotRow && pfTotRow.total) budgetMonth = pfTotRow.total / 12;
+      }
+      if(budgetMonth !== null && budgetMonth > 0) {
+        const varD   = actual - budgetMonth;
+        const varPct = varD / Math.abs(budgetMonth);
+        if(varD <= -500 && varPct <= -0.08) {
+          flags.push({ label: 'Total Income', stmtLabels: [totalIncRow.label], actual, budget: budgetMonth, varD, varPct, isIncome: true, isTotalIncome: true });
+        }
+      }
+    }
+  }
+
+  // Sort: income flags first (by worst % shortfall), then expense flags (by worst % overage)
+  const incFlags = flags.filter(f => f.isIncome).sort((a,b) => a.varPct - b.varPct);
+  const expFlags = flags.filter(f => !f.isIncome).sort((a,b) => b.varPct - a.varPct);
+  const sortedFlags = [...incFlags, ...expFlags];
+  return { flags: sortedFlags, selMonth };
 }
 
 // ─── DEBT TAB ─────────────────────────────────────────────────────────────────
@@ -5824,7 +6208,7 @@ function renderFlagsTab() {
       <div style="text-align:center;padding:56px 0">
         <div style="font-size:28px;margin-bottom:10px">✓</div>
         <div style="font-size:14px;font-weight:600;color:var(--green,#4caf7d)">No flags for ${selMonth}</div>
-        <div style="font-size:12px;color:var(--text3);margin-top:6px">All mapped expense line items are within 25% of budget or under $1,000 variance</div>
+        <div style="font-size:12px;color:var(--text3);margin-top:6px">All mapped line items are within threshold — expenses ≤25% over budget, income ≥10% of target</div>
       </div>`;
     return;
   }
@@ -5835,13 +6219,16 @@ function renderFlagsTab() {
   if(todoCount)       summaryParts.push(`<span style="color:#ffa040">${todoCount} to-do</span>`);
   if(reviewedCount)   summaryParts.push(`<span style="color:var(--text3)">${reviewedCount} reviewed</span>`);
 
+  const incomeFlags  = flags.filter(f => f.isIncome);
+  const expenseFlags = flags.filter(f => !f.isIncome);
+
   let html = monthSel + `
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:8px">
-      <div class="bench-title" style="margin:0">Expense flags — ${selMonth}</div>
+      <div class="bench-title" style="margin:0">Variance flags — ${selMonth}</div>
       <button onclick="exportFlags()" style="font-size:11px;padding:3px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text2);cursor:pointer;font-family:inherit">↓ Export</button>
     </div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:16px">
-      ${flags.length} item${flags.length>1?'s':''} flagged &nbsp;·&nbsp; ${summaryParts.join(' &nbsp;·&nbsp; ')} &nbsp;·&nbsp; Budget source: ${budgetSource}
+      ${flags.length} item${flags.length>1?'s':''} flagged${incomeFlags.length?` &nbsp;·&nbsp; <span style="color:var(--red)">${incomeFlags.length} income</span>`:''}${expenseFlags.length?` &nbsp;·&nbsp; <span style="color:#e07b00">${expenseFlags.length} expense</span>`:''} &nbsp;·&nbsp; ${summaryParts.join(' &nbsp;·&nbsp; ')} &nbsp;·&nbsp; Budget source: ${budgetSource}
     </div>`;
 
   const btnStyle = (color) => `font-size:11px;padding:5px 12px;border:1px solid ${color};border-radius:var(--radius);background:var(--bg);color:${color};cursor:pointer;white-space:nowrap;font-family:inherit;font-weight:600`;
@@ -5855,21 +6242,29 @@ function renderFlagsTab() {
     const el2         = f.label.replace(/'/g, "\\'");
     const status      = flagReviews[group]?.status || 'unreviewed';
 
+    const isInc = !!f.isIncome;
+    const varLabel  = isInc ? 'Under by $' : 'Over by $';
+    const varPctLbl = isInc ? 'Under by %' : 'Over by %';
+    const varSign   = isInc ? '−' : '+';
+    const flagTypeTag = isInc
+      ? `<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(220,60,60,0.12);color:var(--red);margin-left:6px;vertical-align:middle">INCOME</span>`
+      : `<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(255,160,64,0.14);color:#c96a00;margin-left:6px;vertical-align:middle">EXPENSE</span>`;
+
     const dataTable = (muted) => `
       <table class="bench-table" style="width:100%;margin:0${muted?';opacity:0.6':''}">
         <thead><tr>
           <th style="text-align:left;width:40%">Line Item</th>
           <th style="text-align:right">Budget / Mo.</th>
           <th style="text-align:right">Actual / Mo.</th>
-          <th style="text-align:right">Over by $</th>
-          <th style="text-align:right">Over by %</th>
+          <th style="text-align:right">${varLabel}</th>
+          <th style="text-align:right">${varPctLbl}</th>
         </tr></thead>
         <tbody><tr>
-          <td style="font-weight:500">${f.label}${f.stmtLabels.length>1?`<div style="font-size:10px;color:var(--text3);margin-top:2px">${f.stmtLabels.join(' + ')}</div>`:''}</td>
+          <td style="font-weight:500">${f.label}${flagTypeTag}${f.stmtLabels.length>1?`<div style="font-size:10px;color:var(--text3);margin-top:2px">${f.stmtLabels.join(' + ')}</div>`:''}</td>
           <td style="text-align:right">${fmt(f.budget)}</td>
           <td style="text-align:right"${muted?'':' class="val-neg"'}>${fmt(f.actual)}</td>
-          <td style="text-align:right"${muted?'':' class="val-neg"'}>+${varDStr}</td>
-          <td style="text-align:right"${muted?'':' class="val-neg"'}>+${varPctStr}</td>
+          <td style="text-align:right"${muted?'':' class="val-neg"'}>${varSign}${varDStr}</td>
+          <td style="text-align:right"${muted?'':' class="val-neg"'}>${varSign}${varPctStr}</td>
         </tr></tbody>
       </table>`;
 
@@ -5997,6 +6392,63 @@ function updateDetailBadge() {
 }
 
 // ─── PORTFOLIO VIEW ───────────────────────────────────────────────────────────
+// Returns staleness info based on last month in the uploaded statement
+// monthsOld: how many months behind today the most recent statement month is
+// level: 'fresh' (0-1mo), 'aging' (2mo), 'stale' (3+mo), null if no data
+function getDataStaleness(propId) {
+  const stmt = (propData[propId] || {}).statement;
+  if(!stmt || !stmt.months || !stmt.months.length) return null;
+  const lastMonth = stmt.months[stmt.months.length - 1];
+  const parts = lastMonth.split(' ');
+  if(parts.length !== 2) return null;
+  const mi = MONTH_NAMES.indexOf(parts[0]);
+  const yr = parseInt(parts[1]);
+  if(mi < 0 || isNaN(yr)) return null;
+  const now = new Date();
+  const monthsOld = (now.getFullYear() - yr) * 12 + (now.getMonth() - mi);
+  const level = monthsOld >= 3 ? 'stale' : monthsOld >= 2 ? 'aging' : 'fresh';
+  return { lastMonth, monthsOld, level };
+}
+
+function makeSparkline(values, w=80, h=24) {
+  // Filter to non-zero values with their positions, require at least 2 points
+  const pts = values.map((v,i)=>({v,i})).filter(p=>p.v!==0);
+  if(pts.length < 2) return null;
+  const vals = pts.map(p=>p.v);
+  const minV = Math.min(...vals);
+  const maxV = Math.max(...vals);
+  const range = maxV - minV;
+  // Trend: compare average of first half vs second half
+  const mid = Math.floor(vals.length / 2);
+  const firstHalfAvg = vals.slice(0, mid).reduce((a,b)=>a+b,0) / (mid||1);
+  const secondHalfAvg = vals.slice(mid).reduce((a,b)=>a+b,0) / (vals.length - mid||1);
+  const trendUp = secondHalfAvg > firstHalfAvg * 1.02;
+  const trendDown = secondHalfAvg < firstHalfAvg * 0.98;
+  const lineColor = trendUp ? '#5ac87a' : trendDown ? '#ff6b6b' : '#aaa';
+  // Map points to SVG coords — pad 2px top/bottom so line isn't clipped
+  const pad = 2;
+  const scaleY = range > 0
+    ? (v) => pad + (1 - (v - minV) / range) * (h - pad * 2)
+    : () => h / 2;
+  const scaleX = (i) => (i / (pts.length - 1)) * w;
+  const polyPoints = pts.map((p,i) => `${scaleX(i).toFixed(1)},${scaleY(p.v).toFixed(1)}`).join(' ');
+  // Zero baseline
+  const baseY = scaleY(Math.max(0, minV)).toFixed(1);
+  const fillPts = `0,${baseY} ${polyPoints} ${w},${baseY}`;
+  const fillColor = trendUp ? 'rgba(90,200,122,0.10)' : trendDown ? 'rgba(255,107,107,0.10)' : 'rgba(170,170,170,0.08)';
+  // Last value as a dot
+  const lastPt = pts[pts.length-1];
+  const lx = scaleX(pts.length-1).toFixed(1);
+  const ly = scaleY(lastPt.v).toFixed(1);
+  const monthChange = vals.length >= 2 ? ((vals[vals.length-1] - vals[0]) / Math.abs(vals[0]) * 100) : null;
+  const tip = monthChange !== null ? `${monthChange>=0?'+':''}${monthChange.toFixed(1)}% over period` : '';
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" title="${tip}" style="display:block;overflow:visible">
+    <polygon points="${fillPts}" fill="${fillColor}" stroke="none"/>
+    <polyline points="${polyPoints}" fill="none" stroke="${lineColor}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${lx}" cy="${ly}" r="2" fill="${lineColor}"/>
+  </svg>`;
+}
+
 function portfolioPropRow(p, pm, isOpen) {
   const dot = getStatusDot(p.id);
   const d = propData[p.id]||{};
@@ -6008,10 +6460,36 @@ function portfolioPropRow(p, pm, isOpen) {
   const rrUnitsP = d.rentroll ? d.rentroll.units : (d.acqrentroll ? d.acqrentroll.units : null);
   let occHTML = '—';
   if(rrUnitsP && rrUnitsP.length) {
-    const occupiedP = rrUnitsP.filter(u=>!u.isVacant).length;
-    const occPctP = (occupiedP / rrUnitsP.length * 100).toFixed(0);
+    const validP = rrUnitsP.filter(u => !(u.unitType === 'Unknown' && u.marketRent === 0 && u.actualRent === 0));
+    const occupiedP = validP.filter(u=>!u.isVacant).length;
+    const occPctP = (occupiedP / validP.length * 100).toFixed(0);
     const occColor = occPctP >= 90 ? 'var(--green)' : occPctP >= 85 ? '#ffa040' : 'var(--red)';
-    occHTML = `<span style="color:${occColor};font-weight:500">${occPctP}%</span> <span style="color:var(--text3);font-size:11px">${occupiedP}/${rrUnitsP.length}</span>`;
+    // Loss to lease for portfolio row
+    const totalMarketP = validP.reduce((a,u)=>a+u.marketRent,0);
+    const ltlAmtP = validP.filter(u=>!u.isVacant && u.marketRent>0 && u.actualRent<u.marketRent)
+                           .reduce((a,u)=>a+(u.marketRent-u.actualRent),0);
+    const ltlPctP = totalMarketP > 0 ? (ltlAmtP / totalMarketP * 100) : null;
+    const ltlColor = ltlPctP === null ? '' : ltlPctP < 2 ? 'var(--green)' : ltlPctP < 5 ? '#ffa040' : 'var(--red)';
+    const ltlLine = ltlPctP !== null
+      ? `<br><span style="color:${ltlColor};font-size:10px" title="Loss to lease: ${ltlPctP.toFixed(1)}% of GPR">LTL ${ltlPctP.toFixed(1)}%</span>`
+      : '';
+    // Near-expiry alert
+    const nowMs2 = Date.now();
+    const day2   = 1000 * 60 * 60 * 24;
+    const expiringCritical = validP.filter(u => u.leaseEndDate && !u.isVacant && (() => {
+      const ms = new Date(u.leaseEndDate+'T12:00:00').getTime() - nowMs2;
+      return ms >= 0 && ms <= 30 * day2;
+    })()).length;
+    const expiringWarn = validP.filter(u => u.leaseEndDate && !u.isVacant && (() => {
+      const ms = new Date(u.leaseEndDate+'T12:00:00').getTime() - nowMs2;
+      return ms > 30 * day2 && ms <= 90 * day2;
+    })()).length;
+    const expiryLine = expiringCritical > 0
+      ? `<br><span style="color:var(--red);font-size:10px" title="${expiringCritical} lease${expiringCritical>1?'s':''} expiring within 30 days">⚠ ${expiringCritical} exp &lt;30d</span>`
+      : expiringWarn > 0
+        ? `<br><span style="color:#ffa040;font-size:10px" title="${expiringWarn} lease${expiringWarn>1?'s':''} expiring within 90 days">${expiringWarn} exp &lt;90d</span>`
+        : '';
+    occHTML = `<span style="color:${occColor};font-weight:500">${occPctP}%</span> <span style="color:var(--text3);font-size:11px">${occupiedP}/${validP.length}</span>${ltlLine}${expiryLine}`;
   }
 
   // Compute average monthly NOI, income, and expense
@@ -6034,6 +6512,13 @@ function portfolioPropRow(p, pm, isOpen) {
     if(expRow) annualizedExpense = expRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
   }
   const noi = annualizedNoi;
+  const sparklineHTML = (() => {
+    if(!stmt) return '—';
+    const nr = stmt.rows.find(r=>r.isNOI);
+    if(!nr || !nr.values || !nr.values.length) return '—';
+    const svg = makeSparkline(nr.values);
+    return svg || '—';
+  })();
 
   const pfNoi = getKeyMetric(p.id,'proforma_noi');
 
@@ -6062,14 +6547,36 @@ function portfolioPropRow(p, pm, isOpen) {
     p.units ? `${p.units} units` : null,
     purchaseDateStr && pfYearStr ? `${purchaseDateStr} · Year ${pfYearStr}` : purchaseDateStr
   ].filter(Boolean).join(' · ');
-  return `<tr class="ptbl-prop-row${isOpen ? '' : ' hidden'}" data-pm="${escHtml(pm)}" onclick="selectProp('${p.id}')">
-    <td><strong>${escHtml(p.name)}</strong>${subLine?` <span style="color:var(--text3);font-weight:400;font-size:11px">${subLine}</span>`:''}</td>
+  const stale = getDataStaleness(p.id);
+  const staleBadge = stale && stale.level !== 'fresh'
+    ? ` <span style="display:inline-block;margin-left:5px;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:600;vertical-align:middle;background:${stale.level==='stale'?'rgba(220,60,60,0.12)':'rgba(255,160,64,0.14)'};color:${stale.level==='stale'?'var(--red)':'#e07b00'}" title="Data last updated ${stale.lastMonth}">${stale.monthsOld}mo old</span>`
+    : '';
+  // Monthly review indicator
+  const reviewedBadge = (() => {
+    const stmt = d.statement;
+    if(!stmt || !stmt.months || !stmt.months.length) return '';
+    const monthIdx = getPrevMonthIdx(stmt.months, p.id);
+    const month = stmt.months[monthIdx];
+    const rev = (d.monthlyReviews || {})[month];
+    if(!rev) return '';
+    return ` <span style="display:inline-block;margin-left:5px;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:600;vertical-align:middle;background:rgba(90,200,122,0.12);color:var(--green)" title="Reviewed for ${month}">✓ ${month}</span>`;
+  })();
+  return `<tr class="ptbl-prop-row${isOpen ? '' : ' hidden'}" data-pm="${escHtml(pm)}" data-propid="${p.id}" onclick="selectProp('${p.id}')">
+    <td><strong>${escHtml(p.name)}</strong>${staleBadge}${reviewedBadge}${subLine?` <span style="color:var(--text3);font-weight:400;font-size:11px">${subLine}</span>`:''}</td>
     <td>${p.system==='buildium'?'Buildium':'Appfolio'}</td>
     <td>${statusBadge}</td>
     <td>${occHTML}</td>
     <td>${annualizedIncome!==null?fmt(annualizedIncome):'—'}</td>
     <td>${annualizedExpense!==null?fmt(annualizedExpense):'—'}</td>
-    <td>${noi!==null?fmt(noi):'—'}</td>
+    <td>${(() => {
+      const noiStr = noi !== null ? fmt(noi) : '—';
+      const dqD = (propData[p.id] || {}).delinquency;
+      if(!dqD || !dqD.totalAR) return noiStr;
+      const arColor = dqD.totalAR > 5000 ? 'var(--red)' : dqD.totalAR > 1000 ? '#ffa040' : 'var(--text3)';
+      const arStr = '$' + Math.round(dqD.totalAR).toLocaleString();
+      return `${noiStr}<br><span style="font-size:10px;color:${arColor}" title="AR balance as of ${dqD.asOfDate||'?'}">AR ${arStr}</span>`;
+    })()}</td>
+    <td style="padding:4px 10px">${sparklineHTML}</td>
     <td>${varHTML}</td>
     <td>${t12VsPfHTML}</td>
     <td>${(() => {
@@ -6252,18 +6759,27 @@ function renderPortfolioFlags() {
 
     const flagRows = displayFlags.map(f => {
       const noteHtml = f.note ? `<div style="font-size:11px;color:var(--text3);margin-top:3px;font-style:italic">${escHtml(f.note)}</div>` : '';
+      const varSign = f.isIncome ? '−' : '+';
+      const typeTag = f.isIncome
+        ? `<span style="font-size:9px;font-weight:700;padding:0 4px;border-radius:2px;background:rgba(220,60,60,0.12);color:var(--red);margin-left:5px;vertical-align:middle">INC</span>`
+        : '';
       return `<tr style="${f.status==='reviewed'?'opacity:0.5':''}">
         <td style="padding:7px 10px;font-size:12px">${statusBadge(f.status)}</td>
-        <td style="padding:7px 10px;font-size:13px;font-weight:500;color:var(--text)">${escHtml(f.label)}${noteHtml}</td>
-        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">+${fmt(f.varD)}</td>
-        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">+${(f.varPct*100).toFixed(1)}%</td>
+        <td style="padding:7px 10px;font-size:13px;font-weight:500;color:var(--text)">${escHtml(f.label)}${typeTag}${noteHtml}</td>
+        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">${varSign}${fmt(f.varD)}</td>
+        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">${varSign}${(Math.abs(f.varPct)*100).toFixed(1)}%</td>
       </tr>`;
     }).join('');
 
+    const isMonthReviewed = !!((propData[p.id]||{}).monthlyReviews || {})[selMonth];
+    const reviewStamp = isMonthReviewed
+      ? `<span style="font-size:11px;font-weight:600;color:var(--green);padding:1px 8px;border-radius:9px;background:rgba(90,200,122,0.12)">✓ ${selMonth} reviewed</span>`
+      : `<button onclick="event.stopPropagation();setMonthlyReview('${p.id}','${selMonth}',true)" style="font-size:11px;padding:2px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text2);cursor:pointer;font-family:inherit">Mark reviewed</button>`;
     return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden">
       <div style="display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;cursor:pointer" onclick="portfolioFlagsNavTo('${p.id}')">
         <span style="font-size:14px;font-weight:700;color:var(--text);flex:1;min-width:120px">${escHtml(p.name)}</span>
         ${headerBadges.join('')}
+        ${reviewStamp}
         <span style="font-size:11px;color:var(--text3)">${selMonth}</span>
         <span style="font-size:11px;color:var(--blue,#4a90d9)">Open flags tab →</span>
       </div>
