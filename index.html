@@ -1042,7 +1042,21 @@ function renderUploadTab(p) {
     {key:'budget', label:'Budget', sub:'Annual — re-upload each year'},
     {key:'proforma', label:'Proforma', sub:'Set once — loaded from saved data'},
   ];
-  document.getElementById('monthly-upload-grid').innerHTML = monthly.map(f=>uploadSlot(f,d,p.id,'monthly')).join('');
+  document.getElementById('monthly-upload-grid').innerHTML = monthly.map(f=>uploadSlot(f,d,p.id,'monthly')).join('') + (() => {
+    const cb = d.cashbalance;
+    const cbFile = d.cashbalance_filename || '';
+    const cbLabel = p.system === 'appfolio' ? 'Trial Balance by Property' : 'Bank Acct Balance Breakdown';
+    const cbSub = cb
+      ? (cbFile || 'Cash balance loaded') + (cb.dateRange ? ` · ${cb.dateRange}` : '')
+      : 'Monthly .xlsx export — extracts operating cash';
+    const cbHas = !!cb;
+    return `<label class="upload-slot ${cbHas?'has-file':''}" style="display:block">
+      <input type="file" accept=".xlsx,.xls,.xlsm" onchange="handleUpload(event,'${p.id}','cashbalance')">
+      <div class="upload-slot-icon">${cbHas?'✓':'↑'}</div>
+      <div class="upload-slot-label">${cbLabel}</div>
+      <div class="upload-slot-sub" style="word-break:break-all">${cbSub}</div>
+    </label>`;
+  })();
   document.getElementById('benchmark-upload-grid').innerHTML = benchmarks.map(f=>uploadSlot(f,d,p.id,'benchmark')).join('');
 
   // Escrow warning
@@ -1419,6 +1433,9 @@ function handleUpload(event, propId, fileKey) {
             }
           }
         }
+      } else if(fileKey==='cashbalance') {
+        const ws0 = wb.Sheets[wb.SheetNames[0]];
+        parsed = parseTrialBalance(ws0);
       } else if(fileKey==='budget') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
         if(p.system==='buildium') {
@@ -1470,6 +1487,56 @@ function handleUpload(event, propId, fileKey) {
 }
 
 // ─── PARSERS ──────────────────────────────────────────────────────────────────
+// ─── TRIAL BALANCE PARSER (AppFolio "Trial Balance by Property") ─────────────
+// Extracts the ending cash balance from GL Account 1150: Operating Account.
+// Returns: { cash, dateRange, system:'trial_balance' }
+function parseTrialBalance(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  const title = data[0] && data[0][0] ? data[0][0].toString().trim() : '';
+  if(!title.toLowerCase().includes('trial balance')) throw new Error('Not a Trial Balance report — expected "Trial Balance by Property".');
+
+  // Extract date range from first ~8 rows
+  let dateRange = '';
+  for(let i = 0; i < 8; i++) {
+    const cell = data[i] && data[i][0] ? data[i][0].toString() : '';
+    if(cell.toLowerCase().startsWith('date range:')) {
+      // Strip leading "Date Range: " and trailing qualifier like "(Last Month)"
+      dateRange = cell.replace(/^date range:\s*/i, '').replace(/\s*\(.*\)\s*$/, '').trim();
+      break;
+    }
+  }
+
+  // Locate header row containing "GL Account" and "Ending Balance"
+  let glCol = -1, endCol = -1, headerRow = -1;
+  for(let i = 0; i < 15; i++) {
+    const row = data[i];
+    if(!row) continue;
+    const glIdx   = row.findIndex(c => c && c.toString().toLowerCase().includes('gl account'));
+    const endIdx  = row.findIndex(c => c && c.toString().toLowerCase().includes('ending balance'));
+    if(glIdx >= 0 && endIdx >= 0) {
+      headerRow = i; glCol = glIdx; endCol = endIdx;
+      break;
+    }
+  }
+  if(headerRow < 0) throw new Error('Could not find column headers in Trial Balance report.');
+
+  // Find the 1150 row and grab its ending balance
+  let cash = null;
+  for(let i = headerRow + 1; i < data.length; i++) {
+    const row = data[i];
+    if(!row) continue;
+    const gl = row[glCol];
+    if(gl && gl.toString().trim().startsWith('1150')) {
+      const raw = row[endCol];
+      cash = (raw !== null && raw !== undefined) ? (parseFloat(raw) || 0) : 0;
+      break;
+    }
+  }
+  if(cash === null) throw new Error('GL Account 1150 (Operating Account) not found in this Trial Balance.');
+
+  return { cash, dateRange, system: 'trial_balance' };
+}
+
 // Returns: { months:['Apr 2025',...], rows:[{label, level, isCategory, isSubtotal, isTotal, isNOI, values:[...12 nums], total}], propertyName, period }
 
 function parseAppfolio(ws) {
@@ -3332,6 +3399,31 @@ function renderBenchmarkTab() {
     </div>`;
   })() : '';
 
+  // ── Cash balance card ──────────────────────────────────────────────────────
+  const cb = d.cashbalance;
+  const cashCardHtml = (() => {
+    const cbLabel = p && p.system === 'appfolio' ? 'Trial Balance by Property' : 'Bank Acct Balance Breakdown';
+    if(!cb) return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;gap:10px">
+      <div style="font-size:22px;color:var(--text3)">$</div>
+      <div>
+        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:2px">Operating Cash Balance</div>
+        <div style="font-size:12px;color:var(--text3)">No data — upload ${cbLabel} on the Upload tab</div>
+      </div>
+    </div>`;
+    const cashColor = cb.cash >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:16px">
+      <div>
+        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:4px">Operating Cash Balance</div>
+        <div style="font-size:24px;font-weight:600;color:${cashColor};letter-spacing:-0.5px">${fmt(cb.cash)}</div>
+        ${cb.dateRange ? `<div style="font-size:11px;color:var(--text3);margin-top:3px">As of ${cb.dateRange}</div>` : ''}
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:11px;color:var(--text3)">GL 1150 · Operating Account</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${d.cashbalance_filename||''}</div>
+      </div>
+    </div>`;
+  })();
+
   // Month selector + re-match toolbar
   const monthSelectorHtml = `<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
     <div style="display:flex;align-items:center;gap:6px">
@@ -3347,7 +3439,7 @@ function renderBenchmarkTab() {
     </button>` : ''}
   </div>`;
 
-  let html = monthSelectorHtml + escrowBanner + `<div class="bench-section">
+  let html = cashCardHtml + monthSelectorHtml + escrowBanner + `<div class="bench-section">
     <div class="bench-title">Month vs benchmarks — ${selMonth}</div>
     <div class="bench-wrap"><table class="bench-table">
     <thead><tr>${cols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
