@@ -1448,7 +1448,14 @@ function handleUpload(event, propId, fileKey) {
         }
       } else if(fileKey==='cashbalance') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
-        parsed = parseTrialBalance(ws0);
+        // Auto-detect: Buildium has "Bank Account Balance Breakdown" in cell; AppFolio has "Trial Balance"
+        const sheetData = XLSX.utils.sheet_to_json(ws0, {header:1, defval:null, range:0});
+        const firstCellVal = sheetData && sheetData[0] ? (sheetData[0].find(c => c) || '').toString() : '';
+        if(firstCellVal.includes('Bank Account Balance Breakdown')) {
+          parsed = parseBuildiumCashBalance(ws0);
+        } else {
+          parsed = parseTrialBalance(ws0);
+        }
       } else if(fileKey==='budget') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
         if(p.system==='buildium') {
@@ -1500,6 +1507,56 @@ function handleUpload(event, propId, fileKey) {
 }
 
 // ─── PARSERS ──────────────────────────────────────────────────────────────────
+// ─── BUILDIUM CASH BALANCE PARSER ("Bank Account Balance Breakdown") ─────────
+// Extracts posted Balance (and Pending) from the Buildium report.
+// Returns: { cash, pending, dateRange, system:'buildium_cash_balance' }
+function parseBuildiumCashBalance(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+
+  // Title is in row 1 — may contain newlines. Detect by "Bank Account Balance Breakdown"
+  const titleCell = data[0] ? (data[0].find(c => c && c.toString().includes('Bank Account Balance Breakdown')) || '') : '';
+  if(!titleCell) throw new Error('Not a Buildium Bank Account Balance Breakdown report.');
+
+  // Extract "as of" date from title cell: "as of 4/30/2026"
+  let dateRange = '';
+  const asOfMatch = titleCell.toString().match(/as of\s+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  if(asOfMatch) dateRange = asOfMatch[1];
+
+  // Find header row: look for row containing "Pending" and "Balance"
+  let headerRow = -1, pendingCol = -1, balanceCol = -1;
+  for(let i = 0; i < 10; i++) {
+    const row = data[i];
+    if(!row) continue;
+    const pIdx = row.findIndex(c => c && c.toString().trim().toLowerCase() === 'pending');
+    const bIdx = row.findIndex(c => c && c.toString().trim().toLowerCase() === 'balance');
+    if(pIdx >= 0 && bIdx >= 0) {
+      headerRow = i; pendingCol = pIdx; balanceCol = bIdx;
+      break;
+    }
+  }
+  if(headerRow < 0) throw new Error('Could not find Balance/Pending columns in Bank Account Balance Breakdown.');
+
+  // Find first data row after the header (skip blank/section-header rows, stop at "Total" rows)
+  let cash = null, pending = 0;
+  for(let i = headerRow + 1; i < data.length; i++) {
+    const row = data[i];
+    if(!row) continue;
+    const label = row[0] ? row[0].toString().trim() : '';
+    if(!label || label === '\xa0') continue;            // blank / non-breaking-space
+    if(label.toLowerCase().startsWith('total')) continue; // skip subtotal rows
+    const bVal = row[balanceCol];
+    const pVal = row[pendingCol];
+    if(bVal !== null && bVal !== undefined && typeof bVal === 'number') {
+      cash = bVal;
+      pending = (typeof pVal === 'number') ? pVal : 0;
+      break;
+    }
+  }
+  if(cash === null) throw new Error('No balance value found in Bank Account Balance Breakdown.');
+
+  return { cash, pending, dateRange, system: 'buildium_cash_balance' };
+}
+
 // ─── TRIAL BALANCE PARSER (AppFolio "Trial Balance by Property") ─────────────
 // Extracts the ending cash balance from GL Account 1150: Operating Account.
 // Returns: { cash, dateRange, system:'trial_balance' }
@@ -3412,30 +3469,64 @@ function renderBenchmarkTab() {
     </div>`;
   })() : '';
 
-  // ── Cash balance card ──────────────────────────────────────────────────────
+  // ── Occupancy + Cash balance tile row ────────────────────────────────────
   const cb = d.cashbalance;
-  const cashCardHtml = (() => {
+  const benchTileRowHtml = (() => {
+    // Occupancy tile
+    const rrUnitsT = d.rentroll?.units || d.acqrentroll?.units || null;
+    let occTile;
+    if(rrUnitsT && rrUnitsT.length) {
+      const occ  = rrUnitsT.filter(u=>!u.isVacant).length;
+      const tot  = rrUnitsT.length;
+      const pct  = (occ/tot*100).toFixed(1);
+      const occColor = pct>=90?'var(--green)':pct>=85?'#ffa040':'var(--red)';
+      occTile = `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px 16px;display:flex;flex-direction:column;justify-content:center">
+        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:4px">Occupancy</div>
+        <div style="font-size:24px;font-weight:600;color:${occColor};letter-spacing:-0.5px">${pct}%</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:3px">${occ} of ${tot} units occupied</div>
+      </div>`;
+    } else {
+      occTile = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 16px;display:flex;flex-direction:column;justify-content:center">
+        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:4px">Occupancy</div>
+        <div style="font-size:12px;color:var(--text3)">No data — upload rent roll</div>
+      </div>`;
+    }
+
+    // Cash balance tile
     const cbLabel = p && p.system === 'appfolio' ? 'Trial Balance by Property' : 'Bank Acct Balance Breakdown';
-    if(!cb) return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;gap:10px">
-      <div style="font-size:22px;color:var(--text3)">$</div>
-      <div>
-        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:2px">Operating Cash Balance</div>
-        <div style="font-size:12px;color:var(--text3)">No data — upload ${cbLabel} on the Upload tab</div>
-      </div>
-    </div>`;
-    const cashColor = cb.cash >= 0 ? 'var(--green)' : 'var(--red)';
-    return `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:16px">
-      <div>
-        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:4px">Operating Cash Balance</div>
-        <div style="font-size:24px;font-weight:600;color:${cashColor};letter-spacing:-0.5px">${fmt(cb.cash)}</div>
-        ${cb.dateRange ? `<div style="font-size:11px;color:var(--text3);margin-top:3px">As of ${cb.dateRange}</div>` : ''}
-      </div>
-      <div style="text-align:right">
-        <div style="font-size:11px;color:var(--text3)">GL 1150 · Operating Account</div>
-        <div style="font-size:11px;color:var(--text3);margin-top:2px">${d.cashbalance_filename||''}</div>
-      </div>
+    let cashTile;
+    if(!cb) {
+      cashTile = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 16px;display:flex;align-items:center;gap:10px">
+        <div style="font-size:22px;color:var(--text3)">$</div>
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:2px">Operating Cash Balance</div>
+          <div style="font-size:12px;color:var(--text3)">No data — upload ${cbLabel} on the Upload tab</div>
+        </div>
+      </div>`;
+    } else {
+      const cashColor = cb.cash >= 0 ? 'var(--green)' : 'var(--red)';
+      const isBuildium = cb.system === 'buildium_cash_balance';
+      const sourceLabel = isBuildium ? 'Posted balance · Bank Account Balance Breakdown' : 'GL 1150 · Operating Account · Trial Balance';
+      const pendingHtml = (isBuildium && cb.pending) ? `<div style="font-size:11px;color:var(--text3);margin-top:2px">+ ${fmt(cb.pending)} pending (not included)</div>` : '';
+      cashTile = `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:16px">
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:4px">Operating Cash Balance</div>
+          <div style="font-size:24px;font-weight:600;color:${cashColor};letter-spacing:-0.5px">${fmt(cb.cash)}</div>
+          ${cb.dateRange ? `<div style="font-size:11px;color:var(--text3);margin-top:3px">As of ${cb.dateRange}</div>` : ''}
+          ${pendingHtml}
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:11px;color:var(--text3)">${sourceLabel}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${d.cashbalance_filename||''}</div>
+        </div>
+      </div>`;
+    }
+
+    return `<div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-bottom:14px">
+      ${occTile}${cashTile}
     </div>`;
   })();
+  const cashCardHtml = benchTileRowHtml; // alias used in html assembly below
 
   // Month selector + re-match toolbar
   const monthSelectorHtml = `<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
