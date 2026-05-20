@@ -4727,6 +4727,13 @@ function setCashReviewCapex(propId, val) {
   renderCashReviewTab();
 }
 
+function setCashReviewNOI(propId, key) {
+  if(!propData[propId]) propData[propId] = {};
+  propData[propId].crNoiSource = key;
+  save(propId);
+  renderCashReviewTab();
+}
+
 function renderCashReviewTab() {
   const el = document.getElementById('cr-container');
   if(!currentPropId || !el) return;
@@ -4748,15 +4755,44 @@ function renderCashReviewTab() {
   const pf   = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
   const cb   = d.cashbalance;
 
-  // ── Derive NOI/month ──────────────────────────────────────────────────────
-  let noiMonthly = null, noiSource = '';
+  // ── Extract last 3 months of actual NOI from statement ───────────────────
+  const stmtNoiMonths = []; // [{label, value, key}] most recent first
+  if(stmt && stmt.rows && stmt.months && stmt.months.length) {
+    const noiRow = stmt.rows.find(r => r.isNOI);
+    if(noiRow) {
+      const nMonths = Math.min(3, stmt.months.length);
+      for(let i = 0; i < nMonths; i++) {
+        const mIdx = stmt.months.length - 1 - i;
+        stmtNoiMonths.push({ label: stmt.months[mIdx], value: noiRow.values[mIdx] || 0, key: `stmt_${i}` });
+      }
+    }
+  }
+
+  // ── Collect budget / proforma NOI options ─────────────────────────────────
+  let bgNoiMonthly = null, pfNoiMonthly = null;
   if(bg) {
     const bgNOI = bestRow(bg.rows.filter(r => r.isNOI));
-    if(bgNOI && bgNOI.total) { noiMonthly = bgNOI.total / 12; noiSource = 'Budget'; }
+    if(bgNOI && bgNOI.total) bgNoiMonthly = bgNOI.total / 12;
   }
-  if(noiMonthly === null && pf) {
+  if(pf) {
     const pfNOI = bestRow(pf.rows.filter(r => r.isNOI));
-    if(pfNOI && pfNOI.total) { noiMonthly = pfNOI.total / 12; noiSource = 'Proforma'; }
+    if(pfNOI && pfNOI.total) pfNoiMonthly = pfNOI.total / 12;
+  }
+
+  // ── Derive NOI/month (respects crNoiSource override) ─────────────────────
+  let noiMonthly = null, noiSource = '';
+  const noiSrcKey = d.crNoiSource || null;
+  if(noiSrcKey && noiSrcKey.startsWith('stmt_')) {
+    const idx = parseInt(noiSrcKey.split('_')[1]);
+    const sm = stmtNoiMonths[idx];
+    if(sm) { noiMonthly = sm.value; noiSource = sm.label; }
+  } else if(noiSrcKey === 'proforma' && pfNoiMonthly !== null) {
+    noiMonthly = pfNoiMonthly; noiSource = 'Proforma';
+  } else if(noiSrcKey === 'budget' && bgNoiMonthly !== null) {
+    noiMonthly = bgNoiMonthly; noiSource = 'Budget';
+  } else {
+    if(bgNoiMonthly !== null) { noiMonthly = bgNoiMonthly; noiSource = 'Budget'; }
+    else if(pfNoiMonthly !== null) { noiMonthly = pfNoiMonthly; noiSource = 'Proforma'; }
   }
 
   // ── Derive Debt Service/month ─────────────────────────────────────────────
@@ -4839,7 +4875,7 @@ function renderCashReviewTab() {
   const distOpportunity = !injectionNeeded && maxProjected > cb.cash * 1.5 && maxProjected > 50000;
 
   // ── SVG Chart ─────────────────────────────────────────────────────────────
-  const allValues = [cb.cash, ...projection.map(x => x.cash)];
+  const allValues = [cb.cash, ...projection.map(x => x.cash), ...projection.map(x => x.preCapex)];
   const chartMin = Math.min(0, ...allValues);
   const chartMax = Math.max(0, ...allValues);
   const chartRange = chartMax - chartMin || 1;
@@ -4889,6 +4925,29 @@ function renderCashReviewTab() {
     <span><span style="display:inline-block;width:12px;height:10px;background:var(--green);border-radius:2px;vertical-align:middle;margin-right:4px;opacity:0.82"></span>Projected cash (with capex)</span>
     <span><span style="display:inline-block;width:20px;height:0;border-top:2px dashed var(--amber,#ffa040);vertical-align:middle;margin-right:4px"></span>Pre-capex (fixed costs only)</span>
   </div>`;
+
+  // ── NOI source selector ───────────────────────────────────────────────────
+  const chipActive = 'padding:5px 12px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--blue,#4a90d9);background:var(--blue,#4a90d9);color:#fff;white-space:nowrap;font-family:inherit';
+  const chipInactive = 'padding:5px 12px;border-radius:20px;font-size:12px;cursor:pointer;border:1px solid var(--border);background:var(--bg2);color:var(--text2);white-space:nowrap;font-family:inherit';
+  const effectiveNOISrc = noiSrcKey || (bgNoiMonthly !== null ? 'budget' : pfNoiMonthly !== null ? 'proforma' : null);
+  const noiChips = [];
+  if(bgNoiMonthly !== null) {
+    const active = effectiveNOISrc === 'budget';
+    noiChips.push(`<button style="${active ? chipActive : chipInactive}" onclick="setCashReviewNOI('${currentPropId}','budget')">Budget: ${fmt(bgNoiMonthly)}/mo</button>`);
+  }
+  if(pfNoiMonthly !== null) {
+    const active = effectiveNOISrc === 'proforma';
+    noiChips.push(`<button style="${active ? chipActive : chipInactive}" onclick="setCashReviewNOI('${currentPropId}','proforma')">Proforma: ${fmt(pfNoiMonthly)}/mo</button>`);
+  }
+  stmtNoiMonths.forEach(sm => {
+    const active = effectiveNOISrc === sm.key;
+    noiChips.push(`<button style="${active ? chipActive : chipInactive}" onclick="setCashReviewNOI('${currentPropId}','${sm.key}')">${sm.label}: ${fmt(sm.value)}/mo</button>`);
+  });
+  const noiSelectorHtml = noiChips.length > 1 ? `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap">NOI / mo</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${noiChips.join('')}</div>
+    </div>` : '';
 
   // ── Fixed cost waterfall cards ────────────────────────────────────────────
   const cardStyle = 'background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:11px 14px';
@@ -4976,6 +5035,7 @@ function renderCashReviewTab() {
 
   el.innerHTML = `
     ${warnHtml}${alertHtml}
+    ${noiSelectorHtml}
     <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em;font-size:11px">Fixed costs</div>
     ${fixedCards}
     <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Capex assumption</div>
