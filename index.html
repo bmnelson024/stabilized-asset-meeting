@@ -5080,14 +5080,19 @@ function renderCashReviewTab() {
       </div>` : '';
 
   // ── Projection table ──────────────────────────────────────────────────────
+  const hasReserve = cashReserve > 0;
   const tableRows = projection.map(row => {
     const cashCls = row.cash < 0 ? 'style="color:var(--red);font-weight:600"' : row.cash > cb.cash ? 'style="color:var(--green)"' : '';
     const vsCls = row.cash >= cb.cash ? 'val-pos' : 'val-neg';
+    const distrib = row.cash - cashReserve;
+    const distribCls = distrib < 0 ? 'style="color:var(--red);font-weight:600"' : 'style="color:var(--green)"';
+    const distribCell = hasReserve ? `<td ${distribCls}>${distrib >= 0 ? '' : '('}${fmt(Math.abs(distrib))}${distrib < 0 ? ')' : ''}</td>` : '';
     return `<tr>
       <td>${row.label}</td>
       <td ${cashCls}>${fmt(row.cash)}</td>
       <td class="${vsCls}">${row.cash >= cb.cash?'+':''}${fmt(row.cash - cb.cash)}</td>
       <td style="color:var(--text3)">${fmt(row.preCapex)}</td>
+      ${distribCell}
     </tr>`;
   }).join('');
 
@@ -5105,8 +5110,8 @@ function renderCashReviewTab() {
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:14px">
       ${chartSvg}
     </div>
-    <table class="bench-table" style="width:100%;max-width:460px">
-      <thead><tr><th>Month</th><th>Projected Cash</th><th>vs. Today</th><th style="color:var(--text3)">Pre-capex</th></tr></thead>
+    <table class="bench-table" style="width:100%;max-width:${hasReserve?580:460}px">
+      <thead><tr><th>Month</th><th>Projected Cash</th><th>vs. Today</th><th style="color:var(--text3)">Pre-capex</th>${hasReserve?'<th style="color:var(--green)">Distributable</th>':''}</tr></thead>
       <tbody>${tableRows}</tbody>
     </table>`;
 }
