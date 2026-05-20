@@ -4684,6 +4684,15 @@ function setCashReviewCapex(propId, val) {
   renderCashReviewTab();
 }
 
+function setCashReserve(propId, val) {
+  if(!propData[propId]) propData[propId] = {};
+  const num = parseFloat(val);
+  if(!isNaN(num) && num >= 0) propData[propId].crCashReserve = num;
+  else delete propData[propId].crCashReserve;
+  save(propId);
+  renderCashReviewTab();
+}
+
 function setCashReviewNOI(propId, key) {
   if(!propData[propId]) propData[propId] = {};
   propData[propId].crNoiSource = key;
@@ -4763,24 +4772,24 @@ function renderCashReviewTab() {
 
   // ── Derive Debt Service/month ─────────────────────────────────────────────
   let dsMonthly = null, dsSource = '';
-  if(pf) {
-    const pfDS = pf.rows.filter(r => r.isDebtService && r.total);
-    if(pfDS.length) { dsMonthly = pfDS.reduce((s,r) => s + r.total, 0) / 12; dsSource = 'Proforma'; }
-  }
-  if(dsMonthly === null && bg) {
+  if(bg) {
     const bgDS = bg.rows.filter(r => r.isDebtService && r.total);
     if(bgDS.length) { dsMonthly = bgDS.reduce((s,r) => s + r.total, 0) / 12; dsSource = 'Budget'; }
+  }
+  if(dsMonthly === null && pf) {
+    const pfDS = pf.rows.filter(r => r.isDebtService && r.total);
+    if(pfDS.length) { dsMonthly = pfDS.reduce((s,r) => s + r.total, 0) / 12; dsSource = 'Proforma'; }
   }
 
   // ── Derive AMF/month ──────────────────────────────────────────────────────
   let amfMonthly = null, amfSource = '';
-  if(pf) {
-    const pfAMF = pf.rows.filter(r => r.isAssetMgmt && r.total);
-    if(pfAMF.length) { amfMonthly = pfAMF.reduce((s,r) => s + r.total, 0) / 12; amfSource = 'Proforma'; }
-  }
-  if(amfMonthly === null && bg) {
+  if(bg) {
     const bgAMF = bg.rows.filter(r => r.isAssetMgmt && r.total);
     if(bgAMF.length) { amfMonthly = bgAMF.reduce((s,r) => s + r.total, 0) / 12; amfSource = 'Budget'; }
+  }
+  if(amfMonthly === null && pf) {
+    const pfAMF = pf.rows.filter(r => r.isAssetMgmt && r.total);
+    if(pfAMF.length) { amfMonthly = pfAMF.reduce((s,r) => s + r.total, 0) / 12; amfSource = 'Proforma'; }
   }
 
   // ── Pre-capex FCF (the "fixed cost" floor) ────────────────────────────────
@@ -4958,15 +4967,19 @@ function renderCashReviewTab() {
   const breakevenDisplay = preCapexFCF > 0 ? fmt(preCapexFCF) : '(' + fmt(Math.abs(preCapexFCF)) + ')';
   const breakevenNote = preCapexFCF > 0 ? 'Max capex before negative FCF' : 'Pre-capex already negative';
 
-  // Runway
+  // Runway (uses reserve as floor if set)
+  const cashReserve = d.crCashReserve || 0;
+  const cashAboveReserve = cb.cash - cashReserve;
   let runwayDisplay = '', runwayColor = 'var(--text2)', runwayNote = '';
-  if(netMonthly < 0 && cb.cash > 0) {
-    const months = Math.floor(cb.cash / Math.abs(netMonthly));
+  if(netMonthly < 0 && cashAboveReserve > 0) {
+    const months = Math.floor(cashAboveReserve / Math.abs(netMonthly));
     runwayDisplay = months + ' mo';
     runwayColor = months < 6 ? 'var(--red)' : months < 12 ? '#ffa040' : 'var(--green)';
-    runwayNote = months < 6 ? 'Critical — review capex plan' : months < 12 ? 'Watch closely' : 'Adequate runway';
-  } else if(netMonthly < 0 && cb.cash <= 0) {
-    runwayDisplay = '0 mo'; runwayColor = 'var(--red)'; runwayNote = 'Capital injection needed';
+    runwayNote = (cashReserve > 0 ? 'Until reserve floor' : '') + (months < 6 ? ' · Critical' : months < 12 ? ' · Watch closely' : ' · Adequate');
+    runwayNote = runwayNote.replace(/^ · /, '');
+  } else if(netMonthly < 0 && cashAboveReserve <= 0) {
+    runwayDisplay = '0 mo'; runwayColor = 'var(--red)';
+    runwayNote = cashReserve > 0 ? 'Below reserve floor' : 'Capital injection needed';
   } else {
     runwayDisplay = '∞'; runwayColor = 'var(--green)'; runwayNote = 'Cash growing';
   }
@@ -4986,6 +4999,36 @@ function renderCashReviewTab() {
       <div class="kpi-label">Cash runway</div>
       <div style="font-size:15px;font-weight:600;color:${runwayColor}">${runwayDisplay}</div>
       <div style="font-size:10px;color:var(--text3);margin-top:2px">${runwayNote}</div>
+    </div>
+  </div>`;
+
+  // ── Reserve target editor ─────────────────────────────────────────────────
+  const distributable = cashAboveReserve;
+  const distributableColor = distributable > 0 ? 'var(--green)' : 'var(--red)';
+  const reserveInputVal = cashReserve > 0 ? cashReserve.toFixed(0) : '';
+  const reserveEditor = `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:180px">
+        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:2px">Cash reserve target</div>
+        <div style="font-size:11px;color:var(--text3)">Minimum balance to hold before distributing</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:13px;color:var(--text2)">$</span>
+        <input type="number" min="0" value="${reserveInputVal}" placeholder="0"
+          id="cr-reserve-input-${currentPropId}"
+          style="width:130px;padding:6px 10px;border:1px solid var(--border2);border-radius:var(--radius);font-size:14px;font-weight:600;background:var(--bg2);color:var(--text);font-family:inherit;outline:none;text-align:right"
+          onchange="setCashReserve('${currentPropId}',this.value)"
+          onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+        ${cashReserve > 0 ? `<button onclick="delete propData['${currentPropId}'].crCashReserve;save('${currentPropId}');renderCashReviewTab()"
+          style="font-size:11px;padding:4px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text3);cursor:pointer;font-family:inherit">
+          Clear
+        </button>` : ''}
+      </div>
+      ${cashReserve > 0 ? `<div style="text-align:right;min-width:140px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:2px">Distributable cash</div>
+        <div style="font-size:18px;font-weight:700;color:${distributableColor}">${distributable >= 0 ? '' : '('}${fmt(Math.abs(distributable))}${distributable < 0 ? ')' : ''}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">${distributable >= 0 ? 'Above reserve' : 'Below reserve — do not distribute'}</div>
+      </div>` : ''}
     </div>
   </div>`;
 
@@ -5054,6 +5097,8 @@ function renderCashReviewTab() {
     <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em;font-size:11px">Fixed costs</div>
     ${fixedCards}
     ${insightCards}
+    <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Reserve</div>
+    ${reserveEditor}
     <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Capex assumption</div>
     ${capexEditor}
     <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em;font-size:11px">12-Month projection</div>
