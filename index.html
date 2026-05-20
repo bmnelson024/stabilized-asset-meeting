@@ -312,6 +312,7 @@
         <div class="tab" onclick="switchTab('rentroll')">Rent roll</div>
         <div class="tab" onclick="switchTab('rentprog')">Rent progression</div>
         <div class="tab" onclick="switchTab('cashreview')">Cash review</div>
+        <div class="tab" onclick="switchTab('propval')">Property valuation</div>
         <div class="tab" id="tab-btn-flags" onclick="switchTab('flags')">Flags</div>
         <div class="tab" onclick="switchTab('notes')">Notes</div>
         <div class="tab" onclick="switchTab('upload')">Upload files</div>
@@ -402,6 +403,9 @@
           </div>
         </div>
       </div>
+
+      <!-- PROPERTY VALUATION TAB -->
+      <div class="tab-content" id="tab-propval"></div>
 
       <!-- FLAGS TAB -->
       <div class="tab-content" id="tab-flags"></div>
@@ -939,6 +943,7 @@ function selectProp(id, tab) {
   renderRentRollTab();
   renderRentProgressionTab();
   renderCashReviewTab();
+  renderPropertyValuationTab();
   renderProformaTab();
 }
 
@@ -959,6 +964,7 @@ function switchTab(name) {
   document.getElementById('tab-'+name).classList.add('active');
   if(name==='rentprog') renderRentProgressionTab();
   if(name==='cashreview') renderCashReviewTab();
+  if(name==='propval') renderPropertyValuationTab();
   if(name==='proforma') renderProformaTab();
   if(name==='flags') renderFlagsTab();
 }
@@ -2721,10 +2727,20 @@ function parseBuildiumBudget(ws) {
 
 function parseAppfolioBudget(ws) {
   const result = parseAppfolio(ws);
-  // Ensure NOI row is flagged — budget uses 'Net Operating Income' without the 'NOI -' prefix
   result.rows.forEach(r => {
     const lc = r.label.toLowerCase();
+    // NOI — budget uses 'Net Operating Income' without the 'NOI -' prefix
     if(lc === 'net operating income') r.isNOI = true;
+    // Debt service — flag rows that are clearly loan/mortgage payments
+    if(!r.isDebtService && (
+      lc.includes('mortgage') || lc === 'debt service' ||
+      lc.includes('loan payment') || lc.includes('principal & interest') ||
+      lc.includes('p & i') || lc.includes('total debt service')
+    )) r.isDebtService = true;
+    // Asset management fee
+    if(!r.isAssetMgmt && (
+      lc.includes('asset management') || lc.includes('asset mgmt')
+    )) r.isAssetMgmt = true;
   });
   result.system = 'appfolio_budget';
   return result;
@@ -4551,6 +4567,172 @@ function renderRentProgressionTab() {
   container.innerHTML = html;
 }
 
+
+// ─── PROPERTY VALUATION TAB ───────────────────────────────────────────────────
+
+function setPvCapRate(propId, val) {
+  if(!propData[propId]) propData[propId] = {};
+  const num = parseFloat(val);
+  if(!isNaN(num) && num > 0) propData[propId].pvCapRate = num / 100;
+  else delete propData[propId].pvCapRate;
+  save(propId);
+  renderPropertyValuationTab();
+}
+
+function setPvNoiSource(propId, key) {
+  if(!propData[propId]) propData[propId] = {};
+  propData[propId].pvNoiSource = key;
+  save(propId);
+  renderPropertyValuationTab();
+}
+
+function renderPropertyValuationTab() {
+  const el = document.getElementById('tab-propval');
+  if(!currentPropId || !el) return;
+  const d = propData[currentPropId] || {};
+  const p = properties.find(x => x.id === currentPropId);
+  const stmt = d.statement;
+  const bg   = d.budget;
+  const pf   = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
+
+  // ── Trailing NOI avgs ──────────────────────────────────────────────────────
+  let stmtNoiTrailingAvg = null, stmtNoiMonthsUsed = 0;
+  let stmtNoiT6Avg = null, stmtNoiT6MonthsUsed = 0;
+  if(stmt && stmt.rows && stmt.months && stmt.months.length) {
+    const noiRow = stmt.rows.find(r => r.isNOI);
+    if(noiRow) {
+      const n3 = Math.min(3, stmt.months.length);
+      let s3 = 0; for(let i=0;i<n3;i++) s3 += noiRow.values[stmt.months.length-1-i]||0;
+      stmtNoiTrailingAvg = s3/n3; stmtNoiMonthsUsed = n3;
+      const n6 = Math.min(6, stmt.months.length);
+      if(n6 >= 4) {
+        let s6 = 0; for(let i=0;i<n6;i++) s6 += noiRow.values[stmt.months.length-1-i]||0;
+        stmtNoiT6Avg = s6/n6; stmtNoiT6MonthsUsed = n6;
+      }
+    }
+  }
+
+  // ── Budget / proforma NOI ──────────────────────────────────────────────────
+  let bgNoiMonthly = null, pfNoiMonthly = null;
+  if(bg) { const r = bestRow(bg.rows.filter(r=>r.isNOI)); if(r&&r.total) bgNoiMonthly = r.total/12; }
+  if(pf) { const r = bestRow(pf.rows.filter(r=>r.isNOI)); if(r&&r.total) pfNoiMonthly = r.total/12; }
+
+  // ── Derive NOI/month ───────────────────────────────────────────────────────
+  let noiMonthly = null, noiSource = '';
+  const noiSrcKey = d.pvNoiSource || null;
+  if(noiSrcKey==='stmt_t6' && stmtNoiT6Avg!==null)          { noiMonthly=stmtNoiT6Avg;       noiSource=`T${stmtNoiT6MonthsUsed} Avg`; }
+  else if(noiSrcKey==='stmt_avg' && stmtNoiTrailingAvg!==null){ noiMonthly=stmtNoiTrailingAvg; noiSource=`T${stmtNoiMonthsUsed} Avg`; }
+  else if(noiSrcKey==='proforma' && pfNoiMonthly!==null)      { noiMonthly=pfNoiMonthly;        noiSource='Proforma'; }
+  else if(noiSrcKey==='budget'   && bgNoiMonthly!==null)      { noiMonthly=bgNoiMonthly;        noiSource='Budget'; }
+  else {
+    if(bgNoiMonthly!==null)      { noiMonthly=bgNoiMonthly;  noiSource='Budget'; }
+    else if(pfNoiMonthly!==null) { noiMonthly=pfNoiMonthly;  noiSource='Proforma'; }
+  }
+  const noiAnnual = noiMonthly !== null ? noiMonthly * 12 : null;
+
+  // ── Gross income (for GRM) ─────────────────────────────────────────────────
+  let grossIncomeAnnual = null;
+  if(bg) { const r = bestRow(bg.rows.filter(r=>r.isTotalIncome)); if(r&&r.total) grossIncomeAnnual=r.total; }
+  if(grossIncomeAnnual===null && pf) { const r = bestRow(pf.rows.filter(r=>r.isTotalIncome)); if(r&&r.total) grossIncomeAnnual=r.total; }
+
+  // ── Unit count ─────────────────────────────────────────────────────────────
+  const units = (d.rentroll?.units || d.acqrentroll?.units || []).length || null;
+
+  // ── Cap rate ───────────────────────────────────────────────────────────────
+  const capRate = d.pvCapRate || 0.055;
+  const capRatePct = capRate * 100;
+  const capRateDisplay = capRatePct.toFixed(2);
+
+  // ── Estimated value ────────────────────────────────────────────────────────
+  const estValue     = noiAnnual !== null ? noiAnnual / capRate : null;
+  const valuePerUnit = estValue !== null && units ? estValue / units : null;
+  const grm          = estValue !== null && grossIncomeAnnual ? estValue / grossIncomeAnnual : null;
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  const fmtM = v => v >= 1000000 ? '$'+(v/1000000).toFixed(2)+'M' : v >= 1000 ? '$'+(v/1000).toFixed(0)+'k' : '$'+Math.round(v).toLocaleString();
+  const chipActive   = 'padding:5px 12px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--blue,#4a90d9);background:var(--blue,#4a90d9);color:#fff;white-space:nowrap;font-family:inherit';
+  const chipInactive = 'padding:5px 12px;border-radius:20px;font-size:12px;cursor:pointer;border:1px solid var(--border);background:var(--bg2);color:var(--text2);white-space:nowrap;font-family:inherit';
+  const effectiveSrc = noiSrcKey || (bgNoiMonthly!==null?'budget':pfNoiMonthly!==null?'proforma':null);
+
+  // ── NOI source chips ───────────────────────────────────────────────────────
+  const noiChips = [];
+  if(bgNoiMonthly!==null) noiChips.push(`<button style="${effectiveSrc==='budget'?chipActive:chipInactive}" onclick="setPvNoiSource('${currentPropId}','budget')">Budget: ${fmt(bgNoiMonthly)}/mo</button>`);
+  if(pfNoiMonthly!==null && bgNoiMonthly===null) noiChips.push(`<button style="${effectiveSrc==='proforma'?chipActive:chipInactive}" onclick="setPvNoiSource('${currentPropId}','proforma')">Proforma: ${fmt(pfNoiMonthly)}/mo</button>`);
+  if(stmtNoiTrailingAvg!==null) noiChips.push(`<button style="${effectiveSrc==='stmt_avg'?chipActive:chipInactive}" onclick="setPvNoiSource('${currentPropId}','stmt_avg')">T${stmtNoiMonthsUsed} Avg: ${fmt(stmtNoiTrailingAvg)}/mo</button>`);
+  if(stmtNoiT6Avg!==null)       noiChips.push(`<button style="${effectiveSrc==='stmt_t6'?chipActive:chipInactive}" onclick="setPvNoiSource('${currentPropId}','stmt_t6')">T${stmtNoiT6MonthsUsed} Avg: ${fmt(stmtNoiT6Avg)}/mo</button>`);
+
+  const noiSelectorHtml = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:10px 14px;margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap">NOI / mo</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">${noiChips.length ? noiChips.join('') : '<span style="font-size:12px;color:var(--text3)">No data — upload budget, proforma, or statement</span>'}</div>
+  </div>`;
+
+  // ── Cap rate editor ────────────────────────────────────────────────────────
+  const capRateEditor = `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <div style="flex:1;min-width:160px">
+      <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:2px">Cap rate</div>
+      <div style="font-size:11px;color:var(--text3)">Applied to annualized NOI to estimate value</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <input type="number" min="0.25" max="20" step="0.25" value="${capRateDisplay}"
+        id="pv-caprate-input-${currentPropId}"
+        style="width:90px;padding:6px 10px;border:1px solid var(--border2);border-radius:var(--radius);font-size:14px;font-weight:600;background:var(--bg2);color:var(--text);font-family:inherit;outline:none;text-align:right"
+        onchange="setPvCapRate('${currentPropId}',this.value)"
+        onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+      <span style="font-size:13px;color:var(--text2)">%</span>
+    </div>
+  </div>`;
+
+  // ── Primary value cards ────────────────────────────────────────────────────
+  const primaryCards = estValue !== null ? `
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;margin-bottom:18px">
+      <div style="background:var(--bg);border:2px solid var(--blue,#4a90d9);border-radius:var(--radius-lg);padding:16px 20px">
+        <div class="kpi-label">Estimated Value</div>
+        <div style="font-size:30px;font-weight:700;color:var(--blue,#4a90d9);letter-spacing:-0.5px">${fmtM(estValue)}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:5px">${fmt(noiAnnual)}/yr NOI ÷ ${capRateDisplay}% cap rate · ${noiSource}</div>
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 20px">
+        <div class="kpi-label">Value / unit</div>
+        <div style="font-size:22px;font-weight:600;color:var(--text)">${valuePerUnit!==null?fmtM(valuePerUnit):'—'}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">${units?units+' units':'No rent roll'}</div>
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 20px">
+        <div class="kpi-label">GRM</div>
+        <div style="font-size:22px;font-weight:600;color:var(--text)">${grm!==null?grm.toFixed(1)+'x':'—'}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">Value ÷ gross income</div>
+      </div>
+    </div>` : '';
+
+  // ── Sensitivity table ──────────────────────────────────────────────────────
+  let sensitivityRates = [4.0,4.5,5.0,5.5,6.0,6.5,7.0,7.5,8.0,8.5,9.0];
+  if(!sensitivityRates.some(r=>Math.abs(r-capRatePct)<0.01)) {
+    sensitivityRates.push(capRatePct); sensitivityRates.sort((a,b)=>a-b);
+  }
+  const sensitivityRows = noiAnnual !== null ? sensitivityRates.map(r => {
+    const sel = Math.abs(r-capRatePct)<0.01;
+    const v = noiAnnual/(r/100);
+    const vpu = units ? v/units : null;
+    const grmV = grossIncomeAnnual ? v/grossIncomeAnnual : null;
+    return `<tr style="${sel?'background:color-mix(in srgb,var(--blue,#4a90d9) 12%,transparent);font-weight:600':''}">
+      <td>${r.toFixed(2)}%${sel?' ◀':''}</td>
+      <td>${fmtM(v)}</td>
+      <td>${vpu!==null?fmtM(vpu):'—'}</td>
+      <td>${grmV!==null?grmV.toFixed(1)+'x':'—'}</td>
+    </tr>`;
+  }).join('') : '';
+
+  el.innerHTML = `
+    <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">NOI source</div>
+    ${noiSelectorHtml}
+    <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Cap rate</div>
+    ${capRateEditor}
+    ${estValue!==null?'<div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em">Estimated value</div>':''}
+    ${primaryCards}
+    ${noiAnnual!==null?'<div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Cap rate sensitivity</div>':''}
+    ${noiAnnual!==null?`<table class="bench-table" style="width:100%;max-width:500px">
+      <thead><tr><th>Cap Rate</th><th>Est. Value</th><th>Per Unit</th><th>GRM</th></tr></thead>
+      <tbody>${sensitivityRows}</tbody>
+    </table>`:'<div style="font-size:13px;color:var(--text3);padding:8px 0">Upload a budget, proforma, or cash flow statement to enable valuation estimates.</div>'}`;
+}
 
 // ─── FLAGS TAB ────────────────────────────────────────────────────────────────
 
