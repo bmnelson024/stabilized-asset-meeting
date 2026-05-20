@@ -313,6 +313,7 @@
         <div class="tab" onclick="switchTab('rentprog')">Rent progression</div>
         <div class="tab" onclick="switchTab('cashreview')">Cash review</div>
         <div class="tab" onclick="switchTab('propval')">Property valuation</div>
+        <div class="tab" id="tab-btn-debt" onclick="switchTab('debt')">Property debt</div>
         <div class="tab" id="tab-btn-flags" onclick="switchTab('flags')">Flags</div>
         <div class="tab" onclick="switchTab('notes')">Notes</div>
         <div class="tab" onclick="switchTab('upload')">Upload files</div>
@@ -406,6 +407,9 @@
 
       <!-- PROPERTY VALUATION TAB -->
       <div class="tab-content" id="tab-propval"></div>
+
+      <!-- DEBT TAB -->
+      <div class="tab-content" id="tab-debt"></div>
 
       <!-- FLAGS TAB -->
       <div class="tab-content" id="tab-flags"></div>
@@ -944,6 +948,7 @@ function selectProp(id, tab) {
   renderRentProgressionTab();
   renderCashReviewTab();
   renderPropertyValuationTab();
+  renderDebtTab();
   renderProformaTab();
 }
 
@@ -965,6 +970,7 @@ function switchTab(name) {
   if(name==='rentprog') renderRentProgressionTab();
   if(name==='cashreview') renderCashReviewTab();
   if(name==='propval') renderPropertyValuationTab();
+  if(name==='debt') renderDebtTab();
   if(name==='proforma') renderProformaTab();
   if(name==='flags') renderFlagsTab();
 }
@@ -4586,6 +4592,15 @@ function setPvNoiSource(propId, key) {
   renderPropertyValuationTab();
 }
 
+function setPvPurchasePrice(propId, val) {
+  if(!propData[propId]) propData[propId] = {};
+  const num = parseFloat(val.toString().replace(/[,$]/g,''));
+  if(!isNaN(num) && num > 0) propData[propId].pvPurchasePrice = num;
+  else delete propData[propId].pvPurchasePrice;
+  save(propId);
+  renderPropertyValuationTab();
+}
+
 function renderPropertyValuationTab() {
   const el = document.getElementById('tab-propval');
   if(!currentPropId || !el) return;
@@ -4643,10 +4658,28 @@ function renderPropertyValuationTab() {
   const capRatePct = capRate * 100;
   const capRateDisplay = capRatePct.toFixed(2);
 
+  // ── Purchase price ─────────────────────────────────────────────────────────
+  const purchasePrice = d.pvPurchasePrice || null;
+  const purchasePricePerUnit = purchasePrice && units ? purchasePrice / units : null;
+
   // ── Estimated value ────────────────────────────────────────────────────────
   const estValue     = noiAnnual !== null ? noiAnnual / capRate : null;
   const valuePerUnit = estValue !== null && units ? estValue / units : null;
   const grm          = estValue !== null && grossIncomeAnnual ? estValue / grossIncomeAnnual : null;
+
+  // ── Equity / appreciation (requires both estValue + purchasePrice) ─────────
+  const equity       = estValue !== null && purchasePrice !== null ? estValue - purchasePrice : null;
+  const equityPerUnit= equity !== null && units ? equity / units : null;
+  const appreciationPct = equity !== null ? (equity / purchasePrice) * 100 : null;
+
+  // ── Hold period (years) from purchaseDate ──────────────────────────────────
+  let holdYears = null;
+  if(p && p.purchaseDate) {
+    const ms = Date.now() - new Date(p.purchaseDate).getTime();
+    holdYears = ms / (1000 * 60 * 60 * 24 * 365.25);
+  }
+  const annualizedAppreciation = (appreciationPct !== null && holdYears && holdYears > 0)
+    ? (Math.pow(estValue / purchasePrice, 1 / holdYears) - 1) * 100 : null;
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   const fmtM = v => v >= 1000000 ? '$'+(v/1000000).toFixed(2)+'M' : v >= 1000 ? '$'+(v/1000).toFixed(0)+'k' : '$'+Math.round(v).toLocaleString();
@@ -4682,9 +4715,28 @@ function renderPropertyValuationTab() {
     </div>
   </div>`;
 
+  // ── Purchase price editor ──────────────────────────────────────────────────
+  const purchasePriceDisplay = purchasePrice ? Math.round(purchasePrice).toLocaleString() : '';
+  const purchasePriceEditor = `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <div style="flex:1;min-width:160px">
+      <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:2px">Purchase price</div>
+      <div style="font-size:11px;color:var(--text3)">Used to calculate equity and appreciation</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:13px;color:var(--text2)">$</span>
+      <input type="text" inputmode="numeric" placeholder="e.g. 4,200,000"
+        id="pv-purchaseprice-input-${currentPropId}"
+        value="${purchasePriceDisplay}"
+        style="width:140px;padding:6px 10px;border:1px solid var(--border2);border-radius:var(--radius);font-size:14px;font-weight:600;background:var(--bg2);color:var(--text);font-family:inherit;outline:none;text-align:right"
+        onchange="setPvPurchasePrice('${currentPropId}',this.value)"
+        onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+      ${purchasePrice ? `<button onclick="setPvPurchasePrice('${currentPropId}','')" style="padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text3);font-size:11px;cursor:pointer;font-family:inherit">Clear</button>` : ''}
+    </div>
+  </div>`;
+
   // ── Primary value cards ────────────────────────────────────────────────────
   const primaryCards = estValue !== null ? `
-    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;margin-bottom:18px">
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;margin-bottom:${equity!==null?'10px':'18px'}">
       <div style="background:var(--bg);border:2px solid var(--blue,#4a90d9);border-radius:var(--radius-lg);padding:16px 20px">
         <div class="kpi-label">Estimated Value</div>
         <div style="font-size:30px;font-weight:700;color:var(--blue,#4a90d9);letter-spacing:-0.5px">${fmtM(estValue)}</div>
@@ -4700,9 +4752,27 @@ function renderPropertyValuationTab() {
         <div style="font-size:22px;font-weight:600;color:var(--text)">${grm!==null?grm.toFixed(1)+'x':'—'}</div>
         <div style="font-size:11px;color:var(--text3);margin-top:4px">Value ÷ gross income</div>
       </div>
-    </div>` : '';
+    </div>
+    ${equity!==null ? `<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;margin-bottom:18px">
+      <div style="background:var(--bg);border:1px solid ${equity>=0?'var(--green,#3ab08b)':'var(--red,#e05c5c)'};border-radius:var(--radius-lg);padding:14px 20px">
+        <div class="kpi-label">Equity</div>
+        <div style="font-size:26px;font-weight:700;color:${equity>=0?'var(--green,#3ab08b)':'var(--red,#e05c5c)'};letter-spacing:-0.5px">${equity>=0?'':'-'}${fmtM(Math.abs(equity))}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:5px">Est. value ${equity>=0?'−':'+'} purchase price ${fmtM(purchasePrice)}${holdYears?` · held ${holdYears.toFixed(1)} yrs`:''}</div>
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 20px">
+        <div class="kpi-label">Equity / unit</div>
+        <div style="font-size:22px;font-weight:600;color:${equityPerUnit!==null&&equityPerUnit>=0?'var(--green,#3ab08b)':'var(--red,#e05c5c)'}">${equityPerUnit!==null?(equityPerUnit>=0?'':'-')+fmtM(Math.abs(equityPerUnit)):'—'}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">${purchasePricePerUnit!==null?'Purchased at '+fmtM(purchasePricePerUnit)+'/unit':''}</div>
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 20px">
+        <div class="kpi-label">Appreciation</div>
+        <div style="font-size:22px;font-weight:600;color:${appreciationPct>=0?'var(--green,#3ab08b)':'var(--red,#e05c5c)'}">${appreciationPct>=0?'+':''}${appreciationPct.toFixed(1)}%</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">${annualizedAppreciation!==null?'~'+annualizedAppreciation.toFixed(1)+'%/yr annualized':''}</div>
+      </div>
+    </div>` : ''}` : '';
 
   // ── Sensitivity table ──────────────────────────────────────────────────────
+  const hasEquityCol = purchasePrice !== null;
   let sensitivityRates = [4.0,4.5,5.0,5.5,6.0,6.5,7.0,7.5,8.0,8.5,9.0];
   if(!sensitivityRates.some(r=>Math.abs(r-capRatePct)<0.01)) {
     sensitivityRates.push(capRatePct); sensitivityRates.sort((a,b)=>a-b);
@@ -4712,11 +4782,15 @@ function renderPropertyValuationTab() {
     const v = noiAnnual/(r/100);
     const vpu = units ? v/units : null;
     const grmV = grossIncomeAnnual ? v/grossIncomeAnnual : null;
+    const eq = hasEquityCol ? v - purchasePrice : null;
+    const eqColor = eq!==null ? (eq>=0?'color:var(--green,#3ab08b)':'color:var(--red,#e05c5c)') : '';
+    const equityCell = hasEquityCol ? `<td style="${eqColor};font-weight:${sel?700:500}">${eq>=0?'':'-'}${fmtM(Math.abs(eq))}</td>` : '';
     return `<tr style="${sel?'background:color-mix(in srgb,var(--blue,#4a90d9) 12%,transparent);font-weight:600':''}">
       <td>${r.toFixed(2)}%${sel?' ◀':''}</td>
       <td>${fmtM(v)}</td>
       <td>${vpu!==null?fmtM(vpu):'—'}</td>
       <td>${grmV!==null?grmV.toFixed(1)+'x':'—'}</td>
+      ${equityCell}
     </tr>`;
   }).join('') : '';
 
@@ -4725,11 +4799,13 @@ function renderPropertyValuationTab() {
     ${noiSelectorHtml}
     <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Cap rate</div>
     ${capRateEditor}
+    <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Purchase price</div>
+    ${purchasePriceEditor}
     ${estValue!==null?'<div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em">Estimated value</div>':''}
     ${primaryCards}
     ${noiAnnual!==null?'<div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Cap rate sensitivity</div>':''}
-    ${noiAnnual!==null?`<table class="bench-table" style="width:100%;max-width:500px">
-      <thead><tr><th>Cap Rate</th><th>Est. Value</th><th>Per Unit</th><th>GRM</th></tr></thead>
+    ${noiAnnual!==null?`<table class="bench-table" style="width:100%;max-width:${hasEquityCol?620:500}px">
+      <thead><tr><th>Cap Rate</th><th>Est. Value</th><th>Per Unit</th><th>GRM</th>${hasEquityCol?'<th style="color:var(--green,#3ab08b)">Equity</th>':''}</tr></thead>
       <tbody>${sensitivityRows}</tbody>
     </table>`:'<div style="font-size:13px;color:var(--text3);padding:8px 0">Upload a budget, proforma, or cash flow statement to enable valuation estimates.</div>'}`;
 }
@@ -4811,6 +4887,348 @@ function computeFlags(propId) {
   return { flags, selMonth };
 }
 
+// ─── DEBT TAB ─────────────────────────────────────────────────────────────────
+
+function updateDebtBadge(propId) {
+  const btn = document.getElementById('tab-btn-debt');
+  if(!btn) return;
+  const loans = (propData[propId] || {}).loans || [];
+  const now = Date.now();
+  let redCount = 0, amberCount = 0;
+  loans.forEach(loan => {
+    if(!loan.maturityDate) return;
+    const ms = new Date(loan.maturityDate).getTime() - now;
+    const months = ms / (1000 * 60 * 60 * 24 * 30.44);
+    if(months <= 12)       redCount++;
+    else if(months <= 18)  amberCount++;
+  });
+  if(redCount > 0) {
+    btn.innerHTML = `Property debt <span style="background:var(--red,#e05454);color:#fff;border-radius:9px;font-size:10px;padding:1px 6px;font-weight:700;margin-left:3px;vertical-align:middle">!</span>`;
+  } else if(amberCount > 0) {
+    btn.innerHTML = `Property debt <span style="background:#f59e0b;color:#fff;border-radius:9px;font-size:10px;padding:1px 6px;font-weight:700;margin-left:3px;vertical-align:middle">!</span>`;
+  } else {
+    btn.textContent = 'Property debt';
+  }
+}
+
+// Derive current outstanding balance from loan terms + start date
+// Handles IO period: balance = originalAmount during IO, then amortizes from conversion date
+function computeLoanBalance(loan) {
+  if(!loan.originalAmount || !loan.loanStartDate) return null;
+  const P = loan.originalAmount;
+  const nowDate = new Date();
+  const startDate = new Date(loan.loanStartDate + 'T00:00:00');
+  if(nowDate < startDate) return P;
+
+  let amorStart = startDate;
+  if(loan.hasIO && loan.ioEndDate) {
+    const ioEnd = new Date(loan.ioEndDate + 'T00:00:00');
+    if(nowDate <= ioEnd) return P; // still in IO — no principal paid
+    amorStart = ioEnd;             // amortization started at IO end
+  }
+
+  if(!loan.interestRate || !loan.monthlyPayment) return P; // need rate+payment to amortize
+  const r = loan.interestRate / 12;
+  const PMT = loan.monthlyPayment;
+  const k = (nowDate.getFullYear() - amorStart.getFullYear()) * 12
+           + (nowDate.getMonth() - amorStart.getMonth());
+  if(k <= 0) return P;
+  // Remaining balance: B(k) = P*(1+r)^k - PMT*[(1+r)^k - 1]/r
+  const factor = Math.pow(1 + r, k);
+  return Math.max(0, P * factor - PMT * (factor - 1) / r);
+}
+
+// Pull estimated value from current property data (mirrors renderPropertyValuationTab logic)
+function computePropertyEstimatedValue(propId) {
+  const d = propData[propId] || {};
+  const p = properties.find(x => x.id === propId);
+  const stmt = d.statement;
+  const bg   = d.budget;
+  const pf   = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
+  const capRate = d.pvCapRate || 0.055;
+
+  let stmtNoiT3 = null, stmtNoiT6 = null;
+  if(stmt?.rows && stmt.months?.length) {
+    const r = stmt.rows.find(r => r.isNOI);
+    if(r) {
+      const n3 = Math.min(3, stmt.months.length);
+      let s3 = 0; for(let i=0;i<n3;i++) s3 += r.values[stmt.months.length-1-i]||0;
+      stmtNoiT3 = s3/n3;
+      const n6 = Math.min(6, stmt.months.length);
+      if(n6 >= 4) { let s6=0; for(let i=0;i<n6;i++) s6+=r.values[stmt.months.length-1-i]||0; stmtNoiT6=s6/n6; }
+    }
+  }
+  let bgNoi = null, pfNoi = null;
+  if(bg) { const r = bestRow(bg.rows.filter(r=>r.isNOI)); if(r?.total) bgNoi = r.total/12; }
+  if(pf) { const r = bestRow(pf.rows.filter(r=>r.isNOI)); if(r?.total) pfNoi = r.total/12; }
+
+  const srcKey = d.pvNoiSource;
+  let noiMonthly = null;
+  if(srcKey==='stmt_t6' && stmtNoiT6!==null)       noiMonthly = stmtNoiT6;
+  else if(srcKey==='stmt_avg' && stmtNoiT3!==null)  noiMonthly = stmtNoiT3;
+  else if(srcKey==='proforma' && pfNoi!==null)       noiMonthly = pfNoi;
+  else if(srcKey==='budget' && bgNoi!==null)         noiMonthly = bgNoi;
+  else if(bgNoi!==null)                              noiMonthly = bgNoi;
+  else if(pfNoi!==null)                              noiMonthly = pfNoi;
+
+  if(noiMonthly === null) return null;
+  return (noiMonthly * 12) / capRate;
+}
+
+function addDebtLoan(propId) {
+  if(!propData[propId]) propData[propId] = {};
+  if(!propData[propId].loans) propData[propId].loans = [];
+  const id = 'loan-' + Date.now();
+  propData[propId].loans.push({ id, label: '', lender: '', originalAmount: null, loanStartDate: '', rateType: 'fixed', interestRate: null, maturityDate: '', monthlyPayment: null, hasIO: false, ioEndDate: '' });
+  save(propId);
+  renderDebtTab();
+}
+
+function removeDebtLoan(propId, loanId) {
+  if(!propData[propId]?.loans) return;
+  propData[propId].loans = propData[propId].loans.filter(l => l.id !== loanId);
+  save(propId);
+  renderDebtTab();
+}
+
+function updateDebtLoan(propId, loanId, field, value) {
+  if(!propData[propId]?.loans) return;
+  const loan = propData[propId].loans.find(l => l.id === loanId);
+  if(!loan) return;
+  if(field === 'originalAmount' || field === 'monthlyPayment') {
+    const num = parseFloat(value.toString().replace(/[,$]/g,''));
+    loan[field] = (!isNaN(num) && num > 0) ? num : null;
+  } else if(field === 'interestRate') {
+    const num = parseFloat(value);
+    loan[field] = (!isNaN(num) && num > 0) ? num / 100 : null;
+  } else if(field === 'hasIO') {
+    loan[field] = value === true || value === 'true';
+  } else {
+    loan[field] = value;
+  }
+  save(propId);
+  renderDebtTab();
+}
+
+function renderDebtTab() {
+  const el = document.getElementById('tab-debt');
+  if(!currentPropId || !el) return;
+  const d = propData[currentPropId] || {};
+  const loans = d.loans || [];
+  const now = Date.now();
+  const estValue = computePropertyEstimatedValue(currentPropId);
+  const p = properties.find(x => x.id === currentPropId);
+  const units = (d.rentroll?.units || d.acqrentroll?.units || []).length || null;
+
+  updateDebtBadge(currentPropId);
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const fmt  = v => v == null ? '—' : '$'+Math.round(v).toLocaleString();
+  const fmtM = v => v == null ? '—' : v >= 1000000 ? '$'+(v/1000000).toFixed(2)+'M' : v >= 1000 ? '$'+(v/1000).toFixed(0)+'k' : '$'+Math.round(v).toLocaleString();
+  const inputStyle = `padding:6px 10px;border:1px solid var(--border2);border-radius:var(--radius);font-size:13px;background:var(--bg2);color:var(--text);font-family:inherit;outline:none;width:100%`;
+  const labelStyle = `font-size:11px;font-weight:600;color:var(--text3);margin-bottom:3px;text-transform:uppercase;letter-spacing:0.04em`;
+
+  function maturityInfo(dateStr) {
+    if(!dateStr) return { label: '—', color: 'var(--text3)', urgency: 'none' };
+    const ms = new Date(dateStr + 'T00:00:00').getTime() - now;
+    const months = ms / (1000 * 60 * 60 * 24 * 30.44);
+    const absM = Math.abs(months);
+    const yr = Math.floor(absM / 12), mo = Math.round(absM % 12);
+    const timeStr = months < 0 ? `Matured ${yr>0?yr+'y ':''}${mo}mo ago`
+      : yr > 0 ? `${yr}y ${mo}mo` : `${Math.round(months)}mo`;
+    if(months < 0)       return { label: timeStr, color: 'var(--red,#e05454)', urgency: 'past' };
+    if(months <= 12)     return { label: timeStr, color: 'var(--red,#e05454)', urgency: 'critical' };
+    if(months <= 18)     return { label: timeStr, color: '#f59e0b', urgency: 'warning' };
+    return { label: timeStr, color: 'var(--green,#3ab08b)', urgency: 'ok' };
+  }
+
+  function formatDate(dateStr) {
+    if(!dateStr) return '';
+    return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+  }
+
+  function ltvColor(pct) {
+    if(pct > 80) return 'var(--red,#e05454)';
+    if(pct > 70) return '#f59e0b';
+    return 'var(--green,#3ab08b)';
+  }
+
+  const loanCards = loans.map(loan => {
+    const mat = maturityInfo(loan.maturityDate);
+    const urgencyBorder = mat.urgency === 'critical' || mat.urgency === 'past' ? 'var(--red,#e05454)'
+      : mat.urgency === 'warning' ? '#f59e0b' : 'var(--border)';
+    const ratePct = loan.interestRate != null ? (loan.interestRate*100).toFixed(3).replace(/\.?0+$/,'') : '';
+
+    // ── Calculated balance ────────────────────────────────────────────────────
+    const calcBalance = computeLoanBalance(loan);
+    const ltvPct = (calcBalance !== null && estValue) ? (calcBalance / estValue) * 100 : null;
+
+    // ── IO phase status ───────────────────────────────────────────────────────
+    let ioPhaseHtml = '';
+    if(loan.hasIO && loan.ioEndDate) {
+      const msIO = new Date(loan.ioEndDate + 'T00:00:00').getTime() - now;
+      const moIO = msIO / (1000 * 60 * 60 * 24 * 30.44);
+      const isCurrentlyIO = moIO > 0;
+      const c = isCurrentlyIO
+        ? (moIO <= 6 ? 'var(--red,#e05454)' : moIO <= 12 ? '#f59e0b' : 'var(--blue,#4a90d9)')
+        : 'var(--text3)';
+      const lbl = isCurrentlyIO
+        ? `Currently IO · converts ${formatDate(loan.ioEndDate)} (${Math.round(moIO)}mo)`
+        : `Converted to P&I ${formatDate(loan.ioEndDate)}`;
+      ioPhaseHtml = `<div style="font-size:11px;font-weight:600;color:${c};background:color-mix(in srgb,${c} 10%,transparent);padding:3px 10px;border-radius:10px;border:1px solid color-mix(in srgb,${c} 25%,transparent);white-space:nowrap">${lbl}</div>`;
+    } else if(loan.hasIO) {
+      ioPhaseHtml = `<div style="font-size:11px;font-weight:600;color:var(--blue,#4a90d9);background:color-mix(in srgb,var(--blue,#4a90d9) 10%,transparent);padding:3px 10px;border-radius:10px;border:1px solid color-mix(in srgb,var(--blue,#4a90d9) 25%,transparent)">Interest only — no end date set</div>`;
+    }
+
+    return `<div style="background:var(--bg);border:1px solid ${urgencyBorder};border-radius:var(--radius-lg);padding:16px 20px;margin-bottom:14px">
+
+      <!-- Header -->
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        <input type="text" placeholder="Loan label (e.g. Senior, Mezz)" value="${(loan.label||'').replace(/"/g,'&quot;')}"
+          style="${inputStyle};font-size:14px;font-weight:600;flex:1;min-width:180px;border-color:transparent;background:transparent;padding-left:0"
+          onfocus="this.style.background='var(--bg2)';this.style.borderColor='var(--blue)';this.style.paddingLeft='10px'"
+          onblur="this.style.background='transparent';this.style.borderColor='transparent';this.style.paddingLeft='0'"
+          onchange="updateDebtLoan('${currentPropId}','${loan.id}','label',this.value)">
+        ${ioPhaseHtml}
+        <button onclick="removeDebtLoan('${currentPropId}','${loan.id}')"
+          style="padding:4px 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text3);font-size:11px;cursor:pointer;font-family:inherit;flex-shrink:0">Remove</button>
+      </div>
+
+      <!-- Fields grid -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:12px 16px">
+
+        <!-- Lender -->
+        <div>
+          <div style="${labelStyle}">Lender</div>
+          <input type="text" placeholder="Bank / lender name" value="${(loan.lender||'').replace(/"/g,'&quot;')}"
+            style="${inputStyle}" onchange="updateDebtLoan('${currentPropId}','${loan.id}','lender',this.value)"
+            onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+        </div>
+
+        <!-- Original amount -->
+        <div>
+          <div style="${labelStyle}">Original loan amount</div>
+          <div style="display:flex;align-items:center;gap:4px">
+            <span style="font-size:13px;color:var(--text2)">$</span>
+            <input type="text" inputmode="numeric" placeholder="e.g. 3,500,000"
+              value="${loan.originalAmount ? Math.round(loan.originalAmount).toLocaleString() : ''}"
+              style="${inputStyle}" onchange="updateDebtLoan('${currentPropId}','${loan.id}','originalAmount',this.value)"
+              onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+          </div>
+        </div>
+
+        <!-- Loan start date -->
+        <div>
+          <div style="${labelStyle}">Loan start date</div>
+          <input type="date" value="${loan.loanStartDate||''}" style="${inputStyle}"
+            onchange="updateDebtLoan('${currentPropId}','${loan.id}','loanStartDate',this.value)"
+            onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+          <div style="font-size:10px;color:var(--text3);margin-top:3px">Used to calculate est. balance</div>
+        </div>
+
+        <!-- Interest rate -->
+        <div>
+          <div style="${labelStyle}">Interest rate</div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" min="0" max="30" step="0.125" placeholder="5.50" value="${ratePct}"
+              style="${inputStyle};width:75px;text-align:right"
+              onchange="updateDebtLoan('${currentPropId}','${loan.id}','interestRate',this.value)"
+              onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+            <span style="font-size:13px;color:var(--text2)">%</span>
+            <select onchange="updateDebtLoan('${currentPropId}','${loan.id}','rateType',this.value)"
+              style="padding:6px 8px;border:1px solid var(--border2);border-radius:var(--radius);font-size:12px;background:var(--bg2);color:var(--text);font-family:inherit;cursor:pointer">
+              <option value="fixed"${loan.rateType==='fixed'?' selected':''}>Fixed</option>
+              <option value="variable"${loan.rateType==='variable'?' selected':''}>Variable</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- P&I payment -->
+        <div>
+          <div style="${labelStyle}">${loan.hasIO ? 'P&I payment (after IO)' : 'Monthly payment (P&I)'}</div>
+          <div style="display:flex;align-items:center;gap:4px">
+            <span style="font-size:13px;color:var(--text2)">$</span>
+            <input type="text" inputmode="numeric" placeholder="e.g. 22,400"
+              value="${loan.monthlyPayment ? Math.round(loan.monthlyPayment).toLocaleString() : ''}"
+              style="${inputStyle}" onchange="updateDebtLoan('${currentPropId}','${loan.id}','monthlyPayment',this.value)"
+              onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+          </div>
+        </div>
+
+        <!-- Maturity date -->
+        <div>
+          <div style="${labelStyle}">Maturity / balloon date</div>
+          <input type="date" value="${loan.maturityDate||''}" style="${inputStyle}"
+            onchange="updateDebtLoan('${currentPropId}','${loan.id}','maturityDate',this.value)"
+            onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+          ${loan.maturityDate ? `<div style="font-size:11px;font-weight:600;color:${mat.color};margin-top:4px">${mat.label}${mat.urgency==='critical'?' ⚠️':mat.urgency==='past'?' 🔴':''}</div>` : ''}
+        </div>
+
+      </div><!-- /fields grid -->
+
+      <!-- IO section -->
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" ${loan.hasIO?'checked':''} onchange="updateDebtLoan('${currentPropId}','${loan.id}','hasIO',this.checked)"
+              style="width:14px;height:14px;cursor:pointer;accent-color:var(--blue,#4a90d9)">
+            <span style="font-size:12px;font-weight:600;color:var(--text2)">Interest only period</span>
+          </label>
+          ${loan.hasIO ? `
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:12px;color:var(--text3)">Converts to P&I:</span>
+              <input type="date" value="${loan.ioEndDate||''}"
+                style="padding:4px 8px;border:1px solid var(--border2);border-radius:var(--radius);font-size:12px;background:var(--bg2);color:var(--text);font-family:inherit;outline:none"
+                onchange="updateDebtLoan('${currentPropId}','${loan.id}','ioEndDate',this.value)"
+                onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+            </div>` : ''}
+        </div>
+      </div>
+
+      <!-- Summary bar -->
+      ${(loan.originalAmount || loan.interestRate != null || loan.maturityDate || calcBalance !== null) ? `
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:16px;align-items:center">
+        ${loan.originalAmount ? `<div style="font-size:12px;color:var(--text2)"><span style="color:var(--text3)">Original:</span> <strong>${fmtM(loan.originalAmount)}</strong></div>` : ''}
+        ${calcBalance !== null ? `<div style="font-size:12px;color:var(--text2)"><span style="color:var(--text3)">Est. balance:</span> <strong>${fmtM(calcBalance)}</strong>${loan.rateType==='variable'?'<span style="font-size:10px;color:var(--text3);margin-left:3px">~approx</span>':''}</div>` : ''}
+        ${ltvPct !== null ? `<div style="font-size:12px;color:var(--text2)"><span style="color:var(--text3)">LTV:</span> <strong style="color:${ltvColor(ltvPct)}">${ltvPct.toFixed(1)}%</strong></div>` : ''}
+        ${loan.interestRate != null ? `<div style="font-size:12px;color:var(--text2)"><span style="color:var(--text3)">Rate:</span> <strong>${ratePct}% ${loan.rateType}</strong></div>` : ''}
+        ${loan.monthlyPayment ? `<div style="font-size:12px;color:var(--text2)"><span style="color:var(--text3)">Payment:</span> <strong>${fmt(loan.monthlyPayment)}/mo</strong></div>` : ''}
+        ${loan.maturityDate ? `<div style="font-size:12px;color:var(--text2)"><span style="color:var(--text3)">Matures:</span> <strong style="color:${mat.color}">${formatDate(loan.maturityDate)} · ${mat.label}</strong></div>` : ''}
+        ${loan.originalAmount && loan.interestRate != null ? `<div style="font-size:12px;color:var(--text2)"><span style="color:var(--text3)">Annual interest:</span> <strong>${fmt(loan.originalAmount * loan.interestRate)}</strong></div>` : ''}
+      </div>` : ''}
+
+    </div>`;
+  }).join('');
+
+  // ── Portfolio summary bar ─────────────────────────────────────────────────
+  const totalOriginal   = loans.reduce((s,l) => s + (l.originalAmount||0), 0);
+  const totalCalcBalances = loans.map(l => computeLoanBalance(l));
+  const allBalancesKnown  = totalCalcBalances.every(b => b !== null) && loans.length > 0;
+  const totalBalance    = allBalancesKnown ? totalCalcBalances.reduce((s,b) => s+b, 0) : null;
+  const totalPayment    = loans.reduce((s,l) => s + (l.monthlyPayment||0), 0);
+  const portfolioLTV    = (totalBalance !== null && estValue) ? (totalBalance/estValue)*100 : null;
+  const portfolioLTVOrig = (totalOriginal > 0 && estValue) ? (totalOriginal/estValue)*100 : null;
+
+  const summaryBar = loans.length > 0 && totalOriginal > 0 ? `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 18px;margin-bottom:18px">
+      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px">${loans.length} loan${loans.length!==1?'s':''} · Portfolio summary</div>
+      <div style="display:flex;flex-wrap:wrap;gap:20px;align-items:center">
+        <div style="font-size:13px;color:var(--text2)"><span style="color:var(--text3)">Original debt:</span> <strong>${fmtM(totalOriginal)}</strong>${units?`<span style="font-size:11px;color:var(--text3);margin-left:4px">(${fmt(totalOriginal/units)}/unit)</span>`:''}</div>
+        ${totalBalance !== null ? `<div style="font-size:13px;color:var(--text2)"><span style="color:var(--text3)">Est. balance today:</span> <strong>${fmtM(totalBalance)}</strong></div>` : ''}
+        ${portfolioLTV !== null ? `<div style="font-size:13px;color:var(--text2)"><span style="color:var(--text3)">LTV (balance):</span> <strong style="color:${ltvColor(portfolioLTV)}">${portfolioLTV.toFixed(1)}%</strong></div>` : portfolioLTVOrig !== null ? `<div style="font-size:13px;color:var(--text2)"><span style="color:var(--text3)">LTV (original):</span> <strong style="color:${ltvColor(portfolioLTVOrig)}">${portfolioLTVOrig.toFixed(1)}%</strong></div>` : estValue === null ? `<div style="font-size:12px;color:var(--text3)">Add NOI data in Property Valuation to see LTV</div>` : ''}
+        ${totalPayment > 0 ? `<div style="font-size:13px;color:var(--text2)"><span style="color:var(--text3)">Combined payment:</span> <strong>${fmt(totalPayment)}/mo</strong></div>` : ''}
+      </div>
+    </div>` : '';
+
+  el.innerHTML = `
+    ${summaryBar}
+    ${loanCards || '<div style="font-size:13px;color:var(--text3);padding:8px 0 16px">No loans added yet.</div>'}
+    <button onclick="addDebtLoan('${currentPropId}')"
+      style="padding:8px 18px;border:1px dashed var(--border2);border-radius:var(--radius-lg);background:transparent;color:var(--text2);font-size:13px;cursor:pointer;font-family:inherit;width:100%;max-width:400px">
+      + Add loan
+    </button>`;
+}
+
 function updateFlagsBadge(count) {
   const btn = document.getElementById('tab-btn-flags');
   if(!btn) return;
@@ -4843,6 +5261,37 @@ function clearAllFlagNotes(propId) {
   save();
   renderFlagsTab();
   renderPortfolio();
+}
+
+function setFlagStatus(propId, group, status) {
+  if(!propData[propId]) propData[propId] = {};
+  if(!propData[propId].flagReviews) propData[propId].flagReviews = {};
+  if(status === 'unreviewed') {
+    delete propData[propId].flagReviews[group];
+  } else {
+    if(!propData[propId].flagReviews[group]) propData[propId].flagReviews[group] = {};
+    propData[propId].flagReviews[group].status = status;
+  }
+  save();
+  renderFlagsTab();
+}
+
+function copyFlagClickUpTask(propId, group, label, varDStr, varPctStr) {
+  const p = properties.find(x => x.id === propId);
+  const propName = p ? p.name : 'Unknown Property';
+  const note = (propData[propId]?.flagNotes?.[group] || '').trim();
+  const taskName = `${propName} — ${label}`;
+  const details = `${label} is ${varDStr} over budget (+${varPctStr}).${note ? '\n\n' + note : ''}`;
+  const msg = `Create ClickUp task in Monthly PM Questions from Financial Reviews:\nTask: ${taskName}\nDetails: ${details}`;
+  navigator.clipboard.writeText(msg).then(() => {
+    const btn = document.getElementById(`flag-cu-${propId}-${group}`);
+    if(btn) {
+      const origHtml = btn.innerHTML;
+      btn.textContent = '✓ Copied — paste in chat';
+      btn.style.background = 'var(--green)'; btn.style.color = '#fff'; btn.style.borderColor = 'var(--green)';
+      setTimeout(() => { if(btn) { btn.innerHTML = origHtml; btn.style.background=''; btn.style.color=''; btn.style.borderColor=''; } }, 3000);
+    }
+  }).catch(() => { prompt('Copy this and paste in chat to create the ClickUp task:', msg); });
 }
 
 function pushFlagNoteToNotes(propId, group, flagLabel, varDStr, varPctStr) {
@@ -5322,11 +5771,16 @@ function renderFlagsTab() {
   }
 
   const { flags, selMonth } = computeFlags(currentPropId);
-  updateFlagsBadge(flags.length);
-  const flagNotes = d.flagNotes || {};
+  const flagReviews = d.flagReviews || {};
+  const flagNotes   = d.flagNotes   || {};
   const pid = currentPropId;
 
-  // Month selector (shared with benchmark tab)
+  const unreviewedCount = flags.filter(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; return !flagReviews[g]; }).length;
+  const todoCount       = flags.filter(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; return flagReviews[g]?.status==='todo'; }).length;
+  const reviewedCount   = flags.filter(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; return flagReviews[g]?.status==='reviewed'; }).length;
+  updateFlagsBadge(unreviewedCount);
+
+  // Month selector
   const stmt = d.statement;
   const monthSel = stmt ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:14px">
     <span style="font-size:12px;color:var(--text2)">Viewing:</span>
@@ -5347,67 +5801,97 @@ function renderFlagsTab() {
   }
 
   const budgetSource = d.budget ? 'uploaded budget' : 'proforma';
-  const hasAnyNotes = flags.some(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; return !!flagNotes[g]; });
+  const summaryParts = [];
+  if(unreviewedCount) summaryParts.push(`<span style="color:var(--red)">${unreviewedCount} unreviewed</span>`);
+  if(todoCount)       summaryParts.push(`<span style="color:#ffa040">${todoCount} to-do</span>`);
+  if(reviewedCount)   summaryParts.push(`<span style="color:var(--text3)">${reviewedCount} reviewed</span>`);
 
   let html = monthSel + `
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:8px">
       <div class="bench-title" style="margin:0">Expense flags — ${selMonth}</div>
-      <div style="display:flex;gap:8px;align-items:center">
-        ${hasAnyNotes ? `<button onclick="clearAllFlagNotes('${pid}')" style="font-size:11px;padding:3px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text2);cursor:pointer;font-family:inherit">Clear all explanations</button>` : ''}
-        <button onclick="exportFlags()" style="font-size:11px;padding:3px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text2);cursor:pointer;font-family:inherit">↓ Export flags</button>
-      </div>
+      <button onclick="exportFlags()" style="font-size:11px;padding:3px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text2);cursor:pointer;font-family:inherit">↓ Export</button>
     </div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:16px">
-      ${flags.length} line item${flags.length > 1 ? 's' : ''} over budget by ≥25% AND ≥$1,000 &nbsp;·&nbsp; Budget source: ${budgetSource}
+      ${flags.length} item${flags.length>1?'s':''} flagged &nbsp;·&nbsp; ${summaryParts.join(' &nbsp;·&nbsp; ')} &nbsp;·&nbsp; Budget source: ${budgetSource}
     </div>`;
+
+  const btnStyle = (color) => `font-size:11px;padding:5px 12px;border:1px solid ${color};border-radius:var(--radius);background:var(--bg);color:${color};cursor:pointer;white-space:nowrap;font-family:inherit;font-weight:600`;
 
   flags.forEach(f => {
     const group = PF_LINE_ITEMS.find(i => i.label === f.label)?.group || f.label;
-    const savedNote = flagNotes[group] || '';
-    const varDStr = fmt(f.varD);
-    const varPctStr = (f.varPct * 100).toFixed(1) + '%';
-    const escapedGroup = group.replace(/'/g, "\\'");
-    const escapedLabel = f.label.replace(/'/g, "\\'");
+    const savedNote   = flagNotes[group] || '';
+    const varDStr     = fmt(f.varD);
+    const varPctStr   = (f.varPct * 100).toFixed(1) + '%';
+    const eg          = group.replace(/'/g, "\\'");
+    const el2         = f.label.replace(/'/g, "\\'");
+    const status      = flagReviews[group]?.status || 'unreviewed';
 
-    html += `
-    <div style="border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden">
-      <table class="bench-table" style="width:100%;margin:0">
-        <thead>
-          <tr>
-            <th style="text-align:left;width:40%">Line Item</th>
-            <th style="text-align:right">Budget / Mo.</th>
-            <th style="text-align:right">Actual / Mo.</th>
-            <th style="text-align:right">Over by $</th>
-            <th style="text-align:right">Over by %</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td style="font-weight:500">${f.label}${f.stmtLabels.length > 1 ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">${f.stmtLabels.join(' + ')}</div>` : ''}</td>
-            <td style="text-align:right">${fmt(f.budget)}</td>
-            <td style="text-align:right" class="val-neg">${fmt(f.actual)}</td>
-            <td style="text-align:right" class="val-neg">+${varDStr}</td>
-            <td style="text-align:right" class="val-neg">+${varPctStr}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div style="padding:10px 12px;background:var(--bg2);border-top:1px solid var(--border);display:flex;align-items:center;gap:10px">
-        <input
-          type="text"
-          id="flagnote-${pid}-${group}"
-          value="${escHtml(savedNote)}"
-          placeholder="Add explanation..."
-          onblur="saveFlagNote('${pid}','${escapedGroup}',this.value.trim())"
-          onkeydown="if(event.key==='Enter'){this.blur()}"
-          style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none"
-        />
-        <button
-          id="flag-push-${pid}-${group}"
-          onclick="pushFlagNoteToNotes('${pid}','${escapedGroup}','${escapedLabel}','${varDStr}','${varPctStr}')"
-          style="font-size:11px;padding:5px 10px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text2);cursor:pointer;white-space:nowrap;font-family:inherit"
-        >→ Push to meeting notes</button>
-      </div>
-    </div>`;
+    const dataTable = (muted) => `
+      <table class="bench-table" style="width:100%;margin:0${muted?';opacity:0.6':''}">
+        <thead><tr>
+          <th style="text-align:left;width:40%">Line Item</th>
+          <th style="text-align:right">Budget / Mo.</th>
+          <th style="text-align:right">Actual / Mo.</th>
+          <th style="text-align:right">Over by $</th>
+          <th style="text-align:right">Over by %</th>
+        </tr></thead>
+        <tbody><tr>
+          <td style="font-weight:500">${f.label}${f.stmtLabels.length>1?`<div style="font-size:10px;color:var(--text3);margin-top:2px">${f.stmtLabels.join(' + ')}</div>`:''}</td>
+          <td style="text-align:right">${fmt(f.budget)}</td>
+          <td style="text-align:right"${muted?'':' class="val-neg"'}>${fmt(f.actual)}</td>
+          <td style="text-align:right"${muted?'':' class="val-neg"'}>+${varDStr}</td>
+          <td style="text-align:right"${muted?'':' class="val-neg"'}>+${varPctStr}</td>
+        </tr></tbody>
+      </table>`;
+
+    if(status === 'reviewed') {
+      html += `
+      <div style="border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:10px;overflow:hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 12px;background:color-mix(in srgb,var(--green) 8%,transparent)">
+          <span style="font-size:11px;font-weight:600;color:var(--green)">✓ Reviewed</span>
+          <button onclick="setFlagStatus('${pid}','${eg}','unreviewed')" style="${btnStyle('var(--border)')}; color:var(--text3)">Undo</button>
+        </div>
+        ${dataTable(true)}
+        ${savedNote?`<div style="padding:6px 12px 8px;font-size:11px;color:var(--text3);background:var(--bg2);border-top:1px solid var(--border)">${escHtml(savedNote)}</div>`:''}
+      </div>`;
+
+    } else if(status === 'todo') {
+      html += `
+      <div style="border:1px solid #ffa040;border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden">
+        <div style="padding:6px 12px;background:color-mix(in srgb,#ffa040 10%,transparent)">
+          <span style="font-size:11px;font-weight:600;color:#ffa040">📋 To-Do</span>
+        </div>
+        ${dataTable(false)}
+        <div style="padding:10px 12px;background:var(--bg2);border-top:1px solid var(--border)">
+          <input type="text" id="flagnote-${pid}-${group}" value="${escHtml(savedNote)}"
+            placeholder="Describe the action needed..."
+            onblur="saveFlagNote('${pid}','${eg}',this.value.trim())"
+            onkeydown="if(event.key==='Enter'){this.blur()}"
+            style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none;margin-bottom:8px"/>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button id="flag-cu-${pid}-${group}" onclick="copyFlagClickUpTask('${pid}','${eg}','${el2}','${varDStr}','${varPctStr}')" style="${btnStyle('#ffa040')}">📋 Copy ClickUp task</button>
+            <button onclick="setFlagStatus('${pid}','${eg}','reviewed')" style="${btnStyle('var(--green)')}">✓ Mark reviewed</button>
+          </div>
+        </div>
+      </div>`;
+
+    } else {
+      html += `
+      <div style="border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden">
+        ${dataTable(false)}
+        <div style="padding:10px 12px;background:var(--bg2);border-top:1px solid var(--border)">
+          <input type="text" id="flagnote-${pid}-${group}" value="${escHtml(savedNote)}"
+            placeholder="Add explanation..."
+            onblur="saveFlagNote('${pid}','${eg}',this.value.trim())"
+            onkeydown="if(event.key==='Enter'){this.blur()}"
+            style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none;margin-bottom:8px"/>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="setFlagStatus('${pid}','${eg}','reviewed')" style="${btnStyle('var(--green)')}">✓ Reviewed</button>
+            <button onclick="setFlagStatus('${pid}','${eg}','todo')" style="${btnStyle('#ffa040')}">→ To-Do</button>
+          </div>
+        </div>
+      </div>`;
+    }
   });
 
   el.innerHTML = html;
