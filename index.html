@@ -1107,7 +1107,7 @@ function renderUploadTab(p) {
   const stmtLabel = p.system==='buildium' ? 'Income statement' : 'Cash flow statement';
   const monthly = [
     {key:'statement', label:stmtLabel, sub:'Monthly .xlsx export'},
-    {key:'rentroll', label:'Rent roll', sub:`Monthly .xlsx export${(propData[propId]&&propData[propId].rentRollHistory&&propData[propId].rentRollHistory.length>0)?' · '+propData[propId].rentRollHistory.length+' snapshot'+(propData[propId].rentRollHistory.length!==1?'s':'')+' stored':''}`},
+    {key:'rentroll', label:'Rent roll', sub:`Monthly .xlsx export${(d.rentRollHistory&&d.rentRollHistory.length>0)?' · '+d.rentRollHistory.length+' snapshot'+(d.rentRollHistory.length!==1?'s':'')+' stored':''}`},
     {key:'delinquency', label:'Delinquency report', sub:'AppFolio "Delinquency As Of" .xlsx'},
     {key:'capex', label:'Capex detail report', sub:'AppFolio transaction-level capex export .xlsx'},
     {key:'moveInOut', label:'Renewal Summary or Lease History', sub:'AppFolio "Renewal Summary" or "Lease History" .xlsx'},
@@ -1387,7 +1387,7 @@ function handleRentRollBatch(files, propId) {
   let latestDate   = (propData[propId].rentroll && propData[propId].rentroll.asOfDate) || '0000-00-00';
   let latestParsed = null;
 
-  setSaveStatus('loading', `Processing 1 of ${total}…`);
+  setSaveStatus('saving');
 
   function processNext(idx) {
     if(idx >= total) {
@@ -1396,15 +1396,13 @@ function handleRentRollBatch(files, propId) {
       // Promote the most recent snapshot to active rent roll
       if(latestParsed) propData[propId].rentroll = latestParsed;
       save(propId);
-      renderUploadTab();
+      renderUploadTab(p);
       renderRentRollTab();
       renderCapexTab();
-      const msg = errors > 0 ? `${processed} loaded, ${errors} skipped` : `${processed} snapshots added`;
-      setSaveStatus('saved', msg);
-      setTimeout(() => setSaveStatus('saved', 'Saved'), 3000);
+      setSaveStatus('saved');
       return;
     }
-    setSaveStatus('loading', `Processing ${idx + 1} of ${total}…`);
+    setSaveStatus('saving');
     const file = files[idx];
     const reader = new FileReader();
     reader.onload = function(e) {
