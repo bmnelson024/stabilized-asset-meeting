@@ -327,6 +327,7 @@
         <div class="tab" onclick="switchTab('propval')">Property valuation</div>
         <div class="tab" id="tab-btn-debt" onclick="switchTab('debt')">Property debt</div>
         <div class="tab" id="tab-btn-flags" onclick="switchTab('flags')">Flags</div>
+        <div class="tab" onclick="switchTab('capex')">Capex</div>
         <div class="tab" onclick="switchTab('notes')">Notes</div>
         <div class="tab" onclick="switchTab('upload')">Upload files</div>
       </div>
@@ -425,6 +426,9 @@
 
       <!-- FLAGS TAB -->
       <div class="tab-content" id="tab-flags"></div>
+
+      <!-- CAPEX TAB -->
+      <div class="tab-content" id="tab-capex"></div>
 
       <!-- NOTES TAB -->
       <div class="tab-content" id="tab-notes">
@@ -985,6 +989,7 @@ function selectProp(id, tab) {
   renderPropertyValuationTab();
   renderDebtTab();
   renderProformaTab();
+  renderCapexTab();
 }
 
 function showView(view) {
@@ -1010,6 +1015,7 @@ function switchTab(name) {
   if(name==='debt') renderDebtTab();
   if(name==='proforma') renderProformaTab();
   if(name==='flags') renderFlagsTab();
+  if(name==='capex') renderCapexTab();
 }
 
 // ─── ADD / DELETE PROPERTY ────────────────────────────────────────────────────
@@ -1103,6 +1109,7 @@ function renderUploadTab(p) {
     {key:'statement', label:stmtLabel, sub:'Monthly .xlsx export'},
     {key:'rentroll', label:'Rent roll', sub:'Monthly .xlsx export'},
     {key:'delinquency', label:'Delinquency report', sub:'AppFolio "Delinquency As Of" .xlsx'},
+    {key:'capex', label:'Capex detail report', sub:'AppFolio transaction-level capex export .xlsx'},
   ];
   const benchmarks = [
     {key:'budget', label:'Budget', sub:'Annual — re-upload each year'},
@@ -1503,6 +1510,9 @@ function handleUpload(event, propId, fileKey) {
       } else if(fileKey==='delinquency') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
         parsed = parseDelinquencyReport(ws0);
+      } else if(fileKey==='capex') {
+        const ws0 = wb.Sheets[wb.SheetNames[0]];
+        parsed = parseCapexReport(ws0);
       } else if(fileKey==='cashbalance') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
         // Auto-detect: Buildium has "Bank Account Balance Breakdown" in cell; AppFolio has "Trial Balance"
@@ -1547,6 +1557,7 @@ function handleUpload(event, propId, fileKey) {
       renderBenchmarkTab();
       renderRentRollTab();
       renderRentProgressionTab();
+      renderCapexTab();
       renderPortfolio();
       if(pd2.proforma && pd2.statement) {
         renderMappingEditor(propId);
@@ -1915,6 +1926,159 @@ function parseDelinquencyReport(ws) {
   }
 
   return { asOfDate, totalAR, aging0_30, aging30Plus, units };
+}
+
+// ─── CAPEX DETAIL REPORT PARSER ───────────────────────────────────────────────
+// Handles AppFolio transaction-level capex exports (transaction list or cash-flow style).
+// Returns { reportTitle, dateRange, transactions: [{date,category,description,unit,amount}], byCategory, totalSpend }
+function parseCapexReport(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  if(!data || data.length < 2) throw new Error('Capex file appears empty.');
+
+  // ── Extract metadata ──────────────────────────────────────────────────────
+  let reportTitle = '', dateRange = '', propertyName = '';
+  for(let i = 0; i < Math.min(12, data.length); i++) {
+    const row = data[i];
+    if(!row) continue;
+    const cell = (row[0] || '').toString().trim();
+    if(i === 0 && cell) reportTitle = cell;
+    if(cell.toLowerCase().startsWith('date range:')) dateRange = cell.replace(/^date range:\s*/i,'').trim();
+    if(cell.toLowerCase().startsWith('properties:')) propertyName = cell.replace(/^properties:\s*/i,'').trim();
+  }
+
+  // ── AppFolio General Ledger detection ─────────────────────────────────────
+  // Account section headers look like "NNNN - Account Name" in col A with no date in col B.
+  // Transaction rows have an Excel serial date in col B and a debit amount in col F (index 5).
+  const GL_ACCT_RE = /^(\d{4,5})\s*[-–]\s*(.+)/;
+  const SKIP_RE    = /^(starting balance|net change|ending balance)/i;
+
+  const transactions = [];
+  let currentAccount = null, currentAccountNum = null;
+
+  for(let i = 0; i < data.length; i++) {
+    const row = data[i];
+    if(!row) continue;
+
+    const colA = (row[0] !== null && row[0] !== undefined) ? row[0].toString().trim() : '';
+    const colB = row[1];   // date (Excel serial or null)
+    const debit  = parseFloat(row[5]) || 0;   // col F
+    const credit = parseFloat(row[6]) || 0;   // col G
+
+    // GL account section header: matches "NNNN - Name", no date in col B
+    const acctMatch = GL_ACCT_RE.exec(colA);
+    if(acctMatch && (colB === null || colB === undefined || colB === '')) {
+      currentAccountNum = acctMatch[1];
+      currentAccount    = colA;  // e.g., "5212 - Junk Removal"
+      continue;
+    }
+    if(!currentAccount) continue;
+
+    // Skip totals / meta rows
+    if(SKIP_RE.test(colA)) continue;
+    if(colA === '' && (colB === null || colB === undefined)) continue;
+
+    // Transaction row: col B must be a parseable date
+    const txDate = parseRentRollDate(colB);
+    if(!txDate) continue;
+
+    const amount = debit - credit;  // net; credits are refunds/reversals
+    if(amount === 0) continue;
+
+    const payee       = (row[2] !== null && row[2] !== undefined) ? row[2].toString().trim() : '';
+    const description = (row[8] !== null && row[8] !== undefined) ? row[8].toString().trim() : '';
+    const unit        = (row[9] !== null && row[9] !== undefined) ? row[9].toString().trim() : '';
+
+    // Categorize by GL account number range
+    const acctNum = parseInt(currentAccountNum, 10);
+    const categoryType = acctNum >= 7000 ? 'capex'    // true capital expenditures
+                       : acctNum >= 5000 ? 'turnover'  // unit turnover / make-ready
+                       : 'other';
+
+    transactions.push({ date: txDate, account: currentAccount, accountNum: currentAccountNum,
+      categoryType, payee, description, unit, amount });
+  }
+
+  if(transactions.length === 0) {
+    // ── Fallback: generic transaction-list or cash-flow style ─────────────
+    let headerRow = -1;
+    for(let i = 0; i < Math.min(20, data.length); i++) {
+      const row = data[i];
+      if(!row) continue;
+      const cells = row.map(c => (c || '').toString().trim().toLowerCase());
+      if(cells.some(c => c === 'date' || c === 'transaction date') &&
+         cells.some(c => c === 'amount' || c === 'debit' || c === 'total')) {
+        headerRow = i; break;
+      }
+    }
+    if(headerRow >= 0) {
+      const hdr = data[headerRow].map(c => (c || '').toString().trim().toLowerCase());
+      const dateCol   = hdr.findIndex(c => c === 'date' || c === 'transaction date');
+      const catCol    = hdr.findIndex(c => c.includes('account') || c.includes('category'));
+      const descCol   = hdr.findIndex(c => c.includes('description') || c.includes('memo'));
+      const unitCol   = hdr.findIndex(c => c === 'unit' || c === 'unit number');
+      const amtCol    = hdr.findIndex(c => c === 'amount' || c === 'debit' || c === 'total');
+      for(let i = headerRow + 1; i < data.length; i++) {
+        const row = data[i];
+        if(!row) continue;
+        const amt = Math.abs(parseFloat(row[amtCol]) || 0);
+        if(!amt) continue;
+        const txDate = parseRentRollDate(row[dateCol]);
+        transactions.push({
+          date: txDate,
+          account: catCol >= 0 && row[catCol] ? row[catCol].toString().trim() : 'Uncategorized',
+          accountNum: '',
+          categoryType: 'other',
+          payee: '',
+          description: descCol >= 0 && row[descCol] ? row[descCol].toString().trim() : '',
+          amount: amt,
+          unit: unitCol >= 0 && row[unitCol] ? row[unitCol].toString().trim() : ''
+        });
+      }
+    }
+    if(transactions.length === 0)
+      throw new Error('Could not parse capex file. Please upload an AppFolio "General Ledger" report filtered to capex and turnover GL accounts.');
+  }
+
+  // ── Aggregate by account ─────────────────────────────────────────────────
+  const byAccount = {};
+  transactions.forEach(t => {
+    if(!byAccount[t.account]) byAccount[t.account] = {
+      total: 0, count: 0, categoryType: t.categoryType, accountNum: t.accountNum, transactions: []
+    };
+    byAccount[t.account].total  += t.amount;
+    byAccount[t.account].count  += 1;
+    byAccount[t.account].transactions.push(t);
+  });
+
+  const turnoverTotal = transactions.filter(t => t.categoryType === 'turnover').reduce((s,t) => s+t.amount, 0);
+  const capexTotal    = transactions.filter(t => t.categoryType === 'capex').reduce((s,t)    => s+t.amount, 0);
+  const totalSpend    = transactions.reduce((s,t) => s+t.amount, 0);
+
+  // ── Aggregate by unit ────────────────────────────────────────────────────
+  // Only include transactions that have a unit value
+  const byUnit = {};
+  transactions.filter(t => t.unit).forEach(t => {
+    if(!byUnit[t.unit]) byUnit[t.unit] = { turnover: 0, capex: 0, total: 0, lastTurnDate: null, txCount: 0 };
+    byUnit[t.unit].total    += t.amount;
+    byUnit[t.unit].txCount  += 1;
+    if(t.categoryType === 'turnover') {
+      byUnit[t.unit].turnover += t.amount;
+      // Track most-recent turnover date per unit
+      if(!byUnit[t.unit].lastTurnDate || t.date > byUnit[t.unit].lastTurnDate)
+        byUnit[t.unit].lastTurnDate = t.date;
+    }
+    if(t.categoryType === 'capex') byUnit[t.unit].capex += t.amount;
+  });
+
+  // Count unique units that had turnover spend = actual turn count (more accurate than invoice count)
+  const turnedUnits = Object.values(byUnit).filter(u => u.turnover > 0).length;
+
+  // Detect earliest and latest dates in the GL
+  const dates = transactions.map(t => t.date).filter(Boolean).sort();
+  const glDateRange = dates.length ? `${dates[0]} → ${dates[dates.length-1]}` : '';
+
+  return { reportTitle, dateRange: dateRange || glDateRange, propertyName,
+    style: 'general_ledger', transactions, byAccount, byUnit, turnoverTotal, capexTotal, totalSpend, turnedUnits };
 }
 
 // Parse a date cell from a rent roll into YYYY-MM-DD or null
@@ -6325,6 +6489,492 @@ function renderFlagsTab() {
   el.innerHTML = html;
 }
 
+// ─── CAPEX SETTINGS HELPER ────────────────────────────────────────────────────
+function setCapexSetting(propId, key, val) {
+  if(!propData[propId]) propData[propId] = {};
+  if(!propData[propId].capexSettings) propData[propId].capexSettings = {};
+  propData[propId].capexSettings[key] = val;
+  save(propId);
+  renderCapexTab();
+}
+
+// ─── CAPEX ANALYSIS TAB ───────────────────────────────────────────────────────
+function renderCapexTab() {
+  const el = document.getElementById('tab-capex');
+  if(!el) return;
+  const propId = currentPropId;
+  const p = properties.find(x => x.id === propId);
+  const d = propData[propId] || {};
+  const stmt = d.statement;
+  const rr = d.rentroll;
+  const capexDetail = d.capex;
+  const numUnits = p ? (p.units || 1) : 1;
+
+  // Persisted user settings
+  if(!d.capexSettings) d.capexSettings = {};
+  const settings = d.capexSettings;
+  const makeReadyCost = settings.makeReadyCost !== undefined ? settings.makeReadyCost : 1000;
+  const avgDaysVacant = settings.avgDaysVacant !== undefined ? settings.avgDaysVacant : 30;
+
+  // ── Extract capex rows from statement ────────────────────────────────────
+  const isCapexRow = r => {
+    const lc = r.label.toLowerCase();
+    return lc.includes('capex') || lc.includes('capital expenditure') ||
+           lc.includes('capital improvement') || lc.includes('capital expense') ||
+           lc.includes('replacement reserve');
+  };
+
+  let capexRows = [], stmtMonths = [], t12CapexTotal = 0, egi = 0;
+  if(stmt && stmt.rows && stmt.months) {
+    stmtMonths = stmt.months;
+    capexRows = stmt.rows.filter(r => isCapexRow(r) && !r.isCategory && !r.isTotal && !r.isSubtotal);
+    t12CapexTotal = capexRows.reduce((sum, r) => sum + r.values.reduce((a, b) => a + b, 0), 0);
+    const totalIncomeRow = stmt.rows.find(r => r.isTotalIncome);
+    if(totalIncomeRow) egi = totalIncomeRow.values.reduce((a, b) => a + b, 0);
+  }
+
+  const capexPerUnit  = numUnits > 0 ? t12CapexTotal / numUnits : 0;
+  const capexPctEGI   = egi > 0 ? (t12CapexTotal / egi * 100) : null;
+
+  // ── Rent roll analysis ───────────────────────────────────────────────────
+  let vacantUnits = [], expiring60 = [], expiring90 = [], occupiedUnits = [];
+  let totalMonthlyRent = 0, vacancyLoss = 0, avgOccupiedRent = 0;
+  if(rr && rr.units) {
+    const today = new Date();
+    const d60 = new Date(today); d60.setDate(d60.getDate() + 60);
+    const d90 = new Date(today); d90.setDate(d90.getDate() + 90);
+    vacantUnits   = rr.units.filter(u => u.isVacant);
+    occupiedUnits = rr.units.filter(u => !u.isVacant);
+    totalMonthlyRent  = occupiedUnits.reduce((s, u) => s + (u.actualRent || 0), 0);
+    vacancyLoss       = vacantUnits.reduce((s, u)  => s + (u.marketRent  || 0), 0);
+    avgOccupiedRent   = occupiedUnits.length > 0 ? totalMonthlyRent / occupiedUnits.length : 0;
+    expiring60 = occupiedUnits.filter(u => {
+      if(!u.leaseEndDate) return false;
+      const ed = new Date(u.leaseEndDate);
+      return ed >= today && ed <= d60;
+    });
+    expiring90 = occupiedUnits.filter(u => {
+      if(!u.leaseEndDate) return false;
+      const ed = new Date(u.leaseEndDate);
+      return ed > d60 && ed <= d90;
+    });
+  }
+
+  // ── Turn economics ───────────────────────────────────────────────────────
+  const dailyRentLoss       = avgOccupiedRent > 0 ? avgOccupiedRent / 30 : 0;
+  const vacancyCostPerTurn  = dailyRentLoss * avgDaysVacant;
+  const totalCostPerTurn    = makeReadyCost + vacancyCostPerTurn;
+  // Estimate annual turns: leases expiring in 90-day window × ~4 to annualise (4 quarters)
+  const annualTurnsEst = (rr && (expiring60.length + expiring90.length) > 0)
+    ? Math.round((expiring60.length + expiring90.length) * 4)
+    : null;
+  const annualTurnDrag      = annualTurnsEst !== null ? annualTurnsEst * totalCostPerTurn : null;
+  const annualRentRevenue   = totalMonthlyRent * 12;
+  const turnDragPct         = annualRentRevenue > 0 && annualTurnDrag !== null
+    ? (annualTurnDrag / annualRentRevenue * 100) : null;
+
+  if(!stmt && !rr) {
+    el.innerHTML = `<div class="upload-notice">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>
+      <p>Upload an income statement and rent roll on the <strong>Upload files</strong> tab to enable capex analysis.</p>
+    </div>`;
+    return;
+  }
+
+  // ── HTML build ───────────────────────────────────────────────────────────
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+    <div>
+      <div style="font-size:15px;font-weight:600">Capex Analysis</div>
+      <div style="font-size:12px;color:var(--text3);margin-top:2px">Capital expenditure · unit turn economics · vacancy drag</div>
+    </div>
+  </div>`;
+
+  // ── KPI row ──────────────────────────────────────────────────────────────
+  const kpi = (label, val, sub, color) => `<div class="kpi-card">
+    <div class="kpi-label">${label}</div>
+    <div style="font-size:20px;font-weight:600;color:${color||'var(--text)'}">${val}</div>
+    ${sub ? `<div style="font-size:11px;color:var(--text3);margin-top:3px">${sub}</div>` : ''}
+  </div>`;
+  html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">`;
+  const capexColor = (capexPctEGI !== null && capexPctEGI > 15) ? 'var(--amber)' : 'var(--text)';
+  html += kpi('T12 Capex', stmt ? fmt(t12CapexTotal) : '—', stmt ? `${stmtMonths.length}-month period` : 'No statement uploaded', capexColor);
+  html += kpi('Capex / unit / year', (stmt && numUnits > 0) ? fmt(capexPerUnit) : '—', `${numUnits} unit${numUnits !== 1 ? 's' : ''}`, capexPctEGI > 10 ? 'var(--amber)' : 'var(--text)');
+  html += kpi('Capex % of EGI', capexPctEGI !== null ? capexPctEGI.toFixed(1) + '%' : '—', '&gt;15% is elevated', capexPctEGI > 15 ? 'var(--red)' : capexPctEGI > 10 ? 'var(--amber)' : capexPctEGI !== null ? 'var(--green)' : 'var(--text3)');
+  html += kpi('Vacancy loss / mo', rr ? fmt(vacancyLoss) : '—', rr ? `${vacantUnits.length} vacant unit${vacantUnits.length !== 1 ? 's' : ''}` : 'No rent roll uploaded', vacancyLoss > 0 ? 'var(--amber)' : 'var(--green)');
+  html += `</div>`;
+
+  // ── Capex by category (from statement) ──────────────────────────────────
+  if(stmt) {
+    html += `<div style="font-size:13px;font-weight:600;margin-bottom:10px">Capex breakdown — from income statement</div>`;
+    if(capexRows.length === 0) {
+      html += `<div style="background:var(--bg2);border-radius:var(--radius-lg);padding:14px 16px;font-size:13px;color:var(--text3);margin-bottom:20px;border:1px solid var(--border)">
+        No capex line items found in the income statement.
+        <span style="display:block;font-size:11px;margin-top:4px">Expected rows containing "capex", "capital expenditure", "capital improvement", or "replacement reserve".</span>
+      </div>`;
+    } else {
+      html += `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:20px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--bg3)">
+            <th style="padding:8px 12px;text-align:left;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">Category</th>
+            <th style="padding:8px 12px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">T12 Total</th>
+            <th style="padding:8px 12px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">Mo Avg</th>
+            <th style="padding:8px 12px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">/ Unit / Yr</th>
+            <th style="padding:8px 12px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">% of EGI</th>
+            <th style="padding:8px 12px;text-align:center;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">Trend</th>
+          </tr></thead><tbody>`;
+      const sortedCapex = [...capexRows].sort((a, b) =>
+        b.values.reduce((s,v)=>s+v,0) - a.values.reduce((s,v)=>s+v,0));
+      sortedCapex.forEach((r, idx) => {
+        const rowTotal = r.values.reduce((s,v)=>s+v,0);
+        const moAvg    = stmtMonths.length > 0 ? rowTotal / stmtMonths.length : 0;
+        const perUnit  = numUnits > 0 ? rowTotal / numUnits : 0;
+        const pctEGI   = egi > 0 ? (rowTotal / egi * 100) : null;
+        const spark    = makeSparkline(r.values, 72, 22);
+        html += `<tr style="${idx%2===1?'background:rgba(255,255,255,0.02)':''}">
+          <td style="padding:7px 12px;border-bottom:1px solid var(--border)">${r.label}</td>
+          <td style="padding:7px 12px;text-align:right;font-weight:500;border-bottom:1px solid var(--border)">${fmt(rowTotal)}</td>
+          <td style="padding:7px 12px;text-align:right;color:var(--text2);border-bottom:1px solid var(--border)">${fmt(moAvg)}</td>
+          <td style="padding:7px 12px;text-align:right;color:var(--text2);border-bottom:1px solid var(--border)">${fmt(perUnit)}</td>
+          <td style="padding:7px 12px;text-align:right;color:${pctEGI!==null&&pctEGI>8?'var(--amber)':'var(--text3)'};border-bottom:1px solid var(--border)">${pctEGI!==null?pctEGI.toFixed(1)+'%':'—'}</td>
+          <td style="padding:7px 12px;text-align:center;border-bottom:1px solid var(--border)">${spark||'<span style="color:var(--text3);font-size:10px">—</span>'}</td>
+        </tr>`;
+      });
+      const moAvgTotal = stmtMonths.length > 0 ? t12CapexTotal / stmtMonths.length : 0;
+      html += `<tr style="background:var(--bg3);font-weight:600">
+        <td style="padding:8px 12px;border-top:1px solid var(--border2)">Total</td>
+        <td style="padding:8px 12px;text-align:right;border-top:1px solid var(--border2)">${fmt(t12CapexTotal)}</td>
+        <td style="padding:8px 12px;text-align:right;border-top:1px solid var(--border2)">${fmt(moAvgTotal)}</td>
+        <td style="padding:8px 12px;text-align:right;border-top:1px solid var(--border2)">${numUnits>0?fmt(t12CapexTotal/numUnits):'—'}</td>
+        <td style="padding:8px 12px;text-align:right;border-top:1px solid var(--border2)">${egi>0?(t12CapexTotal/egi*100).toFixed(1)+'%':'—'}</td>
+        <td style="border-top:1px solid var(--border2)"></td>
+      </tr>`;
+      html += `</tbody></table></div>`;
+    }
+  }
+
+  // ── Vacancy & Lease Expiration ───────────────────────────────────────────
+  if(rr) {
+    html += `<div style="font-size:13px;font-weight:600;margin-bottom:10px">Vacancy &amp; lease expiration</div>`;
+    html += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px">`;
+    const turnCard = (title, count, rentAtRisk, note, color) => `<div class="kpi-card" style="border:1px solid var(--border)">
+      <div class="kpi-label">${title}</div>
+      <div style="font-size:22px;font-weight:600;color:${color}">${count}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:3px">${rentAtRisk>0?fmt(rentAtRisk)+'/mo at risk':note}</div>
+    </div>`;
+    html += turnCard('Currently vacant',    vacantUnits.length,  vacancyLoss,  'no vacancy',       vacantUnits.length>0?'var(--amber)':'var(--green)');
+    html += turnCard('Expiring ≤ 60 days',  expiring60.length,   expiring60.reduce((s,u)=>s+(u.actualRent||0),0), 'none upcoming', expiring60.length>0?'var(--amber)':'var(--green)');
+    html += turnCard('Expiring 61–90 days', expiring90.length,   expiring90.reduce((s,u)=>s+(u.actualRent||0),0), 'none upcoming', expiring90.length>0?'var(--text)':'var(--green)');
+    html += `</div>`;
+
+    const upcoming = [...expiring60, ...expiring90].sort((a,b)=>(a.leaseEndDate||'').localeCompare(b.leaseEndDate||''));
+    if(upcoming.length > 0) {
+      html += `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:20px">
+        <div style="padding:9px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text2)">Units with leases expiring in the next 90 days</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--bg3)">
+            <th style="padding:7px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Unit</th>
+            <th style="padding:7px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Type</th>
+            <th style="padding:7px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Current Rent</th>
+            <th style="padding:7px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Market Rent</th>
+            <th style="padding:7px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Lease End</th>
+          </tr></thead><tbody>`;
+      upcoming.forEach((u, idx) => {
+        const isWithin60 = expiring60.includes(u);
+        const ltlDiff = (u.marketRent||0) - (u.actualRent||0);
+        html += `<tr style="${idx%2===1?'background:rgba(255,255,255,0.02)':''}">
+          <td style="padding:7px 12px;border-bottom:1px solid var(--border);font-weight:500">${u.unitNum}</td>
+          <td style="padding:7px 12px;border-bottom:1px solid var(--border);color:var(--text2)">${u.unitType||'—'}</td>
+          <td style="padding:7px 12px;text-align:right;border-bottom:1px solid var(--border)">${fmt(u.actualRent)}</td>
+          <td style="padding:7px 12px;text-align:right;border-bottom:1px solid var(--border);color:${ltlDiff>0?'var(--green)':'var(--text2)'}">
+            ${u.marketRent?fmt(u.marketRent):'—'}${ltlDiff>0?` <span style="font-size:10px;color:var(--green)">↑${fmt(ltlDiff)}</span>`:''}
+          </td>
+          <td style="padding:7px 12px;text-align:right;border-bottom:1px solid var(--border)">
+            <span style="color:${isWithin60?'var(--amber)':'var(--text2)'}">${u.leaseEndDate||'—'}</span>
+            ${isWithin60?' <span style="background:rgba(255,160,64,0.12);color:var(--amber);font-size:10px;padding:1px 5px;border-radius:4px">60d</span>':''}
+          </td>
+        </tr>`;
+      });
+      html += `</tbody></table></div>`;
+    } else {
+      html += `<div style="margin-bottom:20px"></div>`;
+    }
+  }
+
+  // ── Unit Turn Economics ──────────────────────────────────────────────────
+  html += `<div style="font-size:13px;font-weight:600;margin-bottom:10px">Unit turn economics</div>`;
+  html += `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:20px">`;
+  html += `<div style="font-size:11px;color:var(--text3);margin-bottom:14px">Adjust these inputs to model the true cost of turning a unit.</div>`;
+  html += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px">`;
+  const dailyRentDisplay = dailyRentLoss > 0 ? `$${dailyRentLoss.toFixed(0)}/day` : (rr ? '$0/day' : 'upload rent roll');
+  html += `<div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em">Make-ready cost / turn</div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="color:var(--text3)">$</span>
+      <input type="number" id="capex-makeready-input" value="${makeReadyCost}" min="0" step="100"
+        style="width:100px;padding:5px 8px;border:1px solid var(--border2);border-radius:5px;background:var(--bg3);color:var(--text);font-size:13px;font-family:inherit"
+        onchange="setCapexSetting('${propId}','makeReadyCost',+this.value)">
+    </div>
+    <div style="font-size:10px;color:var(--text3);margin-top:4px">Cleaning, paint, carpet, repairs</div>
+  </div>
+  <div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em">Avg days vacant / turn</div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <input type="number" id="capex-daysvacat-input" value="${avgDaysVacant}" min="0" step="1" max="180"
+        style="width:80px;padding:5px 8px;border:1px solid var(--border2);border-radius:5px;background:var(--bg3);color:var(--text);font-size:13px;font-family:inherit"
+        onchange="setCapexSetting('${propId}','avgDaysVacant',+this.value)">
+      <span style="color:var(--text3)">days</span>
+    </div>
+    <div style="font-size:10px;color:var(--text3);margin-top:4px">Time from move-out to next move-in</div>
+  </div>
+  <div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em">Daily rent loss (auto)</div>
+    <div style="font-size:15px;font-weight:600;color:var(--text2);padding-top:5px">${dailyRentDisplay}</div>
+    <div style="font-size:10px;color:var(--text3);margin-top:4px">Avg occupied rent ÷ 30 days</div>
+  </div>`;
+  html += `</div>`;
+
+  // Results
+  const econ = (label, val, sub, color) => `<div style="background:var(--bg3);border-radius:var(--radius);padding:11px 13px">
+    <div style="font-size:10px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">${label}</div>
+    <div style="font-size:17px;font-weight:600;color:${color||'var(--text)'}">${val}</div>
+    ${sub?`<div style="font-size:10px;color:var(--text3);margin-top:3px">${sub}</div>`:''}
+  </div>`;
+  html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding-top:14px;border-top:1px solid var(--border)">`;
+  html += econ('Vacancy cost / turn', rr && avgOccupiedRent>0 ? fmt(vacancyCostPerTurn) : '—', `${avgDaysVacant}d × ${dailyRentDisplay}`, 'var(--amber)');
+  html += econ('Total cost / turn', fmt(totalCostPerTurn), 'make-ready + vacancy loss', totalCostPerTurn > 3000 ? 'var(--red)' : 'var(--amber)');
+  html += econ('Est. annual turns', annualTurnsEst !== null ? annualTurnsEst.toString() : (rr ? '—' : 'upload rent roll'), rr?'from 90-day expiry window':'', 'var(--text)');
+  html += econ('Annual turn drag', annualTurnDrag !== null ? fmt(annualTurnDrag) : '—', turnDragPct !== null ? `${turnDragPct.toFixed(1)}% of annual rent rev` : '', annualTurnDrag > 0 ? 'var(--red)' : 'var(--text3)');
+  html += `</div>`;
+
+  if(annualTurnDrag !== null && annualRentRevenue > 0) {
+    const pct = (annualTurnDrag / annualRentRevenue * 100).toFixed(1);
+    const isHigh = annualTurnDrag > annualRentRevenue * 0.05;
+    html += `<div style="margin-top:12px;padding:9px 12px;background:rgba(255,255,255,0.03);border-radius:var(--radius);font-size:12px;color:var(--text2)">
+      💡 Turn drag is <strong style="color:${isHigh?'var(--red)':'var(--green)'}">${pct}%</strong> of annual rent revenue (${fmt(annualRentRevenue)}).
+      ${isHigh ? 'Consider reducing days-to-fill or make-ready cost to improve net yield.' : 'Turn costs are manageable relative to rent revenue.'}
+    </div>`;
+  }
+  html += `</div>`;
+
+  // ── Capex Detail File — General Ledger ───────────────────────────────────
+  html += `<div style="font-size:13px;font-weight:600;margin:20px 0 10px">General Ledger — capex &amp; turnover detail</div>`;
+  if(!capexDetail) {
+    html += `<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:20px;text-align:center;color:var(--text3);font-size:13px">
+      <div style="font-size:20px;margin-bottom:8px">📂</div>
+      <div style="font-weight:500;color:var(--text2);margin-bottom:5px">No General Ledger uploaded</div>
+      <div style="font-size:12px">Upload an AppFolio <strong>General Ledger</strong> report (filtered to capex &amp; turnover GL accounts) on the <strong>Upload files</strong> tab to see the turnover-vs-capex breakdown here.</div>
+    </div>`;
+  } else if(capexDetail.style === 'general_ledger') {
+    // Date filter
+    const filterMonths = settings.capexFilterMonths !== undefined ? settings.capexFilterMonths : 12;
+    const filterCutoff = (() => {
+      if(filterMonths === 0) return null;
+      const d = new Date(); d.setMonth(d.getMonth() - filterMonths); return d.toISOString().slice(0,10);
+    })();
+    const filteredTxns = filterCutoff
+      ? capexDetail.transactions.filter(t => !t.date || t.date >= filterCutoff)
+      : capexDetail.transactions;
+    const filteredTurnover = filteredTxns.filter(t=>t.categoryType==='turnover').reduce((s,t)=>s+t.amount,0);
+    const filteredCapex    = filteredTxns.filter(t=>t.categoryType==='capex').reduce((s,t)=>s+t.amount,0);
+
+    // Aggregate by account for filtered set
+    const filteredByAcct = {};
+    filteredTxns.forEach(t => {
+      if(!filteredByAcct[t.account]) filteredByAcct[t.account] = { total:0, count:0, categoryType:t.categoryType, accountNum:t.accountNum };
+      filteredByAcct[t.account].total += t.amount;
+      filteredByAcct[t.account].count += 1;
+    });
+
+    // Estimate turns from the highest-count turnover account (proxy = cleaning invoices)
+    // Build filtered byUnit for the selected date window
+    const filteredByUnit = {};
+    filteredTxns.filter(t => t.unit).forEach(t => {
+      if(!filteredByUnit[t.unit]) filteredByUnit[t.unit] = { turnover:0, capex:0, total:0, lastTurnDate:null, txCount:0 };
+      filteredByUnit[t.unit].total   += t.amount;
+      filteredByUnit[t.unit].txCount += 1;
+      if(t.categoryType === 'turnover') {
+        filteredByUnit[t.unit].turnover += t.amount;
+        if(!filteredByUnit[t.unit].lastTurnDate || t.date > filteredByUnit[t.unit].lastTurnDate)
+          filteredByUnit[t.unit].lastTurnDate = t.date;
+      }
+      if(t.categoryType === 'capex') filteredByUnit[t.unit].capex += t.amount;
+    });
+    // Turn count = unique units with any turnover spend (most accurate)
+    const turnedUnitCount = Object.values(filteredByUnit).filter(u => u.turnover > 0).length;
+    const estTurns    = turnedUnitCount > 0 ? turnedUnitCount : null;
+    const estTurnCost = estTurns && filteredTurnover > 0 ? filteredTurnover / estTurns : null;
+
+    const propLabel = capexDetail.propertyName ? capexDetail.propertyName.split(' - ')[0] : (capexDetail.reportTitle || 'General Ledger');
+    const btnStyle = (active) => `font-size:11px;padding:3px 9px;border-radius:4px;cursor:pointer;font-family:inherit;border:1px solid ${active?'var(--blue)':'var(--border2)'};background:${active?'var(--blue-bg)':'var(--bg3)'};color:${active?'var(--blue)':'var(--text2)'}`;
+
+    // Header card
+    html += `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:14px">
+      <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div>
+          <span style="font-size:12px;font-weight:600;color:var(--text2)">${escHtml(propLabel)}</span>
+          ${capexDetail.dateRange ? `<span style="font-size:11px;color:var(--text3);margin-left:8px">${escHtml(capexDetail.dateRange)}</span>` : ''}
+        </div>
+        <div style="display:flex;gap:6px">
+          <button onclick="setCapexSetting('${propId}','capexFilterMonths',12)" style="${btnStyle(filterMonths===12)}">Last 12 mo</button>
+          <button onclick="setCapexSetting('${propId}','capexFilterMonths',0)"  style="${btnStyle(filterMonths===0)}">All time</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr)">
+        <div style="padding:12px 14px;border-right:1px solid var(--border)">
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Unit Turnover (5xxx)</div>
+          <div style="font-size:18px;font-weight:600;color:var(--amber)">${fmt(filteredTurnover)}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">Make-ready · cleaning · repairs</div>
+        </div>
+        <div style="padding:12px 14px;border-right:1px solid var(--border)">
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">True Capex (7xxx)</div>
+          <div style="font-size:18px;font-weight:600;color:var(--blue)">${fmt(filteredCapex)}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">HVAC · appliances · structure</div>
+        </div>
+        <div style="padding:12px 14px;border-right:1px solid var(--border)">
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Units turned</div>
+          <div style="font-size:18px;font-weight:600">${estTurns !== null ? estTurns : '—'}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">${estTurns ? 'unique units w/ turnover spend' : 'no unit-level turnover data'}</div>
+        </div>
+        <div style="padding:12px 14px">
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Avg turnover / turn</div>
+          <div style="font-size:18px;font-weight:600;color:${estTurnCost && estTurnCost>2000?'var(--red)':estTurnCost?'var(--amber)':'var(--text3)'}">${estTurnCost ? fmt(estTurnCost) : '—'}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">${estTurnCost ? 'turnover ÷ est. turns' : ''}</div>
+        </div>
+      </div>
+    </div>`;
+
+    // Helper: render one account group table
+    const renderAcctTable = (title, catType, color) => {
+      const accts = Object.entries(filteredByAcct).filter(([,v])=>v.categoryType===catType).sort((a,b)=>b[1].total-a[1].total);
+      if(!accts.length) return '';
+      const grpTotal = accts.reduce((s,[,v])=>s+v.total,0);
+      let t = `<div style="margin-bottom:14px">
+        <div style="padding:8px 14px;background:var(--bg3);border:1px solid var(--border);border-bottom:none;border-radius:var(--radius-lg) var(--radius-lg) 0 0;display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:12px;font-weight:600;color:${color}">${title}</span>
+          <span style="font-size:12px;font-weight:600">${fmt(grpTotal)}</span>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);overflow:hidden">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr>
+            <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">GL Account</th>
+            <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Total</th>
+            <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">% of Group</th>
+            <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Per Unit/Yr</th>
+            <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)"># Txns</th>
+          </tr></thead><tbody>`;
+      accts.forEach(([acct, info], idx) => {
+        const pct = grpTotal > 0 ? (info.total/grpTotal*100) : 0;
+        t += `<tr style="${idx%2===1?'background:rgba(255,255,255,0.02)':''}">
+          <td style="padding:6px 12px;border-bottom:1px solid var(--border)">${acct}</td>
+          <td style="padding:6px 12px;text-align:right;font-weight:500;border-bottom:1px solid var(--border)">${fmt(info.total)}</td>
+          <td style="padding:6px 12px;text-align:right;color:var(--text3);border-bottom:1px solid var(--border)">${pct.toFixed(1)}%</td>
+          <td style="padding:6px 12px;text-align:right;color:var(--text2);border-bottom:1px solid var(--border)">${numUnits>0?fmt(info.total/numUnits):'—'}</td>
+          <td style="padding:6px 12px;text-align:right;color:var(--text3);border-bottom:1px solid var(--border)">${info.count}</td>
+        </tr>`;
+      });
+      t += `</tbody></table></div></div>`;
+      return t;
+    };
+
+    html += renderAcctTable('Unit Turnover Costs — 5xxx (make-ready, cleaning, painting, flooring)', 'turnover', 'var(--amber)');
+    html += renderAcctTable('Capital Expenditures — 7xxx (HVAC, appliances, roofing, remodel)', 'capex', 'var(--blue)');
+
+    // ── Per-unit breakdown ───────────────────────────────────────────────────
+    const unitEntries = Object.entries(filteredByUnit).sort((a,b) => b[1].total - a[1].total);
+    if(unitEntries.length > 0) {
+      // Cross-reference with rent roll if available
+      const rrUnitMap = {};
+      if(rr && rr.units) rr.units.forEach(u => { rrUnitMap[u.unitNum] = u; });
+      const hasRR = Object.keys(rrUnitMap).length > 0;
+
+      html += `<div style="margin-bottom:14px">
+        <div style="padding:8px 14px;background:var(--bg3);border:1px solid var(--border);border-bottom:none;border-radius:var(--radius-lg) var(--radius-lg) 0 0;display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:12px;font-weight:600;color:var(--text)">Per-unit spend breakdown</span>
+          <span style="font-size:11px;color:var(--text3)">${unitEntries.length} units with spend${hasRR ? ' · rent from rent roll' : ''}</span>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);overflow:hidden">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--bg3)">
+            <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Unit</th>
+            <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Turnover</th>
+            <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Capex</th>
+            <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Total Spent</th>
+            ${hasRR ? '<th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Current Rent</th><th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Mo to Recover</th>' : ''}
+            <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Last Turn</th>
+          </tr></thead><tbody>`;
+
+      unitEntries.forEach(([unitNum, info], idx) => {
+        const rrUnit = rrUnitMap[unitNum];
+        const rent   = rrUnit ? (rrUnit.actualRent || rrUnit.marketRent || 0) : 0;
+        const moToRecover = rent > 0 ? Math.ceil(info.total / rent) : null;
+        const moColor = moToRecover ? (moToRecover > 24 ? 'var(--red)' : moToRecover > 12 ? 'var(--amber)' : 'var(--green)') : 'var(--text3)';
+        html += `<tr style="${idx%2===1?'background:rgba(255,255,255,0.02)':''}">
+          <td style="padding:6px 12px;border-bottom:1px solid var(--border);font-weight:500">${unitNum}</td>
+          <td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border);color:${info.turnover>0?'var(--amber)':'var(--text3)'}">${info.turnover>0?fmt(info.turnover):'—'}</td>
+          <td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border);color:${info.capex>0?'var(--blue)':'var(--text3)'}">${info.capex>0?fmt(info.capex):'—'}</td>
+          <td style="padding:6px 12px;text-align:right;font-weight:500;border-bottom:1px solid var(--border)">${fmt(info.total)}</td>
+          ${hasRR ? `<td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border);color:var(--text2)">${rent>0?fmt(rent):'—'}</td>
+          <td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border);color:${moColor};font-weight:500">${moToRecover!==null?moToRecover+'mo':'—'}</td>` : ''}
+          <td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border);color:var(--text3)">${info.lastTurnDate||'—'}</td>
+        </tr>`;
+      });
+      html += `</tbody></table></div></div>`;
+    }
+
+    // Recent transaction log
+    const recentTxns = [...filteredTxns].sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,50);
+    if(recentTxns.length > 0) {
+      html += `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
+        <div style="padding:9px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text2)">
+          Recent transactions ${filteredTxns.length>50?`(showing 50 of ${filteredTxns.length})`:`(${filteredTxns.length} total)`}
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--bg3)">
+            <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Date</th>
+            <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">GL Account</th>
+            <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Payee</th>
+            <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Description</th>
+            <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Amount</th>
+          </tr></thead><tbody>`;
+      recentTxns.forEach((t, idx) => {
+        const tColor = t.categoryType==='capex'?'var(--blue)':t.categoryType==='turnover'?'var(--amber)':'var(--text3)';
+        html += `<tr style="${idx%2===1?'background:rgba(255,255,255,0.02)':''}">
+          <td style="padding:5px 12px;border-bottom:1px solid var(--border);color:var(--text3);white-space:nowrap">${t.date||'—'}</td>
+          <td style="padding:5px 12px;border-bottom:1px solid var(--border);color:${tColor};max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(t.account)}">${t.account}</td>
+          <td style="padding:5px 12px;border-bottom:1px solid var(--border);color:var(--text2);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(t.payee)||'—'}</td>
+          <td style="padding:5px 12px;border-bottom:1px solid var(--border);color:var(--text3);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(t.description)||'—'}</td>
+          <td style="padding:5px 12px;text-align:right;font-weight:500;border-bottom:1px solid var(--border)">${fmt(t.amount)}</td>
+        </tr>`;
+      });
+      html += `</tbody></table></div>`;
+    }
+  } else {
+    // Generic fallback for older transaction/summary style
+    const entries = Object.entries(capexDetail.byAccount || capexDetail.byCategory || {}).sort((a,b)=>b[1].total-a[1].total);
+    if(entries.length) {
+      html += `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:14px">
+        <div style="padding:9px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text2)">${capexDetail.reportTitle||'Capex Detail'} — ${fmt(capexDetail.totalSpend)}</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--bg3)">
+          <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Category</th>
+          <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Total</th>
+          <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Per Unit</th>
+          <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)"># Items</th>
+        </tr></thead><tbody>`;
+      entries.forEach(([cat,info],idx) => {
+        html += `<tr style="${idx%2===1?'background:rgba(255,255,255,0.02)':''}">
+          <td style="padding:6px 12px;border-bottom:1px solid var(--border)">${cat}</td>
+          <td style="padding:6px 12px;text-align:right;font-weight:500;border-bottom:1px solid var(--border)">${fmt(info.total)}</td>
+          <td style="padding:6px 12px;text-align:right;color:var(--text2);border-bottom:1px solid var(--border)">${numUnits>0?fmt(info.total/numUnits):'—'}</td>
+          <td style="padding:6px 12px;text-align:right;color:var(--text3);border-bottom:1px solid var(--border)">${info.count}</td>
+        </tr>`;
+      });
+      html += `</tbody></table></div>`;
+    }
+  }
+
+  el.innerHTML = html;
+}
+
 function renderNotesTab() {
   const p = properties.find(x=>x.id===currentPropId);
   document.getElementById('notes-prop-label').textContent = `Notes for ${p?p.name:'this property'}`;
@@ -6999,6 +7649,28 @@ function downloadParsedFile(propId, fileKey) {
       aoa.push([u.unit, u.name, u.status, u.amountReceivable, u.aging0_30, u.aging30Plus]);
     });
     aoa.push(['Total', '', '', parsed.totalAR, parsed.aging0_30, parsed.aging30Plus]);
+  } else if(fileKey === 'capex') {
+    sheetName = 'Capex Detail';
+    if(parsed.style === 'general_ledger') {
+      aoa = [['Date', 'GL Account', 'Type', 'Unit', 'Payee', 'Description', 'Amount']];
+      (parsed.transactions || []).sort((a,b)=>(a.date||'').localeCompare(b.date||'')).forEach(t => {
+        aoa.push([t.date||'', t.account, t.categoryType, t.unit||'', t.payee||'', t.description||'', t.amount]);
+      });
+      aoa.push(['', '', '', '', 'Turnover Total', parsed.turnoverTotal||0]);
+      aoa.push(['', '', '', '', 'Capex Total',    parsed.capexTotal||0]);
+      aoa.push(['', '', '', '', 'Grand Total',    parsed.totalSpend||0]);
+    } else if(parsed.style === 'transactions') {
+      aoa = [['Date', 'Category', 'Description', 'Unit', 'Amount']];
+      (parsed.transactions || []).forEach(t => {
+        aoa.push([t.date || '', t.category, t.description || '', t.unit || '', t.amount]);
+      });
+    } else {
+      aoa = [['Category', ...(parsed.months || []), 'Total']];
+      (parsed.lineItems || []).forEach(item => {
+        aoa.push([item.label, ...(item.values || []), item.values ? item.values.reduce((a,b)=>a+b,0) : 0]);
+      });
+    }
+    if(parsed.style !== 'general_ledger' && parsed.totalSpend) aoa.push(['Total', ...Array((aoa[0]||[]).length - 2).fill(''), parsed.totalSpend]);
   } else if(fileKey === 'proforma') {
     sheetName = 'Proforma';
     const prop = properties ? properties.find(p => p.id === propId) : null;
