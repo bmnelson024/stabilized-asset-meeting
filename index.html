@@ -1107,9 +1107,10 @@ function renderUploadTab(p) {
   const stmtLabel = p.system==='buildium' ? 'Income statement' : 'Cash flow statement';
   const monthly = [
     {key:'statement', label:stmtLabel, sub:'Monthly .xlsx export'},
-    {key:'rentroll', label:'Rent roll', sub:'Monthly .xlsx export'},
+    {key:'rentroll', label:'Rent roll', sub:`Monthly .xlsx export${(propData[propId]&&propData[propId].rentRollHistory&&propData[propId].rentRollHistory.length>0)?' · '+propData[propId].rentRollHistory.length+' snapshot'+(propData[propId].rentRollHistory.length!==1?'s':'')+' stored':''}`},
     {key:'delinquency', label:'Delinquency report', sub:'AppFolio "Delinquency As Of" .xlsx'},
     {key:'capex', label:'Capex detail report', sub:'AppFolio transaction-level capex export .xlsx'},
+    {key:'moveInOut', label:'Renewal Summary or Lease History', sub:'AppFolio "Renewal Summary" or "Lease History" .xlsx'},
   ];
   const benchmarks = [
     {key:'budget', label:'Budget', sub:'Annual — re-upload each year'},
@@ -1270,8 +1271,9 @@ function uploadSlot(f, d, propId, type) {
     ? (isSeeded ? `Year ${d[f.key].pfYear} — built in (upload to override)` : (d[f.key+'_filename']||'File loaded'))
     : f.sub;
   const accept = f.key==='proforma' ? '.xlsx,.xls,.xlsm,.csv' : '.xlsx,.xls,.xlsm';
+  const multipleAttr = f.key === 'rentroll' ? ' multiple' : '';
   const slotHtml = `<label class="upload-slot ${hasFile?'has-file':''}" style="display:block">
-    <input type="file" accept="${accept}" onchange="handleUpload(event,'${propId}','${f.key}')">
+    <input type="file" accept="${accept}"${multipleAttr} onchange="handleUpload(event,'${propId}','${f.key}')">
     <div class="upload-slot-icon">${hasFile?'✓':'↑'}</div>
     <div class="upload-slot-label">${f.label}</div>
     <div class="upload-slot-sub">${savedLabel}</div>
@@ -1371,7 +1373,72 @@ async function extractPdfToRows(file) {
   return allRows;
 }
 
+// ── Batch rent roll loader ────────────────────────────────────────────────────
+// Processes multiple rent roll files in sequence, adding each as a history snapshot.
+// The most recently dated file becomes the active rent roll for the rent roll tab.
+function handleRentRollBatch(files, propId) {
+  const p = properties.find(x => x.id === propId);
+  if(!propData[propId]) propData[propId] = {};
+  if(!propData[propId].rentRollHistory) propData[propId].rentRollHistory = [];
+
+  const total = files.length;
+  let processed = 0, errors = 0;
+  // Track the most recently dated snapshot to set as "current" rentroll
+  let latestDate   = (propData[propId].rentroll && propData[propId].rentroll.asOfDate) || '0000-00-00';
+  let latestParsed = null;
+
+  setSaveStatus('loading', `Processing 1 of ${total}…`);
+
+  function processNext(idx) {
+    if(idx >= total) {
+      // Sort history chronologically
+      propData[propId].rentRollHistory.sort((a,b) => (a.asOfDate||'').localeCompare(b.asOfDate||''));
+      // Promote the most recent snapshot to active rent roll
+      if(latestParsed) propData[propId].rentroll = latestParsed;
+      save(propId);
+      renderUploadTab();
+      renderRentRollTab();
+      renderCapexTab();
+      const msg = errors > 0 ? `${processed} loaded, ${errors} skipped` : `${processed} snapshots added`;
+      setSaveStatus('saved', msg);
+      setTimeout(() => setSaveStatus('saved', 'Saved'), 3000);
+      return;
+    }
+    setSaveStatus('loading', `Processing ${idx + 1} of ${total}…`);
+    const file = files[idx];
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        const wb = XLSX.read(e.target.result, {type:'array'});
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const parsed = parseRentRoll(ws, p.system);
+        const snapDate = parsed.asOfDate || new Date().toISOString().slice(0,10);
+        const snapYM   = snapDate.slice(0,7);
+        const existIdx = propData[propId].rentRollHistory.findIndex(h => (h.asOfDate||'').slice(0,7) === snapYM);
+        const snapshot = { asOfDate: snapDate, units: (parsed.units||[]).map(u => ({unitNum:u.unitNum, actualRent:u.actualRent, isVacant:u.isVacant})) };
+        if(existIdx >= 0) propData[propId].rentRollHistory[existIdx] = snapshot;
+        else propData[propId].rentRollHistory.push(snapshot);
+        if(snapDate > latestDate) { latestDate = snapDate; latestParsed = parsed; }
+        processed++;
+      } catch(err) {
+        console.warn('Skipped:', file.name, err.message);
+        errors++;
+      }
+      processNext(idx + 1);
+    };
+    reader.onerror = () => { errors++; processNext(idx + 1); };
+    reader.readAsArrayBuffer(file);
+  }
+
+  processNext(0);
+}
+
 function handleUpload(event, propId, fileKey) {
+  // Rent roll supports multi-select — route to batch handler if >1 file
+  if(fileKey === 'rentroll' && event.target.files.length > 1) {
+    handleRentRollBatch(event.target.files, propId);
+    return;
+  }
   const file = event.target.files[0];
   if(!file) return;
   const isCsvProforma = fileKey==='proforma' && file.name.toLowerCase().endsWith('.csv');
@@ -1460,6 +1527,16 @@ function handleUpload(event, propId, fileKey) {
       } else if(fileKey==='rentroll') {
         const ws = wb.Sheets[wb.SheetNames[0]];
         parsed = parseRentRoll(ws, p.system);
+        // Accumulate history — one snapshot per calendar month, deduped
+        if(!propData[propId]) propData[propId] = {};
+        if(!propData[propId].rentRollHistory) propData[propId].rentRollHistory = [];
+        const snapDate = parsed.asOfDate || new Date().toISOString().slice(0,10);
+        const snapYM   = snapDate.slice(0,7); // YYYY-MM
+        const existIdx = propData[propId].rentRollHistory.findIndex(h => (h.asOfDate||'').slice(0,7) === snapYM);
+        const snapshot = { asOfDate: snapDate, units: (parsed.units||[]).map(u => ({ unitNum: u.unitNum, actualRent: u.actualRent, isVacant: u.isVacant })) };
+        if(existIdx >= 0) propData[propId].rentRollHistory[existIdx] = snapshot;
+        else propData[propId].rentRollHistory.push(snapshot);
+        propData[propId].rentRollHistory.sort((a,b) => (a.asOfDate||'').localeCompare(b.asOfDate||''));
       } else if(fileKey==='acqrentroll') {
         // Store raw workbook data in memory only — don't persist to Supabase
         // (large intermediate data, cleaned up after mapping is applied)
@@ -1513,6 +1590,9 @@ function handleUpload(event, propId, fileKey) {
       } else if(fileKey==='capex') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
         parsed = parseCapexReport(ws0);
+      } else if(fileKey==='moveInOut') {
+        const ws0 = wb.Sheets[wb.SheetNames[0]];
+        parsed = parseMoveInOutReport(ws0);
       } else if(fileKey==='cashbalance') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
         // Auto-detect: Buildium has "Bank Account Balance Breakdown" in cell; AppFolio has "Trial Balance"
@@ -1858,8 +1938,22 @@ function parseBuildium(ws) {
 
 function parseRentRoll(ws, system) {
   const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
-  if(system === 'appfolio') return parseAppfolioRentRoll(data);
-  return parseBuildiumRentRoll(data);
+  // Extract as-of date from metadata rows before the header
+  let asOfDate = null;
+  for(let i = 0; i < Math.min(12, data.length); i++) {
+    const row = data[i];
+    if(!row) continue;
+    const cell = (row[0]||'').toString().trim();
+    // "Exported On: 05/21/2026 03:43 PM"
+    const expMatch = cell.match(/^exported on[:\s]+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+    if(expMatch) { asOfDate = parseRentRollDate(expMatch[1]) || asOfDate; }
+    // "Date Range: May 2025" or "As of: 04/30/2025"
+    const drMatch = cell.match(/^(?:date range|as of)[:\s]+(.+)/i);
+    if(drMatch) { asOfDate = parseRentRollDate(drMatch[1].trim()) || asOfDate; }
+  }
+  const parsed = system === 'appfolio' ? parseAppfolioRentRoll(data) : parseBuildiumRentRoll(data);
+  if(asOfDate) parsed.asOfDate = asOfDate;
+  return parsed;
 }
 
 // ─── DELINQUENCY REPORT PARSER ───────────────────────────────────────────────
@@ -2079,6 +2173,144 @@ function parseCapexReport(ws) {
 
   return { reportTitle, dateRange: dateRange || glDateRange, propertyName,
     style: 'general_ledger', transactions, byAccount, byUnit, turnoverTotal, capexTotal, totalSpend, turnedUnits };
+}
+
+// ─── LEASE HISTORY / RENEWAL SUMMARY PARSER ──────────────────────────────────
+// Handles two AppFolio report formats:
+//   • "Renewal Summary"  — has Previous Rent + Rent + Dollar Difference columns
+//   • "Lease History"    — has Move In, Move Out, Rent per tenant row
+//
+// Returns { reportTitle, dateRange, propertyName, format, leases: [{
+//   unitNum, tenantName, moveInDate, moveOutDate, rent,
+//   preRent,  // Renewal Summary: previous-lease rent (undefined for Lease History)
+//   postRent, // Renewal Summary: new-lease rent (= rent)
+//   rentBump, // Renewal Summary: dollar difference (postRent - preRent)
+//   status    // e.g. "Renewed", "Did Not Renew", "Completed"
+// }] }
+function parseMoveInOutReport(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  if(!data || data.length < 2) throw new Error('File appears empty.');
+
+  // ── Extract metadata ──────────────────────────────────────────────────────
+  let reportTitle = '', dateRange = '', propertyName = '';
+  for(let i = 0; i < Math.min(12, data.length); i++) {
+    const row = data[i];
+    if(!row) continue;
+    const cell = (row[0]||'').toString().trim();
+    if(i === 0 && cell) reportTitle = cell;
+    if(cell.toLowerCase().startsWith('date range:') || cell.toLowerCase().startsWith('lease range:'))
+      dateRange = cell.replace(/^(date|lease) range:\s*/i,'').trim();
+    if(cell.toLowerCase().startsWith('properties:')) propertyName = cell.replace(/^properties:\s*/i,'').trim();
+  }
+
+  // ── Detect format ─────────────────────────────────────────────────────────
+  const titleLC = reportTitle.toLowerCase();
+  const isRenewalSummary = titleLC.includes('renewal');
+  // Lease History is the fallback
+
+  // ── Find header row ───────────────────────────────────────────────────────
+  let headerRow = -1;
+  for(let i = 0; i < Math.min(20, data.length); i++) {
+    const row = data[i];
+    if(!row) continue;
+    const cells = row.map(c => (c||'').toString().trim().toLowerCase());
+    if(cells.some(c => c === 'unit name' || c === 'unit') &&
+       cells.some(c => c.includes('rent') || c.includes('move') || c.includes('lease start'))) {
+      headerRow = i; break;
+    }
+  }
+  if(headerRow < 0)
+    throw new Error(`Could not find header row in "${reportTitle}" file. Expected "Unit Name" and rent/date columns.`);
+
+  const hdr = data[headerRow].map(c => (c||'').toString().trim().toLowerCase());
+
+  const leases = [];
+
+  if(isRenewalSummary) {
+    // ── Renewal Summary columns ───────────────────────────────────────────
+    // Unit Name | Property | Tenant Name | Lease Start | Lease End |
+    // Previous Lease Start | Previous Lease End | Previous Rent | Rent |
+    // Percent Difference | Dollar Difference | Status | Term
+    const unitCol    = hdr.findIndex(c => c === 'unit name' || c === 'unit');
+    const tenantCol  = hdr.findIndex(c => c.includes('tenant') || c.includes('resident'));
+    const lsCol      = hdr.findIndex(c => c === 'lease start');
+    const leCol      = hdr.findIndex(c => c === 'lease end');
+    const prevRentCol = hdr.findIndex(c => c === 'previous rent');
+    const rentCol    = hdr.findIndex(c => c === 'rent');
+    const dollarDiffCol = hdr.findIndex(c => c.includes('dollar difference') || c === 'dollar diff');
+    const statusCol  = hdr.findIndex(c => c === 'status');
+    const termCol    = hdr.findIndex(c => c === 'term');
+
+    for(let i = headerRow + 1; i < data.length; i++) {
+      const row = data[i];
+      if(!row) continue;
+      // Skip rows where only col A has data (month group headers like "Jun 2025", count rows like "5 Offers")
+      const hasOtherData = row.slice(1).some(c => c != null);
+      if(!hasOtherData) continue;
+
+      const rawUnit = unitCol >= 0 && row[unitCol] != null ? row[unitCol].toString().trim() : '';
+      if(!rawUnit) continue;
+      const leaseStart = lsCol >= 0 ? parseRentRollDate(row[lsCol]) : null;
+      if(!leaseStart) continue; // skip group/count rows that slipped through
+
+      const preRent  = prevRentCol >= 0 ? (parseFloat(row[prevRentCol]) || 0) : 0;
+      const postRent = rentCol     >= 0 ? (parseFloat(row[rentCol])     || 0) : 0;
+      const rentBump = dollarDiffCol >= 0 ? (parseFloat(row[dollarDiffCol]) || (postRent - preRent))
+                                          : (postRent - preRent);
+      const status     = statusCol >= 0 && row[statusCol] != null ? row[statusCol].toString().trim() : '';
+      const tenantName = tenantCol >= 0 && row[tenantCol] != null ? row[tenantCol].toString().trim() : '';
+      const leaseEnd   = leCol >= 0 ? parseRentRollDate(row[leCol]) : null;
+
+      // Deduplicate: skip "Did Not Renew / Month To Month" duplicate rows (same unit+leaseStart already added)
+      const alreadyAdded = leases.some(l => l.unitNum === rawUnit && l.moveInDate === leaseStart && l.status !== 'Did Not Renew');
+      if(alreadyAdded && status === 'Did Not Renew') continue;
+      if(alreadyAdded && status === 'Month To Month') continue;
+
+      leases.push({ unitNum: rawUnit, tenantName, moveInDate: leaseStart, moveOutDate: leaseEnd,
+        rent: postRent, preRent, postRent, rentBump, status });
+    }
+  } else {
+    // ── Lease History columns ─────────────────────────────────────────────
+    // Unit Name | Property | Tenant Name | Lease Start | Lease End |
+    // Rent | Status | Renewal | Move In | Move Out
+    const unitCol    = hdr.findIndex(c => c === 'unit name' || c === 'unit');
+    const tenantCol  = hdr.findIndex(c => c.includes('tenant') || c.includes('resident'));
+    const lsCol      = hdr.findIndex(c => c === 'lease start');
+    const leCol      = hdr.findIndex(c => c === 'lease end');
+    const rentCol    = hdr.findIndex(c => c === 'rent');
+    const statusCol  = hdr.findIndex(c => c === 'status');
+    const moveInCol  = hdr.findIndex(c => c === 'move in');
+    const moveOutCol = hdr.findIndex(c => c === 'move out');
+
+    for(let i = headerRow + 1; i < data.length; i++) {
+      const row = data[i];
+      if(!row) continue;
+      // Skip section header rows (single-cell property+unit+tenant string)
+      const hasOtherData = row.slice(1).some(c => c != null);
+      if(!hasOtherData) continue;
+
+      const rawUnit = unitCol >= 0 && row[unitCol] != null ? row[unitCol].toString().trim() : '';
+      if(!rawUnit) continue;
+      const leaseStart = lsCol >= 0 ? parseRentRollDate(row[lsCol]) : null;
+      if(!leaseStart) continue;
+
+      const rent       = rentCol     >= 0 ? (parseFloat(row[rentCol])     || 0) : 0;
+      const tenantName = tenantCol   >= 0 && row[tenantCol] != null ? row[tenantCol].toString().trim() : '';
+      const moveInDate = moveInCol  >= 0 ? parseRentRollDate(row[moveInCol])  : leaseStart;
+      const moveOutDate = moveOutCol >= 0 ? parseRentRollDate(row[moveOutCol]) : null;
+      const leaseEnd   = leCol >= 0 ? parseRentRollDate(row[leCol]) : null;
+      const status     = statusCol >= 0 && row[statusCol] != null ? row[statusCol].toString().trim() : '';
+
+      leases.push({ unitNum: rawUnit, tenantName, moveInDate, moveOutDate: moveOutDate || leaseEnd,
+        rent, preRent: undefined, postRent: undefined, rentBump: undefined, status });
+    }
+  }
+
+  if(leases.length === 0)
+    throw new Error(`No lease records found in "${reportTitle}". Make sure the report includes Unit, Rent, and date columns.`);
+
+  return { reportTitle, dateRange, propertyName,
+    format: isRenewalSummary ? 'renewal_summary' : 'lease_history', leases };
 }
 
 // Parse a date cell from a rent roll into YYYY-MM-DD or null
@@ -6498,6 +6730,23 @@ function setCapexSetting(propId, key, val) {
   renderCapexTab();
 }
 
+// Find the rent a unit was paying in the rent roll snapshot closest to targetDate.
+// direction 'before' → latest snapshot on or before targetDate (pre-turn rent)
+// direction 'after'  → earliest snapshot on or after targetDate (post-turn rent)
+// Skips vacant units so we don't accidentally use $0 as the pre-turn rent.
+function getRentFromHistory(unitNum, targetDate, history, direction) {
+  if(!history || !history.length || !targetDate) return null;
+  const sorted = [...history].sort((a,b) => (a.asOfDate||'').localeCompare(b.asOfDate||''));
+  const candidates = direction === 'before'
+    ? sorted.filter(h => (h.asOfDate||'') <= targetDate).reverse()
+    : sorted.filter(h => (h.asOfDate||'') >= targetDate);
+  for(const snap of candidates) {
+    const u = (snap.units||[]).find(x => x.unitNum === unitNum);
+    if(u && !u.isVacant && (u.actualRent||0) > 0) return { rent: u.actualRent, asOf: snap.asOfDate };
+  }
+  return null;
+}
+
 // ─── CAPEX ANALYSIS TAB ───────────────────────────────────────────────────────
 function renderCapexTab() {
   const el = document.getElementById('tab-capex');
@@ -6508,6 +6757,8 @@ function renderCapexTab() {
   const stmt = d.statement;
   const rr = d.rentroll;
   const capexDetail = d.capex;
+  const moveInOut = d.moveInOut;
+  const rentRollHistory = d.rentRollHistory || [];
   const numUnits = p ? (p.units || 1) : 1;
 
   // Persisted user settings
@@ -6919,6 +7170,149 @@ function renderCapexTab() {
         </tr>`;
       });
       html += `</tbody></table></div></div>`;
+
+      // ── Turn ROI Analysis ──────────────────────────────────────────────────
+      // Priority: rent roll history (≥2 snapshots) → Renewal Summary/Lease History → teaser
+      const hasRRHistory = rentRollHistory.length >= 2;
+      const hasRoiSource = hasRRHistory || !!moveInOut;
+
+      if(!hasRoiSource) {
+        html += `<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
+          <div style="font-size:20px">📈</div>
+          <div>
+            <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:2px">Turn ROI — keep uploading rent rolls</div>
+            <div style="font-size:11px;color:var(--text3)">Upload rent rolls each month and this section will automatically calculate pre-turn vs. post-turn rent, rent bumps, payback periods, and ROI per unit. You currently have <strong>${rentRollHistory.length} snapshot${rentRollHistory.length !== 1 ? 's' : ''}</strong> — need at least 2 to show comparisons. You can also upload a <strong>Renewal Summary</strong> or <strong>Lease History</strong> report as an alternative.</div>
+          </div>
+        </div>`;
+      } else if(unitEntries.length > 0) {
+        const roiRows = [];
+
+        if(hasRRHistory) {
+          // ── Rent roll history approach ───────────────────────────────────
+          // For each unit with GL spend, find rent just before the spend started
+          // and rent just after it ended (from rent roll snapshots).
+          unitEntries.forEach(([unitNum, spend]) => {
+            const unitTxns = filteredTxns.filter(t => t.unit === unitNum);
+            const txnDates = unitTxns.map(t => t.date).filter(Boolean).sort();
+            if(!txnDates.length) return;
+            const firstSpend = txnDates[0];
+            const lastSpend  = txnDates[txnDates.length - 1];
+
+            const preResult  = getRentFromHistory(unitNum, firstSpend, rentRollHistory, 'before');
+            const postResult = getRentFromHistory(unitNum, lastSpend,  rentRollHistory, 'after');
+            // Fall back to current rent roll if no post snapshot yet
+            const rrUnit     = rr && rr.units ? (rr.units.find(u => u.unitNum === unitNum) || null) : null;
+
+            const preRent   = preResult  ? preResult.rent  : 0;
+            const postRent  = postResult ? postResult.rent : (rrUnit && !rrUnit.isVacant ? (rrUnit.actualRent||0) : 0);
+            const rentBump  = postRent - preRent;
+            const annualBump = rentBump * 12;
+            const paybackYrs = annualBump > 0 ? (spend.total / annualBump) : null;
+            const roiPct     = spend.total > 0 && annualBump > 0 ? (annualBump / spend.total * 100) : null;
+            const preLabel   = preResult  ? preResult.asOf.slice(0,7)  : null;
+            const postLabel  = postResult ? postResult.asOf.slice(0,7) : (rrUnit ? 'current' : null);
+            roiRows.push({ unitNum, preRent, postRent, rentBump, annualBump,
+              turnover: spend.turnover, capex: spend.capex, total: spend.total,
+              paybackYrs, roiPct, preLabel, postLabel, status: null });
+          });
+        } else {
+          // ── Renewal Summary / Lease History approach ─────────────────────
+          const mioMap = {};
+          moveInOut.leases.forEach(l => {
+            if(!mioMap[l.unitNum]) mioMap[l.unitNum] = [];
+            mioMap[l.unitNum].push(l);
+          });
+          Object.values(mioMap).forEach(arr => arr.sort((a,b) => (b.moveInDate||'').localeCompare(a.moveInDate||'')));
+          const isRenewal = moveInOut.format === 'renewal_summary';
+
+          unitEntries.forEach(([unitNum, spend]) => {
+            const leases = mioMap[unitNum];
+            if(!leases || leases.length === 0) return;
+            const mostRecent = leases[0];
+            let postRent, preRent, rentBump;
+            if(isRenewal && mostRecent.preRent !== undefined) {
+              postRent = mostRecent.postRent || mostRecent.rent || 0;
+              preRent  = mostRecent.preRent  || 0;
+              rentBump = mostRecent.rentBump !== undefined ? mostRecent.rentBump : (postRent - preRent);
+            } else {
+              const prev = leases[1];
+              postRent = mostRecent.rent || 0;
+              preRent  = prev ? (prev.rent || 0) : 0;
+              rentBump = postRent - preRent;
+            }
+            const annualBump  = rentBump * 12;
+            const paybackYrs  = annualBump > 0 ? (spend.total / annualBump) : null;
+            const roiPct      = spend.total > 0 && annualBump > 0 ? (annualBump / spend.total * 100) : null;
+            roiRows.push({ unitNum, preRent, postRent, rentBump, annualBump,
+              turnover: spend.turnover, capex: spend.capex, total: spend.total,
+              paybackYrs, roiPct, preLabel: null, postLabel: null, status: mostRecent.status });
+          });
+        }
+
+        if(roiRows.length > 0) {
+          roiRows.sort((a,b) => {
+            if(a.roiPct === null && b.roiPct === null) return b.total - a.total;
+            if(a.roiPct === null) return 1;
+            if(b.roiPct === null) return -1;
+            return a.roiPct - b.roiPct;
+          });
+          const withBump   = roiRows.filter(r => r.rentBump > 0);
+          const avgRoi     = withBump.length ? withBump.reduce((s,r) => s+(r.roiPct||0),0)/withBump.length : null;
+          const avgPayback = withBump.length ? withBump.reduce((s,r) => s+(r.paybackYrs||0),0)/withBump.length : null;
+          const sourceLabel = hasRRHistory
+            ? `${rentRollHistory.length} rent roll snapshots · ${rentRollHistory[0].asOfDate.slice(0,7)} → ${rentRollHistory[rentRollHistory.length-1].asOfDate.slice(0,7)}`
+            : `source: ${moveInOut.format === 'renewal_summary' ? 'Renewal Summary' : 'Lease History'}`;
+
+          html += `<div style="margin-bottom:14px">
+            <div style="padding:8px 14px;background:var(--bg3);border:1px solid var(--border);border-bottom:none;border-radius:var(--radius-lg) var(--radius-lg) 0 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+              <span style="font-size:12px;font-weight:600">Turn ROI — pre vs. post-turn rent <span style="font-size:10px;font-weight:400;color:var(--text3);margin-left:6px">${escHtml(sourceLabel)}</span></span>
+              <div style="display:flex;gap:16px">
+                ${avgRoi !== null ? `<span style="font-size:11px;color:var(--text3)">Avg ROI: <strong style="color:${avgRoi>25?'var(--green)':avgRoi>10?'var(--amber)':'var(--red)'}">${avgRoi.toFixed(0)}%/yr</strong></span>` : ''}
+                ${avgPayback !== null ? `<span style="font-size:11px;color:var(--text3)">Avg payback: <strong>${avgPayback.toFixed(1)} yrs</strong></span>` : ''}
+                <span style="font-size:11px;color:var(--text3)">${roiRows.length} of ${unitEntries.length} units matched</span>
+              </div>
+            </div>
+            <div style="background:var(--bg2);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);overflow:hidden">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr style="background:var(--bg3)">
+                <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Unit</th>
+                <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Pre-turn Rent</th>
+                <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Post-turn Rent</th>
+                <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Rent Bump</th>
+                <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Total Spend</th>
+                <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Annual Increase</th>
+                <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Payback</th>
+                <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">ROI %/yr</th>
+              </tr></thead><tbody>`;
+          roiRows.forEach((r, idx) => {
+            const bumpColor  = r.rentBump > 0 ? 'var(--green)' : r.rentBump < 0 ? 'var(--red)' : 'var(--text3)';
+            const roiColor   = r.roiPct !== null ? (r.roiPct > 25 ? 'var(--green)' : r.roiPct > 10 ? 'var(--amber)' : 'var(--red)') : 'var(--text3)';
+            const payLabel   = r.paybackYrs !== null ? r.paybackYrs.toFixed(1) + ' yrs' : (r.rentBump < 0 ? '↓ rent' : r.rentBump === 0 ? 'flat' : '—');
+            const payColor   = r.paybackYrs !== null ? (r.paybackYrs < 4 ? 'var(--green)' : r.paybackYrs < 10 ? 'var(--amber)' : 'var(--red)') : 'var(--red)';
+            const preLabel   = r.preLabel  ? `<span style="font-size:10px;color:var(--text3);display:block">${r.preLabel}</span>`  : '';
+            const postLabel  = r.postLabel ? `<span style="font-size:10px;color:var(--text3);display:block">${r.postLabel}</span>` : '';
+            html += `<tr style="${idx%2===1?'background:rgba(255,255,255,0.02)':''}">
+              <td style="padding:6px 12px;border-bottom:1px solid var(--border);font-weight:500">${r.unitNum}</td>
+              <td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border);color:var(--text2)">${r.preRent > 0 ? fmt(r.preRent) + preLabel : '—'}</td>
+              <td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border);color:var(--text2)">${r.postRent > 0 ? fmt(r.postRent) + postLabel : '—'}</td>
+              <td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border);font-weight:500;color:${bumpColor}">${r.preRent > 0 && r.postRent > 0 ? (r.rentBump >= 0 ? '+' : '') + fmt(r.rentBump) : '—'}</td>
+              <td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border)">${fmt(r.total)}</td>
+              <td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border);color:${r.annualBump > 0 ? 'var(--green)' : 'var(--text3)'}">${r.annualBump > 0 ? '+' + fmt(r.annualBump) + '/yr' : '—'}</td>
+              <td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border);color:${payColor};font-weight:500">${payLabel}</td>
+              <td style="padding:6px 12px;text-align:right;border-bottom:1px solid var(--border);color:${roiColor};font-weight:600">${r.roiPct !== null ? r.roiPct.toFixed(0)+'%' : '—'}</td>
+            </tr>`;
+          });
+          html += `</tbody></table>
+            <div style="padding:8px 14px;font-size:10px;color:var(--text3);border-top:1px solid var(--border)">
+              ${hasRRHistory ? 'Pre-turn rent = last occupied snapshot before first GL transaction on that unit. Post-turn rent = first occupied snapshot after last GL transaction.' : 'ROI = annual rent increase ÷ total spend. Payback = total spend ÷ annual rent increase.'}
+            </div>
+          </div></div>`;
+        } else {
+          html += `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:14px;font-size:12px;color:var(--text3)">
+            ${hasRRHistory ? 'Rent roll history loaded but no units could be matched to GL spend data. Make sure unit numbers match.' : 'Lease history loaded but no units matched GL spend data. Check that unit numbers are in the same format.'}
+          </div>`;
+        }
+      }
     }
 
     // Recent transaction log
@@ -7671,6 +8065,19 @@ function downloadParsedFile(propId, fileKey) {
       });
     }
     if(parsed.style !== 'general_ledger' && parsed.totalSpend) aoa.push(['Total', ...Array((aoa[0]||[]).length - 2).fill(''), parsed.totalSpend]);
+  } else if(fileKey === 'moveInOut') {
+    sheetName = parsed.format === 'renewal_summary' ? 'Renewal Summary' : 'Lease History';
+    if(parsed.format === 'renewal_summary') {
+      aoa = [['Unit', 'Tenant', 'Lease Start', 'Previous Rent', 'New Rent', 'Rent Bump', 'Status']];
+      (parsed.leases || []).sort((a,b) => (a.unitNum||'').localeCompare(b.unitNum||'')).forEach(l => {
+        aoa.push([l.unitNum, l.tenantName||'', l.moveInDate||'', l.preRent||0, l.postRent||l.rent||0, l.rentBump||0, l.status||'']);
+      });
+    } else {
+      aoa = [['Unit', 'Tenant', 'Move In Date', 'Move Out Date', 'Rent', 'Status']];
+      (parsed.leases || []).sort((a,b) => (a.unitNum||'').localeCompare(b.unitNum||'') || (b.moveInDate||'').localeCompare(a.moveInDate||'')).forEach(l => {
+        aoa.push([l.unitNum, l.tenantName||'', l.moveInDate||'', l.moveOutDate||'', l.rent||0, l.status||'']);
+      });
+    }
   } else if(fileKey === 'proforma') {
     sheetName = 'Proforma';
     const prop = properties ? properties.find(p => p.id === propId) : null;
