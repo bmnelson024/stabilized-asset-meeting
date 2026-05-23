@@ -2156,7 +2156,11 @@ function parseCapexReport(ws) {
 
     const payee       = (hdrIdx >= 0 && payeeCol >= 0 && row[payeeCol]) ? row[payeeCol].toString().trim() : '';
     const description = (hdrIdx >= 0 && descCol  >= 0 && row[descCol])  ? row[descCol].toString().trim()  : '';
-    const unit        = (hdrIdx >= 0 && unitCol  >= 0 && row[unitCol])  ? row[unitCol].toString().trim()  : '';
+    // Unit: prefer the dedicated Unit column; fall back to a 3-digit number at the
+    // start of the description (e.g. "309 Turnover labor", "505 Amana dishwasher").
+    const unitFromCol  = (hdrIdx >= 0 && unitCol >= 0 && row[unitCol]) ? row[unitCol].toString().trim() : '';
+    const unitFromDesc = !unitFromCol ? ((/^\s*(\d{3}[A-Za-z]?)\b/.exec(description) || [])[1] || '') : '';
+    const unit         = unitFromCol || unitFromDesc;
 
     // Categorize by account name first (more reliable than number ranges across properties),
     // fall back to GL number range.
