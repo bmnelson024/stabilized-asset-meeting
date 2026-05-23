@@ -1973,10 +1973,13 @@ function normalizePrincipalSign(rows) {
     // (to avoid touching combined "Principal & Interest" summary rows, which are
     //  usually already positive because their interest component dominates)
     const isPrincipalOnly = lc.includes('principal') && !lc.includes('interest');
-    if(isPrincipalOnly && r.total < 0) {
+    // Capital Expenditures also lives in "Other Items" as a negative outflow
+    const isCapexLine = lc === 'capital expenditures' || lc === 'capital expenditure'
+                     || lc.includes('capex');
+    if((isPrincipalOnly || isCapexLine) && r.total < 0) {
       r.values = r.values.map(v => -v);
       r.total  = -r.total;
-      r._principalFlipped = true;
+      r._signFlipped = true;
     }
   });
 }
@@ -4119,14 +4122,13 @@ function renderBenchmarkTab() {
           const lc = r.label.toLowerCase();
           if(lc.includes('interest')) {
             pfAnnual = pfDSAnnual('interest');
-          } else if(lc.includes('principal') || lc.includes('mortgage')) {
+            // Only use the explicit interest row — do NOT fall back to combined total.
+            // Individual rows stay blank if the proforma doesn't split them out.
+          } else if(lc.includes('principal')) {
             pfAnnual = pfDSAnnual('principal');
-          } else if(lc.includes('total') || lc.includes('debt service')) {
-            pfAnnual = (interestAnnual||0) + (principalAnnual||0) || null;
-          }
-          // Fallback: if still no match but proforma has DS rows, use their total
-          // (handles generic "Debt Service" labels that don't split interest/principal)
-          if(pfAnnual === null && pfDSRows.length) {
+            // Same: stay null if proforma has no explicit principal row.
+          } else if(lc.includes('total') || lc === 'debt service') {
+            // Generic "Debt Service" or total row — use the full proforma DS sum
             pfAnnual = pfDSRows.reduce((s, r) => s + r.total, 0) || null;
           }
         }
@@ -4375,8 +4377,22 @@ function renderBenchmarkTab() {
     subtotalCells += `<td style="font-weight:500">${fmt(totalT6)}</td>`;
     subtotalCells += `<td class="${t6VCls}" style="font-weight:500">${fmtVar(t6VarD)}</td>`;
     subtotalCells += `<td class="${t6VCls}" style="font-weight:500">${t6VarPct!==null?t6VarPct.toFixed(1)+'%':'—'}</td>`;
-    // PF — suppressed for debt service
-    if(hasPF) subtotalCells += `<td>—</td><td>—</td><td>—</td>`;
+    // PF — compare T-12 avg to total proforma DS (sum of all PF DS rows, whether split or combined)
+    // Individual interest/principal rows leave PF blank; the total is the right level to compare.
+    if(hasPF) {
+      const totalPfAnnual = pfDSRows.length ? pfDSRows.reduce((s,r) => s + r.total, 0) : null;
+      if(totalPfAnnual) {
+        const pfMonth    = totalPfAnnual / 12;
+        const t12VsPf    = totalT12 - pfMonth;
+        const t12VsPct   = pfMonth ? t12VsPf / Math.abs(pfMonth) * 100 : null;
+        const pfVCls     = varGoodDS(t12VsPf) ? 'val-pos' : 'val-neg';
+        subtotalCells += `<td style="font-weight:500">${fmt(pfMonth)}</td>`;
+        subtotalCells += `<td class="${pfVCls}" style="font-weight:500">${fmtVar(t12VsPf)}</td>`;
+        subtotalCells += `<td class="${pfVCls}" style="font-weight:500">${t12VsPct!==null?t12VsPct.toFixed(1)+'%':'—'}</td>`;
+      } else {
+        subtotalCells += `<td>—</td><td>—</td><td>—</td>`;
+      }
+    }
 
     out += `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}" style="border-top:1px solid var(--border2)">
       <td style="padding-left:28px;color:var(--text2)">Total Debt Service</td>${subtotalCells}
