@@ -6336,9 +6336,13 @@ function renderCashReviewTab() {
   }
 
   // ── Derive Debt Service/month — prefer T-6 actuals from statement ─────────
+  // Use label-matching (same as benchmark tab) because AppFolio statement rows
+  // do NOT carry an isDebtService property — only proforma/budget rows do.
+  const CR_DS_KEYS = ['mortgage interest','mortgage principal','interest expense','principal','loan interest','debt service','loan payment'];
+  const crIsDS = r => { const lc = r.label.toLowerCase(); return CR_DS_KEYS.some(k => lc.includes(k)); };
   let dsMonthly = null, dsSource = '';
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
-    const dsRows = stmt.rows.filter(r => r.isDebtService && !r.isCategory && !r.isTotal && !r.isSubtotal);
+    const dsRows = stmt.rows.filter(r => crIsDS(r) && !r.isCategory && !r.isTotal && !r.isSubtotal);
     if(dsRows.length) {
       const n = Math.min(6, stmt.months.length);
       const t6 = dsRows.reduce((sum, r) => {
@@ -6358,9 +6362,12 @@ function renderCashReviewTab() {
   }
 
   // ── Derive AMF/month — prefer T-6 actuals from statement ─────────────────
+  // Same label-based approach — isAssetMgmt property is not set on statement rows.
+  const CR_AMF_KEYS = ['asset management','asset mgmt'];
+  const crIsAMF = r => { const lc = r.label.toLowerCase(); return CR_AMF_KEYS.some(k => lc.includes(k)); };
   let amfMonthly = null, amfSource = '';
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
-    const amfRows = stmt.rows.filter(r => (r.isAssetMgmt || r.label.toLowerCase().includes('asset management')) && !r.isCategory && !r.isTotal && !r.isSubtotal);
+    const amfRows = stmt.rows.filter(r => crIsAMF(r) && !r.isCategory && !r.isTotal && !r.isSubtotal);
     if(amfRows.length) {
       const n = Math.min(6, stmt.months.length);
       const t6 = amfRows.reduce((sum, r) => {
