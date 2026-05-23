@@ -6335,9 +6335,20 @@ function renderCashReviewTab() {
     else if(pfNoiMonthly !== null) { noiMonthly = pfNoiMonthly; noiSource = 'Proforma'; }
   }
 
-  // ── Derive Debt Service/month ─────────────────────────────────────────────
+  // ── Derive Debt Service/month — prefer T-6 actuals from statement ─────────
   let dsMonthly = null, dsSource = '';
-  if(bg) {
+  if(stmt && stmt.rows && stmt.months && stmt.months.length) {
+    const dsRows = stmt.rows.filter(r => r.isDebtService && !r.isCategory && !r.isTotal && !r.isSubtotal);
+    if(dsRows.length) {
+      const n = Math.min(6, stmt.months.length);
+      const t6 = dsRows.reduce((sum, r) => {
+        const slice = r.values.slice(-n);
+        return sum + slice.reduce((a,b) => a+b, 0) / n;
+      }, 0);
+      if(t6) { dsMonthly = Math.abs(t6); dsSource = `T${n} Avg`; }
+    }
+  }
+  if(dsMonthly === null && bg) {
     const bgDS = bg.rows.filter(r => r.isDebtService && r.total);
     if(bgDS.length) { dsMonthly = bgDS.reduce((s,r) => s + r.total, 0) / 12; dsSource = 'Budget'; }
   }
@@ -6346,9 +6357,20 @@ function renderCashReviewTab() {
     if(pfDS.length) { dsMonthly = pfDS.reduce((s,r) => s + r.total, 0) / 12; dsSource = 'Proforma'; }
   }
 
-  // ── Derive AMF/month ──────────────────────────────────────────────────────
+  // ── Derive AMF/month — prefer T-6 actuals from statement ─────────────────
   let amfMonthly = null, amfSource = '';
-  if(bg) {
+  if(stmt && stmt.rows && stmt.months && stmt.months.length) {
+    const amfRows = stmt.rows.filter(r => (r.isAssetMgmt || r.label.toLowerCase().includes('asset management')) && !r.isCategory && !r.isTotal && !r.isSubtotal);
+    if(amfRows.length) {
+      const n = Math.min(6, stmt.months.length);
+      const t6 = amfRows.reduce((sum, r) => {
+        const slice = r.values.slice(-n);
+        return sum + slice.reduce((a,b) => a+b, 0) / n;
+      }, 0);
+      if(t6) { amfMonthly = Math.abs(t6); amfSource = `T${n} Avg`; }
+    }
+  }
+  if(amfMonthly === null && bg) {
     const bgAMF = bg.rows.filter(r => r.isAssetMgmt && r.total);
     if(bgAMF.length) { amfMonthly = bgAMF.reduce((s,r) => s + r.total, 0) / 12; amfSource = 'Budget'; }
   }
@@ -6405,9 +6427,9 @@ function renderCashReviewTab() {
 
   // ── Alerts ────────────────────────────────────────────────────────────────
   const warnings = [];
-  if(!noiMonthly) warnings.push('No budget or proforma NOI — assumed $0.');
-  if(!dsMonthly)  warnings.push('No debt service in proforma or budget — assumed $0.');
-  if(!amfMonthly) warnings.push('No AMF in proforma or budget — assumed $0.');
+  if(!noiMonthly) warnings.push('No NOI data available — assumed $0.');
+  if(!dsMonthly)  warnings.push('No debt service data available — assumed $0.');
+  if(!amfMonthly) warnings.push('No AMF data available — assumed $0.');
 
   const minProjected = Math.min(...projection.map(x => x.cash));
   const maxProjected = Math.max(...projection.map(x => x.cash));
