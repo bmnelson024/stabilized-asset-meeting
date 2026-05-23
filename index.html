@@ -1727,21 +1727,43 @@ function parseTrialBalance(ws) {
   }
   if(headerRow < 0) throw new Error('Could not find column headers in Trial Balance report.');
 
-  // Find the 1150 row and grab its ending balance
+  // Find the operating account row — try 1150, then 1050, then any row whose name contains "operating account"
   let cash = null;
-  for(let i = headerRow + 1; i < data.length; i++) {
+  let matchedGL = null;
+  const OPERATING_GL_PREFIXES = ['1150', '1050'];
+
+  // Pass 1: known GL code prefixes
+  for(let i = headerRow + 1; i < data.length && cash === null; i++) {
     const row = data[i];
     if(!row) continue;
     const gl = row[glCol];
-    if(gl && gl.toString().trim().startsWith('1150')) {
+    if(!gl) continue;
+    const glStr = gl.toString().trim();
+    if(OPERATING_GL_PREFIXES.some(prefix => glStr.startsWith(prefix))) {
       const raw = row[endCol];
       cash = (raw !== null && raw !== undefined) ? (parseFloat(raw) || 0) : 0;
-      break;
+      matchedGL = glStr.split(/[\s:–-]/)[0]; // just the numeric portion
     }
   }
-  if(cash === null) throw new Error('GL Account 1150 (Operating Account) not found in this Trial Balance.');
 
-  return { cash, dateRange, system: 'trial_balance' };
+  // Pass 2: fallback — account name contains "operating account"
+  if(cash === null) {
+    for(let i = headerRow + 1; i < data.length; i++) {
+      const row = data[i];
+      if(!row) continue;
+      const gl = row[glCol];
+      if(gl && gl.toString().toLowerCase().includes('operating account')) {
+        const raw = row[endCol];
+        cash = (raw !== null && raw !== undefined) ? (parseFloat(raw) || 0) : 0;
+        matchedGL = gl.toString().trim().split(/[\s:–-]/)[0];
+        break;
+      }
+    }
+  }
+
+  if(cash === null) throw new Error('Operating Account GL (1150 or 1050) not found in this Trial Balance. Check that this is a "Trial Balance by Property" export.');
+
+  return { cash, dateRange, matchedGL: matchedGL || '1150', system: 'trial_balance' };
 }
 
 // Returns: { months:['Apr 2025',...], rows:[{label, level, isCategory, isSubtotal, isTotal, isNOI, values:[...12 nums], total}], propertyName, period }
@@ -4143,7 +4165,7 @@ function renderBenchmarkTab() {
     } else {
       const cashColor = cb.cash >= 0 ? 'var(--green)' : 'var(--red)';
       const isBuildium = cb.system === 'buildium_cash_balance';
-      const sourceLabel = isBuildium ? 'Posted balance · Bank Account Balance Breakdown' : 'GL 1150 · Operating Account · Trial Balance';
+      const sourceLabel = isBuildium ? 'Posted balance · Bank Account Balance Breakdown' : `GL ${cb.matchedGL || '1150'} · Operating Account · Trial Balance`;
       const pendingHtml = (isBuildium && cb.pending) ? `<div style="font-size:11px;color:var(--text3);margin-top:2px">+ ${fmt(cb.pending)} pending (not included)</div>` : '';
       cashTile = `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:16px">
         <div>
