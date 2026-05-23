@@ -2056,53 +2056,97 @@ function parseCapexReport(ws) {
     if(cell.toLowerCase().startsWith('properties:')) propertyName = cell.replace(/^properties:\s*/i,'').trim();
   }
 
+  // ── Find header row dynamically ───────────────────────────────────────────
+  // AppFolio GL exports can have different column orders depending on the report.
+  // Look for a row containing "GL Account" and "Date" as header labels.
+  let hdrIdx = -1, unitCol = -1, glCol = -1, dateCol = -1;
+  let debitCol = -1, creditCol = -1, payeeCol = -1, descCol = -1;
+  for(let i = 0; i < Math.min(20, data.length); i++) {
+    const row = data[i];
+    if(!row) continue;
+    const cells = row.map(c => (c !== null && c !== undefined) ? c.toString().trim().toLowerCase() : '');
+    const glIdx   = cells.findIndex(c => c === 'gl account');
+    const dateIdx = cells.findIndex(c => c === 'date');
+    if(glIdx >= 0 && dateIdx >= 0) {
+      hdrIdx    = i;
+      unitCol   = cells.findIndex(c => c === 'unit');
+      glCol     = glIdx;
+      dateCol   = dateIdx;
+      debitCol  = cells.findIndex(c => c === 'debit');
+      creditCol = cells.findIndex(c => c === 'credit');
+      payeeCol  = cells.findIndex(c => c.includes('payee') || c.includes('payer'));
+      descCol   = cells.findIndex(c => c === 'description');
+      break;
+    }
+  }
+
   // ── AppFolio General Ledger detection ─────────────────────────────────────
-  // Account section headers look like "NNNN - Account Name" in col A with no date in col B.
-  // Transaction rows have an Excel serial date in col B and a debit amount in col F (index 5).
+  // Section headers: "NNNN - Account Name" in col A, no value in the GL Account column.
+  // Transaction rows: col A = property name, GL Account col = current account, Date col = date.
   const GL_ACCT_RE = /^(\d{4,5})\s*[-–]\s*(.+)/;
   const SKIP_RE    = /^(starting balance|net change|ending balance)/i;
+  // Skip bank/cash accounts entirely — they are ledger pass-throughs, not spend
+  const EXCLUDE_RE = /operating account|bank account|cash account/i;
 
   const transactions = [];
-  let currentAccount = null, currentAccountNum = null;
+  let currentAccount = null, currentAccountNum = null, skipSection = false;
 
-  for(let i = 0; i < data.length; i++) {
+  const startRow = hdrIdx >= 0 ? hdrIdx + 1 : 0;
+  for(let i = startRow; i < data.length; i++) {
     const row = data[i];
     if(!row) continue;
 
     const colA = (row[0] !== null && row[0] !== undefined) ? row[0].toString().trim() : '';
-    const colB = row[1];   // date (Excel serial or null)
-    const debit  = parseFloat(row[5]) || 0;   // col F
-    const credit = parseFloat(row[6]) || 0;   // col G
-
-    // GL account section header: matches "NNNN - Name", no date in col B
-    const acctMatch = GL_ACCT_RE.exec(colA);
-    if(acctMatch && (colB === null || colB === undefined || colB === '')) {
-      currentAccountNum = acctMatch[1];
-      currentAccount    = colA;  // e.g., "5212 - Junk Removal"
-      continue;
-    }
-    if(!currentAccount) continue;
 
     // Skip totals / meta rows
     if(SKIP_RE.test(colA)) continue;
-    if(colA === '' && (colB === null || colB === undefined)) continue;
 
-    // Transaction row: col B must be a parseable date
-    const txDate = parseRentRollDate(colB);
+    // GL account section header: col A matches "NNNN - Name" and the GL col has no value
+    const acctMatch = GL_ACCT_RE.exec(colA);
+    const glCellVal = hdrIdx >= 0 ? row[glCol] : row[2];
+    if(acctMatch && (glCellVal === null || glCellVal === undefined)) {
+      currentAccountNum = acctMatch[1];
+      currentAccount    = colA;
+      skipSection       = EXCLUDE_RE.test(colA);
+      continue;
+    }
+    if(!currentAccount || skipSection) continue;
+
+    // Empty row
+    if(colA === '' && row[1] === null && row[2] === null) continue;
+
+    // Transaction row: extract date from the header-mapped column (or col D as fallback)
+    const rawDate = hdrIdx >= 0 ? row[dateCol] : row[3];
+    const txDate  = parseRentRollDate(rawDate);
     if(!txDate) continue;
 
-    const amount = debit - credit;  // net; credits are refunds/reversals
+    const debit  = parseFloat(hdrIdx >= 0 ? row[debitCol]  : row[4]) || 0;
+    const credit = parseFloat(hdrIdx >= 0 ? row[creditCol] : row[5]) || 0;
+    const amount = debit - credit;
     if(amount === 0) continue;
 
-    const payee       = (row[2] !== null && row[2] !== undefined) ? row[2].toString().trim() : '';
-    const description = (row[8] !== null && row[8] !== undefined) ? row[8].toString().trim() : '';
-    const unit        = (row[9] !== null && row[9] !== undefined) ? row[9].toString().trim() : '';
+    const payee       = (hdrIdx >= 0 && payeeCol >= 0 && row[payeeCol]) ? row[payeeCol].toString().trim() : '';
+    const description = (hdrIdx >= 0 && descCol  >= 0 && row[descCol])  ? row[descCol].toString().trim()  : '';
+    const unit        = (hdrIdx >= 0 && unitCol  >= 0 && row[unitCol])  ? row[unitCol].toString().trim()  : '';
 
-    // Categorize by GL account number range
-    const acctNum = parseInt(currentAccountNum, 10);
-    const categoryType = acctNum >= 7000 ? 'capex'    // true capital expenditures
-                       : acctNum >= 5000 ? 'turnover'  // unit turnover / make-ready
-                       : 'other';
+    // Categorize by account name first (more reliable than number ranges across properties),
+    // fall back to GL number range.
+    const acctName = currentAccount.toLowerCase();
+    const acctNum  = parseInt(currentAccountNum, 10);
+    let categoryType;
+    if(acctName.includes('capital expenditure') || acctName.includes('capex') ||
+       acctName.includes('landscaping') || acctName.includes('landscape') ||
+       acctName.includes('renovation') || acctName.includes('improvement')) {
+      categoryType = 'capex';
+    } else if(acctName.includes('turnover') || acctName.includes('turn over') ||
+              acctName.includes('make ready') || acctName.includes('make-ready')) {
+      categoryType = 'turnover';
+    } else {
+      // Number-range fallback (works for standard AppFolio chart of accounts)
+      categoryType = acctNum >= 7000 ? 'capex'
+                   : acctNum >= 5000 ? 'turnover'
+                   : 'other';
+    }
 
     transactions.push({ date: txDate, account: currentAccount, accountNum: currentAccountNum,
       categoryType, payee, description, unit, amount });
