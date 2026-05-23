@@ -1840,6 +1840,13 @@ function parseAppfolio(ws) {
     rows.push({label:label.trim(), level, isCategory, isSubtotal, isTotal, isNOI, values, total,
                isTotalIncome, isTotalExpense, isNetIncome});
   }
+
+  // Post-process: some PMs (e.g. AppFolio / Arrow) place Mortgage Principal in the
+  // "Other Items" cash-reconciliation section and report it as a negative number
+  // (loan balance reduction). For this tool it must be a positive debt-service expense.
+  // Only flip when the total is negative — avoids touching properties that report it correctly.
+  normalizePrincipalSign(rows);
+
   return {months, rows, propertyName, period, system:'appfolio'};
 }
 
@@ -1949,7 +1956,29 @@ function parseBuildium(ws) {
     }
   }
 
+  normalizePrincipalSign(rows);
+
   return {months, rows, propertyName, period:'', system:'buildium'};
+}
+
+// ─── SHARED: normalize mortgage principal sign ────────────────────────────────
+// Some PMs (AppFolio/Arrow) place Mortgage Principal in the balance-sheet
+// reconciliation section and report it as a negative number. For this tool it
+// must be positive (it IS a cash outflow). Only flips when total < 0 so
+// properties that already report it correctly are unaffected.
+function normalizePrincipalSign(rows) {
+  rows.forEach(r => {
+    const lc = r.label.toLowerCase();
+    // Match "principal" in the label but exclude anything that also says "interest"
+    // (to avoid touching combined "Principal & Interest" summary rows, which are
+    //  usually already positive because their interest component dominates)
+    const isPrincipalOnly = lc.includes('principal') && !lc.includes('interest');
+    if(isPrincipalOnly && r.total < 0) {
+      r.values = r.values.map(v => -v);
+      r.total  = -r.total;
+      r._principalFlipped = true;
+    }
+  });
 }
 
 function parseRentRoll(ws, system) {
@@ -4113,24 +4142,51 @@ function renderBenchmarkTab() {
                || null;
     const bgAnnual = bgRow ? bgRow.total : null;
 
+    // Rows that use T-6 actuals as their benchmark (no budget/PF comparison)
+    const isDS  = !!(r.isDebtService);
+    const isAMF = !!(isAssetMgmtFee(r));
+    const useT6Benchmark = isDS || isAMF;
+
+    // T-6 avg from statement actuals (last 6 months of the row's values array)
+    const t6Avg = r.values.length >= 6
+      ? r.values.slice(-6).reduce((a,b)=>a+b,0) / 6
+      : r.values.reduce((a,b)=>a+b,0) / r.values.length;
+
     let cells = `<td>${r._synthetic ? fmt(actual)+' <span style="font-size:10px;color:var(--text3)">(est)</span>' : fmt(actual)}</td>`;
-    // Budget columns — compare current month actual vs budget/mo
+    // Budget columns — suppressed for DS and AMF (use T-6 actuals instead)
     if(hasBG) {
-      const bgMonth = bgAnnual !== null ? bgAnnual/12 : null;
-      const varD = bgMonth !== null ? actual - bgMonth : null;
-      const varPct = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
-      const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
-      cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
+      if(useT6Benchmark) {
+        cells += `<td>—</td><td>—</td><td>—</td>`;
+      } else {
+        const bgMonth = bgAnnual !== null ? bgAnnual/12 : null;
+        const varD = bgMonth !== null ? actual - bgMonth : null;
+        const varPct = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
+        const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
+        cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
+      }
     }
-    // T12 avg — plain value, no variance coloring
+    // T-12 avg — plain value
     cells += `<td>${!r._synthetic?fmt(t12Avg):'—'}</td>`;
-    // Proforma columns — compare T12 avg vs proforma/mo
+    // T-6 avg + variance — shown with coloring for DS and AMF rows; plain for all others
+    if(useT6Benchmark && !r._synthetic) {
+      const t6VarD   = actual - t6Avg;
+      const t6VarPct = t6Avg ? t6VarD / Math.abs(t6Avg) * 100 : null;
+      const vCls     = varGood(t6VarD) ? 'val-pos' : 'val-neg';
+      cells += `<td>${fmt(t6Avg)}</td><td class="${vCls}">${fmtVar(t6VarD)}</td><td class="${vCls}">${t6VarPct!==null?t6VarPct.toFixed(1)+'%':'—'}</td>`;
+    } else {
+      cells += `<td>${!r._synthetic?fmt(t6Avg):'—'}</td><td>—</td><td>—</td>`;
+    }
+    // Proforma columns — suppressed for DS and AMF (use T-6 actuals instead)
     if(hasPF) {
-      const pfMonth = pfAnnual !== null ? pfAnnual/12 : null;
-      const t12VsProforma = (!r._synthetic && pfMonth !== null) ? t12Avg - pfMonth : null;
-      const t12VsPct = (t12VsProforma !== null && pfMonth) ? t12VsProforma/Math.abs(pfMonth)*100 : null;
-      const vCls = t12VsProforma !== null ? (varGood(t12VsProforma)?'val-pos':'val-neg') : '';
-      cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td><td class="${vCls}">${t12VsProforma!==null?fmtVar(t12VsProforma):'—'}</td><td class="${vCls}">${t12VsPct!==null?t12VsPct.toFixed(1)+'%':'—'}</td>`;
+      if(useT6Benchmark) {
+        cells += `<td>—</td><td>—</td><td>—</td>`;
+      } else {
+        const pfMonth = pfAnnual !== null ? pfAnnual/12 : null;
+        const t12VsProforma = (!r._synthetic && pfMonth !== null) ? t12Avg - pfMonth : null;
+        const t12VsPct = (t12VsProforma !== null && pfMonth) ? t12VsProforma/Math.abs(pfMonth)*100 : null;
+        const vCls = t12VsProforma !== null ? (varGood(t12VsProforma)?'val-pos':'val-neg') : '';
+        cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td><td class="${vCls}">${t12VsProforma!==null?fmtVar(t12VsProforma):'—'}</td><td class="${vCls}">${t12VsPct!==null?t12VsPct.toFixed(1)+'%':'—'}</td>`;
+      }
     }
     return cells;
   }
@@ -4138,7 +4194,7 @@ function renderBenchmarkTab() {
   // Build header columns
   let cols = ['Account', `Actual (${selMonth})`];
   if(hasBG) cols.push('Budget / mo', 'Bud Var $', 'Bud Var %');
-  cols.push('T12 avg');
+  cols.push('T12 avg', 'T-6 avg', 'T-6 Var $', 'T-6 Var %');
   if(hasPF) cols.push(pfYearLabel+' / mo', 'PF Var $', 'PF Var %');
 
   // ── Build section HTML ─────────────────────────────────────────────────────
@@ -4269,9 +4325,13 @@ function renderBenchmarkTab() {
     // Aggregate all capex lines into a single summary row
     const actual = rows.reduce((s,r) => s + r.values[monthIdx], 0);
     const t12Avg = rows.reduce((s,r) => s + r.values.reduce((a,b)=>a+b,0)/r.values.length, 0);
+    const t6Avg  = rows.reduce((s,r) => {
+      const slice = r.values.length >= 6 ? r.values.slice(-6) : r.values;
+      return s + slice.reduce((a,b)=>a+b,0)/slice.length;
+    }, 0);
     let cells = `<td>${fmt(actual)}</td>`;
     if(hasBG) cells += `<td>—</td><td>—</td><td>—</td>`;
-    cells += `<td>${fmt(t12Avg)}</td>`;
+    cells += `<td>${fmt(t12Avg)}</td><td>${fmt(t6Avg)}</td><td>—</td><td>—</td>`;
     if(hasPF) cells += `<td>—</td><td>—</td><td>—</td>`;
     return `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
       <td>Capital Expenditures</td>${cells}
@@ -4290,58 +4350,29 @@ function renderBenchmarkTab() {
 
     // Sum actual for selected month
     const totalActual = rows.reduce((s,r) => s + r.values[monthIdx], 0);
-    // Sum T12 avg
+    // Sum T-12 avg
     const totalT12 = rows.reduce((s,r) => s + r.values.reduce((a,b)=>a+b,0)/r.values.length, 0);
-
-    // Sum budget
-    let totalBgAnnual = null;
-    if(hasBG) {
-      let allFound = true;
-      let bgSum = 0;
-      rows.forEach(r => {
-        const bgRow = bgMap[r.label.toLowerCase()] || null;
-        if(bgRow && bgRow.total) bgSum += bgRow.total;
-        else allFound = false;
-      });
-      // Fallback: use net income derived from budget if individual rows not found
-      if(!allFound) {
-        const bgNOI = bg.rows.find(x=>x.isNOI);
-        const bgNet = bg.rows.find(x=>x.isNetIncome);
-        if(bgNOI && bgNet) totalBgAnnual = bgNOI.total - bgNet.total;
-        else if(bgSum) totalBgAnnual = bgSum;
-      } else {
-        totalBgAnnual = bgSum || null;
-      }
-    }
-
-    // Sum proforma debt service
-    let totalPfAnnual = null;
-    if(hasPF) {
-      const innerPfDSRows = pf.rows.filter(x=>x.isDebtService);
-      if(innerPfDSRows.length) {
-        totalPfAnnual = innerPfDSRows.reduce((s,r)=>s+r.total, 0);
-      }
-      // totalPfAnnual remains null if no DS rows found in proforma
-    }
+    // Sum T-6 avg from statement actuals (no estimates — this is the point)
+    const totalT6 = rows.reduce((s,r) => {
+      const slice = r.values.length >= 6 ? r.values.slice(-6) : r.values;
+      return s + slice.reduce((a,b)=>a+b,0)/slice.length;
+    }, 0);
 
     // Build subtotal cells (debt service is expense — lower is better)
     const varGoodDS = v => v <= 0;
     let subtotalCells = `<td style="font-weight:500">${fmt(totalActual)}</td>`;
-    if(hasBG) {
-      const bgMonth = totalBgAnnual !== null ? totalBgAnnual/12 : null;
-      const varD = bgMonth !== null ? totalActual - bgMonth : null;
-      const varPct = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
-      const vCls = varD !== null ? (varGoodDS(varD)?'val-pos':'val-neg') : '';
-      subtotalCells += `<td style="font-weight:500">${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}" style="font-weight:500">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}" style="font-weight:500">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
-    }
+    // Budget — suppressed for debt service
+    if(hasBG) subtotalCells += `<td>—</td><td>—</td><td>—</td>`;
     subtotalCells += `<td style="font-weight:500">${fmt(totalT12)}</td>`;
-    if(hasPF) {
-      const pfMonth = totalPfAnnual !== null ? totalPfAnnual/12 : null;
-      const t12VsPf = (pfMonth !== null) ? totalT12 - pfMonth : null;
-      const t12VsPct = (t12VsPf !== null && pfMonth) ? t12VsPf/Math.abs(pfMonth)*100 : null;
-      const vCls = t12VsPf !== null ? (varGoodDS(t12VsPf)?'val-pos':'val-neg') : '';
-      subtotalCells += `<td style="font-weight:500">${pfMonth!==null?fmt(pfMonth):'—'}</td><td class="${vCls}" style="font-weight:500">${t12VsPf!==null?fmtVar(t12VsPf):'—'}</td><td class="${vCls}" style="font-weight:500">${t12VsPct!==null?t12VsPct.toFixed(1)+'%':'—'}</td>`;
-    }
+    // T-6 avg + variance
+    const t6VarD   = totalActual - totalT6;
+    const t6VarPct = totalT6 ? t6VarD / Math.abs(totalT6) * 100 : null;
+    const t6VCls   = varGoodDS(t6VarD) ? 'val-pos' : 'val-neg';
+    subtotalCells += `<td style="font-weight:500">${fmt(totalT6)}</td>`;
+    subtotalCells += `<td class="${t6VCls}" style="font-weight:500">${fmtVar(t6VarD)}</td>`;
+    subtotalCells += `<td class="${t6VCls}" style="font-weight:500">${t6VarPct!==null?t6VarPct.toFixed(1)+'%':'—'}</td>`;
+    // PF — suppressed for debt service
+    if(hasPF) subtotalCells += `<td>—</td><td>—</td><td>—</td>`;
 
     out += `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}" style="border-top:1px solid var(--border2)">
       <td style="padding-left:28px;color:var(--text2)">Total Debt Service</td>${subtotalCells}
@@ -4402,6 +4433,14 @@ function renderBenchmarkTab() {
     const isExp = !item.isIncome;
     const vgLI = v => isExp ? v <= 0 : v >= 0;
 
+    const stmtLabelsLI = getMappedLabels(item.group);
+    const t6AvgLI = stmtLabelsLI.reduce((s, lbl) => {
+      const r = stmtLookup[lbl];
+      if(!r) return s;
+      const slice = r.values.length >= 6 ? r.values.slice(-6) : r.values;
+      return s + slice.reduce((a,b)=>a+b,0)/slice.length;
+    }, 0);
+
     let cells = `<td>${fmt(actual)}</td>`;
     if(hasBG) {
       const bgMonth = bgAnnualLI !== null ? bgAnnualLI/12 : null;
@@ -4411,6 +4450,8 @@ function renderBenchmarkTab() {
       cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
     }
     cells += `<td>${fmt(t12Avg)}</td>`;
+    // T-6 avg (non-DS mapped rows — show value, suppress variance)
+    cells += `<td>${fmt(t6AvgLI)}</td><td>—</td><td>—</td>`;
     if(hasPF) {
       const pfMonth = pfAnnualLI !== null ? pfAnnualLI/12 : null;
       const t12VsPf = pfMonth !== null ? t12Avg - pfMonth : null;
