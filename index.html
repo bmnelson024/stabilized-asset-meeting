@@ -1633,7 +1633,7 @@ function handleUpload(event, propId, fileKey) {
       renderRentProgressionTab();
       renderCapexTab();
       renderPortfolio();
-      if(pd2.proforma && pd2.statement) {
+      if(propData[propId] && propData[propId].proforma && propData[propId].statement) {
         renderMappingEditor(propId);
       }
     } catch(err) {
