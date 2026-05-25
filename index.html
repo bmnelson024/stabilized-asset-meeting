@@ -2866,6 +2866,7 @@ const PF_LINE_ITEMS = [
     pfKeys:   ['asset management','asset mgmt'],
     stmtKeys: ['asset management','asset mgmt'],
     isIncome: false,
+    isAssetMgmt: true,  // shown below NOI, never in operating expense section
   },
   {
     group: 'mgmt_fee',
@@ -4401,12 +4402,23 @@ function renderBenchmarkTab() {
   }
   const effectiveDebtSubs = debtSubs.length ? debtSubs : syntheticDebtSubs;
 
+  // Detect if proforma places AMF inside operating expenses (common in templates).
+  // If so, the proforma's isTotalExpense is overstated and isNOI is understated by that amount.
+  // We strip AMF out of both figures so the benchmark rows compare apples-to-apples.
+  const _pfAmfRow = hasPF ? pf.rows.find(r => {
+    const lc = r.label.toLowerCase();
+    return lc.includes('asset management') || lc.includes('asset mgmt');
+  }) : null;
+  const pfAmfInOpex  = !!(_pfAmfRow && _pfAmfRow.isExpenseLine);
+  const pfAmfAnnual  = pfAmfInOpex ? (_pfAmfRow.total || 0) : 0;
+
   // Helper: build the data cells for one row
   function rowCells(r, mi) {
     const actual = r.values[mi];
-    const t12Slice = r.values.slice(-12);
-    const t12Avg = t12Slice.reduce((a,b)=>a+b,0) / (t12Slice.length || 1);
-    const t12Var = actual - t12Avg;
+    // All rolling windows anchor on mi (the selected month), not the end of the array
+    const t12Slice = r.values.slice(Math.max(0, mi - 11), mi + 1);
+    const t12Avg   = t12Slice.reduce((a,b)=>a+b,0) / (t12Slice.length || 1);
+    const t12Var   = actual - t12Avg;
     const isExp = r.isTotalExpense || r.isDebtService || r.isExpenseLine || r.isAssetMgmt || isAssetMgmtFee(r) || isCapex(r);
     const varGood = v => isExp ? v <= 0 : v >= 0;
 
@@ -4458,6 +4470,14 @@ function renderBenchmarkTab() {
         }
       }
       if(pfRow && pfAnnual === null) pfAnnual = pfRow.total || null;
+
+      // If proforma had AMF in operating expenses, adjust the affected summary rows:
+      // - Total Operating Expense: subtract AMF so it matches actuals (which exclude AMF)
+      // - NOI: add AMF back so it matches actuals (which are NOI before AMF)
+      if(pfAmfInOpex && pfAnnual !== null) {
+        if(r.isTotalExpense) pfAnnual = pfAnnual - pfAmfAnnual;
+        if(r.isNOI)          pfAnnual = pfAnnual + pfAmfAnnual;
+      }
     }
     const bgRow = (hasBG && r.isNOI        ? bestRow(bg.rows.filter(x=>x.isNOI))        : null)
                || (hasBG && r.isTotalIncome ? bestRow(bg.rows.filter(x=>x.isTotalIncome)) : null)
@@ -4473,9 +4493,8 @@ function renderBenchmarkTab() {
     const isAMF = !!(isAssetMgmtFee(r));
     const useT6Benchmark = isDS || isAMF;
 
-    const t6Avg = r.values.length >= 6
-      ? r.values.slice(-6).reduce((a,b)=>a+b,0) / 6
-      : r.values.reduce((a,b)=>a+b,0) / r.values.length;
+    const t6Slice = r.values.slice(Math.max(0, mi - 5), mi + 1);
+    const t6Avg   = t6Slice.reduce((a,b)=>a+b,0) / (t6Slice.length || 1);
 
     let cells = `<td>${r._synthetic ? fmt(actual)+' <span style="font-size:10px;color:var(--text3)">(est)</span>' : fmt(actual)}</td>`;
     // Budget columns — suppressed for DS and AMF (use T-6 actuals instead)
@@ -4487,21 +4506,27 @@ function renderBenchmarkTab() {
         const varD = bgMonth !== null ? actual - bgMonth : null;
         const varPct = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
         const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
-        cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
+        // Show ⚠ on leaf line items that have no budget match — summary rows match by type so don't warn
+        const isSummaryRow = r.isTotal || r.isSubtotal || r.isCategory || r.isTotalIncome || r.isTotalExpense || r.isNOI || r.isNetIncome;
+        const budgetCell = bgMonth !== null
+          ? fmt(bgMonth)
+          : (!isSummaryRow
+              ? `— <span style="color:#ffa040;font-size:11px;cursor:default" title="Not found in budget — budget total for this section may be understated">⚠</span>`
+              : '—');
+        cells += `<td>${budgetCell}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
       }
     }
-    // T-3 avg, T-6 avg, T-12 avg — plain values only
-    const t3Slice = r.values.slice(-3);
-    const t3Avg = t3Slice.reduce((a,b)=>a+b,0) / (t3Slice.length || 1);
+    // T-3 avg, T-6 avg, T-12 avg — all rolling from selected month (mi)
+    const t3Slice = r.values.slice(Math.max(0, mi - 2), mi + 1);
+    const t3Avg   = t3Slice.reduce((a,b)=>a+b,0) / (t3Slice.length || 1);
 
-    // Trend: compare last 3 months avg vs prior 3 months avg
+    // Trend: compare 3 months ending at mi vs 3 months before that
     // For income rows: up = green ▲, down = red ▼
     // For expense rows: up = red ▲, down = green ▼ (more = worse)
     let trendHtml = '—';
-    if(!r._synthetic && r.values.length >= 4) {
-      const recentAvg = r.values.slice(-3).reduce((a,b)=>a+b,0) / 3;
-      const prevLen   = Math.min(3, r.values.length - 3);
-      const prevSlice = r.values.slice(-6, -3).slice(-prevLen);
+    if(!r._synthetic && mi >= 1) {
+      const recentAvg = t3Avg; // already computed above
+      const prevSlice = r.values.slice(Math.max(0, mi - 5), Math.max(0, mi - 2));
       if(prevSlice.length) {
         const prevAvg = prevSlice.reduce((a,b)=>a+b,0) / prevSlice.length;
         const delta   = recentAvg - prevAvg;
@@ -4671,14 +4696,13 @@ function renderBenchmarkTab() {
     const isOpen = !!benchOpenState[currentPropId+'|'+key];
     // Aggregate all capex lines into a single summary row
     const actual = rows.reduce((s,r) => s + r.values[monthIdx], 0);
-    const t12Avg = rows.reduce((s,r) => { const sl=r.values.slice(-12); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
-    const t6Avg = rows.reduce((s,r) => {
-      const slice = r.values.length >= 6 ? r.values.slice(-6) : r.values;
-      return s + slice.reduce((a,b)=>a+b,0)/slice.length;
-    }, 0);
+    const t3Avg  = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-2),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
+    const t6Avg  = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-5),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
+    const t12Avg = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-11),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
     let cells = `<td>${fmt(actual)}</td>`;
     if(hasBG) cells += `<td>—</td><td>—</td><td>—</td>`;
-    cells += `<td>${fmt(t6Avg)}</td><td>${fmt(t12Avg)}</td>`;
+    cells += `<td>${fmt(t3Avg)}</td><td>${fmt(t6Avg)}</td><td>${fmt(t12Avg)}</td>`;
+    cells += `<td>—</td>`; // Trend — aggregated row
     if(hasPF) cells += `<td>—</td><td>—</td><td>—</td>`;
     return `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
       <td>Capital Expenditures</td>${cells}
@@ -4695,22 +4719,21 @@ function renderBenchmarkTab() {
     // Only add subtotal if there are 2+ rows (single row doesn't need totaling)
     if(rows.length < 2) return out;
 
-    // Sum actual for selected month
+    // Sum actual for selected month; T-3, T-6, T-12 anchored to monthIdx
     const totalActual = rows.reduce((s,r) => s + r.values[monthIdx], 0);
-    // Sum T-6 and T-12 averages
-    const totalT6 = rows.reduce((s,r) => {
-      const slice = r.values.length >= 6 ? r.values.slice(-6) : r.values;
-      return s + slice.reduce((a,b)=>a+b,0)/slice.length;
-    }, 0);
-    const totalT12 = rows.reduce((s,r) => s + r.values.reduce((a,b)=>a+b,0)/r.values.length, 0);
+    const totalT3  = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-2),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
+    const totalT6  = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-5),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
+    const totalT12 = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-11),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
 
     // Build subtotal cells (debt service is expense — lower is better)
     const varGoodDS = v => v <= 0;
     let subtotalCells = `<td style="font-weight:500">${fmt(totalActual)}</td>`;
     // Budget — suppressed for debt service
     if(hasBG) subtotalCells += `<td>—</td><td>—</td><td>—</td>`;
+    subtotalCells += `<td style="font-weight:500">${fmt(totalT3)}</td>`;
     subtotalCells += `<td style="font-weight:500">${fmt(totalT6)}</td>`;
     subtotalCells += `<td style="font-weight:500">${fmt(totalT12)}</td>`;
+    subtotalCells += `<td>—</td>`; // Trend — subtotal row
     // PF — compare T-12 avg to total proforma DS (sum of all PF DS rows, whether split or combined)
     // Individual interest/principal rows leave PF blank; the total is the right level to compare.
     if(hasPF) {
@@ -4796,13 +4819,42 @@ function renderBenchmarkTab() {
       const vCls = varD !== null ? (vgLI(varD)?'val-pos':'val-neg') : '';
       cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
     }
-    const t6AvgLI = stmtLabelsLI.reduce((s, lbl) => {
-      const r = stmtLookup[lbl];
-      if(!r) return s;
-      const slice = r.values.length >= 6 ? r.values.slice(-6) : r.values;
-      return s + slice.reduce((a,b)=>a+b,0)/slice.length;
+    // T-3, T-6, T-12 — all anchored to monthIdx
+    const t3AvgLI = stmtLabelsLI.reduce((s, lbl) => {
+      const r = stmtLookup[lbl]; if(!r) return s;
+      const sl = r.values.slice(Math.max(0, monthIdx - 2), monthIdx + 1);
+      return s + sl.reduce((a,b)=>a+b,0) / (sl.length||1);
     }, 0);
-    cells += `<td>${fmt(t6AvgLI)}</td><td>${fmt(t12Avg)}</td>`;
+    const t6AvgLI = stmtLabelsLI.reduce((s, lbl) => {
+      const r = stmtLookup[lbl]; if(!r) return s;
+      const sl = r.values.slice(Math.max(0, monthIdx - 5), monthIdx + 1);
+      return s + sl.reduce((a,b)=>a+b,0) / (sl.length||1);
+    }, 0);
+    const t12AvgLI = stmtLabelsLI.reduce((s, lbl) => {
+      const r = stmtLookup[lbl]; if(!r) return s;
+      const sl = r.values.slice(Math.max(0, monthIdx - 11), monthIdx + 1);
+      return s + sl.reduce((a,b)=>a+b,0) / (sl.length||1);
+    }, 0);
+    // Trend: recent 3 vs prior 3 anchored to monthIdx
+    let trendLI = `<span style="color:var(--text3);font-size:11px">—</span>`;
+    if(monthIdx >= 3) {
+      const prevAvgLI = stmtLabelsLI.reduce((s, lbl) => {
+        const r = stmtLookup[lbl]; if(!r) return s;
+        const sl = r.values.slice(Math.max(0, monthIdx - 5), Math.max(0, monthIdx - 2));
+        return s + (sl.length ? sl.reduce((a,b)=>a+b,0)/sl.length : 0);
+      }, 0);
+      const deltaLI = t3AvgLI - prevAvgLI;
+      if(Math.abs(deltaLI) > 0.01) {
+        const goingUp = deltaLI > 0;
+        const isGood  = isExp ? !goingUp : goingUp;
+        const color   = isGood ? 'var(--green)' : 'var(--red)';
+        const arrow   = goingUp ? '▲' : '▼';
+        const tip     = `T-3 avg: ${fmt(t3AvgLI)} vs Prior 3 avg: ${fmt(prevAvgLI)} (${deltaLI>=0?'+':''}${fmt(deltaLI)})`;
+        trendLI = `<span style="color:${color};font-size:13px;font-weight:600;cursor:default;border-bottom:1px dotted ${color}" title="${tip}">${arrow}</span>`;
+      }
+    }
+    cells += `<td>${fmt(t3AvgLI)}</td><td>${fmt(t6AvgLI)}</td><td>${fmt(t12AvgLI)}</td>`;
+    cells += `<td style="text-align:center">${trendLI}</td>`;
     if(hasPF) {
       const pfMonth = pfAnnualLI !== null ? pfAnnualLI/12 : null;
       const t12VsPf = pfMonth !== null ? t12Avg - pfMonth : null;
@@ -4834,14 +4886,14 @@ function renderBenchmarkTab() {
     // Tag raw statement rows as expense lines so rowCells colors variance correctly
     const taggedExpSubs = expenseSubs.map(r => r.isExpenseLine ? r : {...r, isExpenseLine:true});
     if(!mapping) return detailRows(taggedExpSubs, key);
-    const expenseItems = PF_LINE_ITEMS.filter(i => !i.isIncome && !i.isComputed && !i.isDebtService && mapping[i.group]);
+    const expenseItems = PF_LINE_ITEMS.filter(i => !i.isIncome && !i.isComputed && !i.isDebtService && !i.isAssetMgmt && mapping[i.group]);
     if(!expenseItems.length) return detailRows(taggedExpSubs, key);
     return expenseItems.map(item => pfLineItemRow(item, key)).join('');
   }
 
   // Determine if income/expense sections have any sub-rows to show
   const hasIncomeSubs  = mapping ? PF_LINE_ITEMS.some(i => i.isIncome && !i.isComputed && mapping[i.group]) : incomeSubs.length > 0;
-  const hasExpenseSubs = mapping ? PF_LINE_ITEMS.some(i => !i.isIncome && !i.isComputed && !i.isDebtService && mapping[i.group]) : expenseSubs.length > 0;
+  const hasExpenseSubs = mapping ? PF_LINE_ITEMS.some(i => !i.isIncome && !i.isComputed && !i.isDebtService && !i.isAssetMgmt && mapping[i.group]) : expenseSubs.length > 0;
 
   if(anchorIncome)  html += summaryRow(anchorIncome,  'income',  'row-total', hasIncomeSubs,              'Total Operating Income')  + incomeDetailRows('income');
   if(anchorExpense) html += summaryRow(anchorExpense, 'expense', 'row-total', hasExpenseSubs,             'Total Operating Expense') + expenseDetailRows('expense');
@@ -6088,7 +6140,7 @@ function computeFlags(propId) {
   }
 
   // ── Expense flags: over budget by ≥25% AND ≥$1,000 ──────────────────────
-  const expenseGroups = PF_LINE_ITEMS.filter(i => !i.isIncome && !i.isComputed && !i.isDebtService);
+  const expenseGroups = PF_LINE_ITEMS.filter(i => !i.isIncome && !i.isComputed && !i.isDebtService && !i.isAssetMgmt);
   expenseGroups.forEach(item => {
     const stmtLabels = getMappedLabels(item.group);
     if(!stmtLabels.length) return;
