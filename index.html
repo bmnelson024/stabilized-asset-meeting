@@ -4473,6 +4473,10 @@ function renderBenchmarkTab() {
     const isAMF = !!(isAssetMgmtFee(r));
     const useT6Benchmark = isDS || isAMF;
 
+    const t6Avg = r.values.length >= 6
+      ? r.values.slice(-6).reduce((a,b)=>a+b,0) / 6
+      : r.values.reduce((a,b)=>a+b,0) / r.values.length;
+
     let cells = `<td>${r._synthetic ? fmt(actual)+' <span style="font-size:10px;color:var(--text3)">(est)</span>' : fmt(actual)}</td>`;
     // Budget columns — suppressed for DS and AMF (use T-6 actuals instead)
     if(hasBG) {
@@ -4486,7 +4490,8 @@ function renderBenchmarkTab() {
         cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
       }
     }
-    // T-12 avg — plain value
+    // T-6 avg then T-12 avg — plain values only
+    cells += `<td>${!r._synthetic?fmt(t6Avg):'—'}</td>`;
     cells += `<td>${!r._synthetic?fmt(t12Avg):'—'}</td>`;
     // Proforma columns — suppressed for DS and AMF (use T-6 actuals instead)
     if(hasPF) {
@@ -4506,7 +4511,7 @@ function renderBenchmarkTab() {
   // Build header columns
   let cols = ['Account', `Actual (${selMonth})`];
   if(hasBG) cols.push('Budget / mo', 'Bud Var $', 'Bud Var %');
-  cols.push('T12 avg');
+  cols.push('T-6 avg', 'T12 avg');
   if(hasPF) cols.push(pfYearLabel+' / mo', 'PF Var $', 'PF Var %');
 
   // ── Build section HTML ─────────────────────────────────────────────────────
@@ -4637,9 +4642,13 @@ function renderBenchmarkTab() {
     // Aggregate all capex lines into a single summary row
     const actual = rows.reduce((s,r) => s + r.values[monthIdx], 0);
     const t12Avg = rows.reduce((s,r) => { const sl=r.values.slice(-12); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
+    const t6Avg = rows.reduce((s,r) => {
+      const slice = r.values.length >= 6 ? r.values.slice(-6) : r.values;
+      return s + slice.reduce((a,b)=>a+b,0)/slice.length;
+    }, 0);
     let cells = `<td>${fmt(actual)}</td>`;
     if(hasBG) cells += `<td>—</td><td>—</td><td>—</td>`;
-    cells += `<td>${fmt(t12Avg)}</td>`;
+    cells += `<td>${fmt(t6Avg)}</td><td>${fmt(t12Avg)}</td>`;
     if(hasPF) cells += `<td>—</td><td>—</td><td>—</td>`;
     return `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
       <td>Capital Expenditures</td>${cells}
@@ -4658,7 +4667,11 @@ function renderBenchmarkTab() {
 
     // Sum actual for selected month
     const totalActual = rows.reduce((s,r) => s + r.values[monthIdx], 0);
-    // Sum T-12 avg
+    // Sum T-6 and T-12 averages
+    const totalT6 = rows.reduce((s,r) => {
+      const slice = r.values.length >= 6 ? r.values.slice(-6) : r.values;
+      return s + slice.reduce((a,b)=>a+b,0)/slice.length;
+    }, 0);
     const totalT12 = rows.reduce((s,r) => s + r.values.reduce((a,b)=>a+b,0)/r.values.length, 0);
 
     // Build subtotal cells (debt service is expense — lower is better)
@@ -4666,6 +4679,7 @@ function renderBenchmarkTab() {
     let subtotalCells = `<td style="font-weight:500">${fmt(totalActual)}</td>`;
     // Budget — suppressed for debt service
     if(hasBG) subtotalCells += `<td>—</td><td>—</td><td>—</td>`;
+    subtotalCells += `<td style="font-weight:500">${fmt(totalT6)}</td>`;
     subtotalCells += `<td style="font-weight:500">${fmt(totalT12)}</td>`;
     // PF — compare T-12 avg to total proforma DS (sum of all PF DS rows, whether split or combined)
     // Individual interest/principal rows leave PF blank; the total is the right level to compare.
@@ -4752,7 +4766,13 @@ function renderBenchmarkTab() {
       const vCls = varD !== null ? (vgLI(varD)?'val-pos':'val-neg') : '';
       cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
     }
-    cells += `<td>${fmt(t12Avg)}</td>`;
+    const t6AvgLI = stmtLabelsLI.reduce((s, lbl) => {
+      const r = stmtLookup[lbl];
+      if(!r) return s;
+      const slice = r.values.length >= 6 ? r.values.slice(-6) : r.values;
+      return s + slice.reduce((a,b)=>a+b,0)/slice.length;
+    }, 0);
+    cells += `<td>${fmt(t6AvgLI)}</td><td>${fmt(t12Avg)}</td>`;
     if(hasPF) {
       const pfMonth = pfAnnualLI !== null ? pfAnnualLI/12 : null;
       const t12VsPf = pfMonth !== null ? t12Avg - pfMonth : null;
