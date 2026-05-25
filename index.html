@@ -3662,21 +3662,135 @@ function parseBuildiumBudget(ws) {
 }
 
 function parseAppfolioBudget(ws) {
+  // Detect AppFolio "Budget Detail" export format — has an "Account Name" header row
+  // with month columns like "Jan 2026". This format is structurally similar to the
+  // Buildium budget but uses different header text, so we parse it directly.
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+
+  let headerRow = -1;
+  for(let i = 0; i < 15; i++) {
+    const row = data[i];
+    if(!row) continue;
+    const first = row[0] && row[0].toString().trim();
+    if(first === 'Account Name' || first === 'Account') { headerRow = i; break; }
+  }
+
+  if(headerRow >= 0) {
+    // ── Parse the Budget Detail format ──────────────────────────────────────
+    const headers = data[headerRow];
+    const monthCols = [];
+    const months = [];
+    let annualCol = -1;
+    let budgetYear = new Date().getFullYear();
+
+    // Detect year from headers (e.g. "Jan 2026")
+    headers.forEach(h => {
+      if(!h) return;
+      const m = h.toString().match(/\b(20\d{2})\b/);
+      if(m) budgetYear = parseInt(m[1]);
+    });
+
+    // Accept both "Jan" and "Jan 2026" month formats
+    const MONTH_ABBRS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    headers.forEach((h, ci) => {
+      if(!h) return;
+      const hs = h.toString().trim();
+      const isMonth = MONTH_ABBRS.some(mo => hs === mo || hs.startsWith(mo + ' '));
+      if(isMonth) {
+        const mo = MONTH_ABBRS.find(mo => hs === mo || hs.startsWith(mo + ' '));
+        months.push(mo + ' ' + budgetYear);
+        monthCols.push(ci);
+      }
+      if(hs === 'Total' || hs.includes('Annual')) annualCol = ci;
+    });
+    if(annualCol < 0) annualCol = headers.length - 2; // second-to-last (last may be %)
+
+    const rows = [];
+    let pastNOI = false;
+    let inCapexSection = false;
+    let inDebtSection  = false;
+
+    for(let i = headerRow + 1; i < data.length; i++) {
+      const row = data[i];
+      if(!row || !row[0]) continue;
+      const raw = row[0].toString().trim();
+      if(!raw) continue;
+      const lc = raw.toLowerCase();
+
+      // Section headers (no numeric data) — track state and skip
+      const isCategory = !row.slice(1).some(v => v !== null && v !== '' && v !== 0
+        && !(typeof v === 'string' && v.startsWith('=')));
+      if(isCategory) {
+        // Update section state from section-header labels
+        if(lc.includes('capital expense') || lc.includes('capital expenditure') || lc.includes('capex')) {
+          inCapexSection = true; inDebtSection = false;
+        } else if(lc === 'mortgage' || lc.startsWith('mortgage') || lc.includes('debt service')) {
+          inDebtSection = true; inCapexSection = false;
+        } else if(lc === 'income' || lc === 'expense' || lc === 'other expense' || lc === 'liability') {
+          inCapexSection = false; inDebtSection = false;
+        }
+        continue; // never emit section header rows as line items
+      }
+
+      // Skip pure subtotals for sections we're already tracking
+      const isSubtotalRow = lc.startsWith('total') && !lc.includes('net operating') && !lc.includes('net income');
+      if((inCapexSection || inDebtSection) && isSubtotalRow) continue;
+
+      const isNOI         = lc.includes('net operating income');
+      const isTotalIncome = lc.includes('total budgeted operating income') || lc === 'total operating income' || lc === 'total income' || lc === 'total budgeted income';
+      const isTotalExpense= lc.includes('total budgeted operating expense') || lc === 'total operating expense' || lc === 'total budgeted expense';
+      const isNetIncome   = !isNOI && !isTotalIncome && !isTotalExpense
+                         && (lc === 'net income' || lc.includes('total budgeted income') && !isTotalIncome);
+      const isTotal       = isTotalIncome || isTotalExpense;
+      const isSubtotal    = !isNOI && !isTotal && lc.startsWith('total');
+
+      // Skip duplicate summary rows that appear after NOI (re-stated totals)
+      if(pastNOI && (isTotalIncome || isTotalExpense) && !isNOI) continue;
+
+      const values = monthCols.map(ci => parseFloat(row[ci]) || 0);
+      const annualRaw = annualCol >= 0 ? row[annualCol] : null;
+      const total = (annualRaw !== null && typeof annualRaw === 'number')
+        ? annualRaw
+        : values.reduce((a,b) => a+b, 0);
+
+      const isDebtService = !isNetIncome && (
+        inDebtSection
+        || lc.includes('debt service')
+        || (lc.includes('mortgage') && !lc.includes('escrow') && !lc.includes('payable'))
+        || lc.includes('loan payment') || lc.includes('principal & interest') || lc.includes('p & i')
+        || (lc.includes('principal') && !lc.includes('management'))
+      );
+      const isAssetMgmt   = lc.includes('asset management') || lc.includes('asset mgmt');
+      const isCapex       = !isNetIncome && (inCapexSection || (lc.includes('capex') && pastNOI));
+
+      if(isNOI) { pastNOI = true; inCapexSection = false; inDebtSection = false; }
+
+      // Stop at Liability section — loan balance rows should not be parsed as P&L items
+      if(lc === 'liability' || lc.includes('total budgeted liability')) break;
+
+      rows.push({
+        label: raw, level: isTotal || isNOI ? 0 : 1,
+        isCategory: false, isSubtotal, isTotal,
+        isNOI, isNetIncome, isTotalIncome, isTotalExpense,
+        isDebtService, isAssetMgmt, isCapex,
+        values, total,
+      });
+    }
+
+    return { months, rows, system: 'appfolio_budget', propertyName: '', period: String(budgetYear) };
+  }
+
+  // ── Fallback: standard AppFolio cash flow format ─────────────────────────
   const result = parseAppfolio(ws);
   result.rows.forEach(r => {
     const lc = r.label.toLowerCase();
-    // NOI — budget uses 'Net Operating Income' without the 'NOI -' prefix
     if(lc === 'net operating income') r.isNOI = true;
-    // Debt service — flag rows that are clearly loan/mortgage payments
     if(!r.isDebtService && (
       (lc.includes('mortgage') && !lc.includes('escrow')) || lc === 'debt service' ||
       lc.includes('loan payment') || lc.includes('principal & interest') ||
       lc.includes('p & i') || lc.includes('total debt service')
     )) r.isDebtService = true;
-    // Asset management fee
-    if(!r.isAssetMgmt && (
-      lc.includes('asset management') || lc.includes('asset mgmt')
-    )) r.isAssetMgmt = true;
+    if(!r.isAssetMgmt && (lc.includes('asset management') || lc.includes('asset mgmt'))) r.isAssetMgmt = true;
   });
   result.system = 'appfolio_budget';
   return result;
@@ -4817,7 +4931,10 @@ function renderBenchmarkTab() {
       const varD = bgMonth !== null ? actual - bgMonth : null;
       const varPct = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
       const vCls = varD !== null ? (vgLI(varD)?'val-pos':'val-neg') : '';
-      cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
+      const budgetCellLI = bgMonth !== null
+        ? fmt(bgMonth)
+        : `— <span style="color:#ffa040;font-size:11px;cursor:default" title="Not found in budget — budget total for this section may be understated">⚠</span>`;
+      cells += `<td>${budgetCellLI}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
     }
     // T-3, T-6, T-12 — all anchored to monthIdx
     const t3AvgLI = stmtLabelsLI.reduce((s, lbl) => {
