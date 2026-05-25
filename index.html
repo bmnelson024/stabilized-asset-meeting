@@ -324,10 +324,10 @@
         <div class="tab" onclick="switchTab('rentroll')">Rent roll</div>
         <div class="tab" onclick="switchTab('rentprog')">Rent progression</div>
         <div class="tab" onclick="switchTab('cashreview')">Cash review</div>
+        <div class="tab" onclick="switchTab('capex')">Capex</div>
         <div class="tab" onclick="switchTab('propval')">Property valuation</div>
         <div class="tab" id="tab-btn-debt" onclick="switchTab('debt')">Property debt</div>
         <div class="tab" id="tab-btn-flags" onclick="switchTab('flags')">Flags</div>
-        <div class="tab" onclick="switchTab('capex')">Capex</div>
         <div class="tab" onclick="switchTab('notes')">Notes</div>
         <div class="tab" onclick="switchTab('upload')">Upload files</div>
       </div>
@@ -4547,7 +4547,7 @@ function renderBenchmarkTab() {
     cells += `<td>${!r._synthetic?fmt(t3Avg):'—'}</td>`;
     cells += `<td>${!r._synthetic?fmt(t6Avg):'—'}</td>`;
     cells += `<td>${!r._synthetic?fmt(t12Avg):'—'}</td>`;
-    cells += `<td style="text-align:center">${trendHtml}</td>`;
+    cells += `<td style="text-align:center;padding:7px 4px">${trendHtml}</td>`;
     // Proforma columns — suppressed for DS and AMF (use T-6 actuals instead)
     if(hasPF) {
       if(useT6Benchmark) {
@@ -4677,7 +4677,7 @@ function renderBenchmarkTab() {
   let html = stalenessBanner + cashCardHtml + monthSelectorHtml + escrowBanner + `<div class="bench-section">
     <div class="bench-title">Month vs benchmarks — ${selMonth}</div>
     <div class="bench-wrap"><table class="bench-table">
-    <thead><tr>${cols.map((c,i)=>`<th${c==='Trend'?' style="text-align:center"':i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
+    <thead><tr>${cols.map((c,i)=>`<th${c==='Trend'?' style="text-align:center;width:48px;padding:8px 4px"':i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
     <tbody>`;
 
   function amfDetailRows(rows, key) {
