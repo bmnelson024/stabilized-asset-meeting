@@ -4490,9 +4490,37 @@ function renderBenchmarkTab() {
         cells += `<td>${bgMonth!==null?fmt(bgMonth):'—'}</td><td class="${vCls}">${varD!==null?fmtVar(varD):'—'}</td><td class="${vCls}">${varPct!==null?varPct.toFixed(1)+'%':'—'}</td>`;
       }
     }
-    // T-6 avg then T-12 avg — plain values only
+    // T-3 avg, T-6 avg, T-12 avg — plain values only
+    const t3Slice = r.values.slice(-3);
+    const t3Avg = t3Slice.reduce((a,b)=>a+b,0) / (t3Slice.length || 1);
+
+    // Trend: compare last 3 months avg vs prior 3 months avg
+    // For income rows: up = green ▲, down = red ▼
+    // For expense rows: up = red ▲, down = green ▼ (more = worse)
+    let trendHtml = '—';
+    if(!r._synthetic && r.values.length >= 4) {
+      const recentAvg = r.values.slice(-3).reduce((a,b)=>a+b,0) / 3;
+      const prevLen   = Math.min(3, r.values.length - 3);
+      const prevSlice = r.values.slice(-6, -3).slice(-prevLen);
+      if(prevSlice.length) {
+        const prevAvg = prevSlice.reduce((a,b)=>a+b,0) / prevSlice.length;
+        const delta   = recentAvg - prevAvg;
+        if(Math.abs(delta) > 0.01) {
+          const goingUp   = delta > 0;
+          const isGood    = isExp ? !goingUp : goingUp;
+          const color     = isGood ? 'var(--green)' : 'var(--red)';
+          const arrow     = goingUp ? '▲' : '▼';
+          trendHtml = `<span style="color:${color};font-size:13px;font-weight:600">${arrow}</span>`;
+        } else {
+          trendHtml = `<span style="color:var(--text3);font-size:11px">—</span>`;
+        }
+      }
+    }
+
+    cells += `<td>${!r._synthetic?fmt(t3Avg):'—'}</td>`;
     cells += `<td>${!r._synthetic?fmt(t6Avg):'—'}</td>`;
     cells += `<td>${!r._synthetic?fmt(t12Avg):'—'}</td>`;
+    cells += `<td style="text-align:center">${trendHtml}</td>`;
     // Proforma columns — suppressed for DS and AMF (use T-6 actuals instead)
     if(hasPF) {
       if(useT6Benchmark) {
@@ -4511,7 +4539,7 @@ function renderBenchmarkTab() {
   // Build header columns
   let cols = ['Account', `Actual (${selMonth})`];
   if(hasBG) cols.push('Budget / mo', 'Bud Var $', 'Bud Var %');
-  cols.push('T-6 avg', 'T12 avg');
+  cols.push('T-3 avg', 'T-6 avg', 'T12 avg', 'Trend');
   if(hasPF) cols.push(pfYearLabel+' / mo', 'PF Var $', 'PF Var %');
 
   // ── Build section HTML ─────────────────────────────────────────────────────
@@ -4622,7 +4650,7 @@ function renderBenchmarkTab() {
   let html = stalenessBanner + cashCardHtml + monthSelectorHtml + escrowBanner + `<div class="bench-section">
     <div class="bench-title">Month vs benchmarks — ${selMonth}</div>
     <div class="bench-wrap"><table class="bench-table">
-    <thead><tr>${cols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
+    <thead><tr>${cols.map((c,i)=>`<th${c==='Trend'?' style="text-align:center"':i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
     <tbody>`;
 
   function amfDetailRows(rows, key) {
@@ -7951,7 +7979,7 @@ function portfolioPropRow(p, pm, isOpen) {
     if(!stmt) return '—';
     const nr = stmt.rows.find(r=>r.isNOI);
     if(!nr || !nr.values || !nr.values.length) return '—';
-    const svg = makeSparkline(nr.values);
+    const svg = makeSparkline(nr.values.slice(-12));
     return svg || '—';
   })();
 
