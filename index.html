@@ -3598,18 +3598,32 @@ function parseBuildiumBudget(ws) {
   const TOTAL_EXPENSE_LABELS = ['total operating expense'];  // covers plural via includes
   const NET_INCOME_LABELS_BG = ['net income','cash flow','total non-operating'];
   const SECTION_MARKERS   = ['▼', '▲'];
-  const SKIP_LABELS       = ['capital expenditure','capex','non-operating','fixed'];
+  // SKIP_LABELS: section-header rows and subtotal rows we don't want as line items
+  // Note: individual capex line items (Appliance, Blinds, etc.) are NOT skipped —
+  // they are included with isCapex:true based on section tracking below.
+  const SKIP_LABELS       = ['non-operating','fixed'];
+
+  let inCapexSection = false; // true while inside the ▼ CAPITAL EXPENDITURES section
+  let pastNOI        = false;
 
   for(let i=headerRow+1;i<data.length;i++){
     const row = data[i];
     if(!row || !row[0]) continue;
     const raw = row[0].toString().trim();
     if(!raw) continue;
-    // Skip section headers (▼ INCOME etc)
-    if(SECTION_MARKERS.some(m=>raw.startsWith(m))) continue;
+
+    // Section marker rows (▼ / ▲): update section state before skipping
+    if(SECTION_MARKERS.some(m=>raw.startsWith(m))) {
+      const slc = raw.toLowerCase();
+      inCapexSection = slc.includes('capital expenditure') || slc.includes('capex');
+      continue;
+    }
+
     const lc = raw.toLowerCase();
-    // Skip CapEx and non-operating section headers and totals
+    // Skip non-operating section headers and "TOTAL CAPEX" subtotal rows
     if(SKIP_LABELS.some(x=>lc.includes(x))) continue;
+    if(inCapexSection && lc.startsWith('total')) continue; // skip "TOTAL CAPEX"
+
     const isNOI         = NOI_LABELS.some(x=>lc.includes(x));
     const isTotalIncome = TOTAL_INCOME_LABELS.some(x=>lc.includes(x));
     const isTotalExpense= TOTAL_EXPENSE_LABELS.some(x=>lc.includes(x));
@@ -3625,14 +3639,23 @@ function parseBuildiumBudget(ws) {
     const total = (annualRaw!==null && typeof annualRaw==='number')
       ? annualRaw
       : values.reduce((a,b)=>a+b,0);
-    const isDebtService = lc.includes('mortgage') || lc === 'debt service'
+    const isDebtService = lc.includes('debt service')
+                       || (lc.includes('mortgage') && !lc.includes('escrow'))
                        || lc.includes('loan payment') || lc.includes('principal & interest')
                        || lc.includes('p & i') || lc.includes('total debt service')
                        || (lc.includes('interest') && lc.includes('expense'))
                        || (lc.includes('principal') && !lc.includes('management'));
     const isAssetMgmt   = lc.includes('asset management') || lc.includes('asset mgmt');
+    // isCapex: either the section header told us, or (no section headers present) we're
+    // after NOI and this row is not debt service, AMF, or a net-income total.
+    const isCapex = inCapexSection
+      || (pastNOI && !isNOI && !isNetIncome && !isDebtService && !isAssetMgmt && !isTotal && !isSubtotal && !isCategory);
+
+    if(isNOI) pastNOI = true;
+
     rows.push({label:raw, level:isTotal||isNOI?0:1, isCategory, isSubtotal, isTotal,
-               isNOI, isNetIncome, isTotalIncome, isTotalExpense, isDebtService, isAssetMgmt, values, total});
+               isNOI, isNetIncome, isTotalIncome, isTotalExpense,
+               isDebtService, isAssetMgmt, isCapex, values, total});
   }
   return {months, rows, system:'buildium_budget', propertyName:'', period:String(budgetYear)};
 }
@@ -3645,7 +3668,7 @@ function parseAppfolioBudget(ws) {
     if(lc === 'net operating income') r.isNOI = true;
     // Debt service — flag rows that are clearly loan/mortgage payments
     if(!r.isDebtService && (
-      lc.includes('mortgage') || lc === 'debt service' ||
+      (lc.includes('mortgage') && !lc.includes('escrow')) || lc === 'debt service' ||
       lc.includes('loan payment') || lc.includes('principal & interest') ||
       lc.includes('p & i') || lc.includes('total debt service')
     )) r.isDebtService = true;
@@ -4313,6 +4336,25 @@ function renderBenchmarkTab() {
   const debtSubs    = stmt.rows.filter(r => isDebtService(r));
   const amfSubs     = stmt.rows.filter(r => isAssetMgmtFee(r) && !isDebtService(r));
   const capexSubs   = stmt.rows.filter(r => isCapex(r) && !isDebtService(r) && !isAssetMgmtFee(r));
+
+  // If the statement has no AMF row, synthesize one from the budget (same pattern as syntheticDebtSubs).
+  // This handles Buildium properties where the Asset Management Fee lives below NOI in the budget
+  // but is not tracked as a separate line in the operating cash flow statement.
+  const syntheticAmfSubs = [];
+  if(!amfSubs.length && hasBG) {
+    const bgAmfRows = bg.rows.filter(r => r.isAssetMgmt && r.total);
+    if(bgAmfRows.length) {
+      const amfAnnual = bgAmfRows.reduce((s, r) => s + r.total, 0);
+      syntheticAmfSubs.push({
+        label: 'Asset Management Fee', isAssetMgmt: true,
+        isTotalExpense: false, isNOI: false, isNetIncome: false,
+        isTotal: false, isCategory: false, isSubtotal: false, level: 1,
+        values: Array(12).fill(amfAnnual / 12), total: amfAnnual,
+        _bgAnnual: amfAnnual, _synthetic: true,
+      });
+    }
+  }
+  const effectiveAmfSubs = amfSubs.length ? amfSubs : syntheticAmfSubs;
   // Exclude AMF and capex rows from expenseSubs — they are shown separately under the NOI row.
   // Without this, those rows appear under both Total Operating Expense and the NOI section.
   const expenseSubs = stmt.rows.filter((r, ri) =>
@@ -4792,13 +4834,13 @@ function renderBenchmarkTab() {
 
   if(anchorIncome)  html += summaryRow(anchorIncome,  'income',  'row-total', hasIncomeSubs,              'Total Operating Income')  + incomeDetailRows('income');
   if(anchorExpense) html += summaryRow(anchorExpense, 'expense', 'row-total', hasExpenseSubs,             'Total Operating Expense') + expenseDetailRows('expense');
-  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',   amfSubs.length>0||capexSubs.length>0||effectiveDebtSubs.length>0, 'Net Operating Income') + amfDetailRows(amfSubs,'noi') + capexDetailRows(capexSubs,'noi') + debtDetailRows(effectiveDebtSubs,'noi');
+  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',   effectiveAmfSubs.length>0||capexSubs.length>0||effectiveDebtSubs.length>0, 'Net Operating Income') + amfDetailRows(effectiveAmfSubs,'noi') + capexDetailRows(capexSubs,'noi') + debtDetailRows(effectiveDebtSubs,'noi');
 
   // Effective Cash Flow = NOI - AMF - Capex - Debt Service (computed, not read from statement)
   if(anchorNOI) {
     const sumValues = rows => rows.reduce((s,r) => s.map((v,i) => v + (r.values[i]||0)), Array(12).fill(0));
     const efcfValues = anchorNOI.values.map((v,i) =>
-      v - sumValues(amfSubs)[i] - sumValues(capexSubs)[i] - sumValues(effectiveDebtSubs)[i]
+      v - sumValues(effectiveAmfSubs)[i] - sumValues(capexSubs)[i] - sumValues(effectiveDebtSubs)[i]
     );
     const efcfRow = {
       label: 'Effective Cash Flow', isNetIncome: true,
