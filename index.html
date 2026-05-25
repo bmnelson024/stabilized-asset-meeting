@@ -3711,6 +3711,7 @@ function parseAppfolioBudget(ws) {
     let pastNOI = false;
     let inCapexSection = false;
     let inDebtSection  = false;
+    let inLiabilitySection = false;
 
     for(let i = headerRow + 1; i < data.length; i++) {
       const row = data[i];
@@ -3723,15 +3724,16 @@ function parseAppfolioBudget(ws) {
       const isCategory = !row.slice(1).some(v => v !== null && v !== '' && v !== 0
         && !(typeof v === 'string' && v.startsWith('=')));
       if(isCategory) {
-        // Stop entirely at the Liability section — balance-sheet rows should not be P&L items
-        if(lc === 'liability' || lc.startsWith('liability')) break;
-        // Update section state from section-header labels
-        if(lc.includes('capital expense') || lc.includes('capital expenditure') || lc.includes('capex')) {
-          inCapexSection = true; inDebtSection = false;
+        // Liability section: enter tracking mode but don't stop — we still want
+        // principal payment rows (e.g. "Mortgage Payable") flagged as isDebtService
+        if(lc === 'liability' || lc.startsWith('liability')) {
+          inLiabilitySection = true; inCapexSection = false; inDebtSection = false;
+        } else if(lc.includes('capital expense') || lc.includes('capital expenditure') || lc.includes('capex')) {
+          inCapexSection = true; inDebtSection = false; inLiabilitySection = false;
         } else if(lc === 'mortgage' || lc.startsWith('mortgage') || lc.includes('debt service')) {
-          inDebtSection = true; inCapexSection = false;
+          inDebtSection = true; inCapexSection = false; inLiabilitySection = false;
         } else if(lc === 'income' || lc === 'expense' || lc === 'other expense') {
-          inCapexSection = false; inDebtSection = false;
+          inCapexSection = false; inDebtSection = false; inLiabilitySection = false;
         }
         continue; // never emit section header rows as line items
       }
@@ -3739,6 +3741,20 @@ function parseAppfolioBudget(ws) {
       // Skip pure subtotals for sections we're already tracking
       const isSubtotalRow = lc.startsWith('total') && !lc.includes('net operating') && !lc.includes('net income');
       if((inCapexSection || inDebtSection) && isSubtotalRow) continue;
+
+      // In liability section: only keep principal-payment rows; skip everything else
+      if(inLiabilitySection) {
+        if(isSubtotalRow || lc.startsWith('total budgeted')) continue; // skip subtotals
+        const isLiabDS = lc.includes('mortgage') || lc.includes('principal') || lc.includes('note payable') || lc.includes('notes payable') || lc.includes('loan payable');
+        if(!isLiabDS) continue; // skip non-debt liability rows
+        const values = monthCols.map(ci => parseFloat(row[ci]) || 0);
+        const annualRaw = annualCol >= 0 ? row[annualCol] : null;
+        const total = (annualRaw !== null && typeof annualRaw === 'number') ? annualRaw : values.reduce((a,b)=>a+b,0);
+        rows.push({ label: raw, level: 1, isCategory: false, isSubtotal: false, isTotal: false,
+          isNOI: false, isNetIncome: false, isTotalIncome: false, isTotalExpense: false,
+          isDebtService: true, isAssetMgmt: false, isCapex: false, values, total });
+        continue;
+      }
 
       const isNOI         = lc.includes('net operating income');
       const isTotalIncome = lc.includes('total budgeted operating income') || lc === 'total operating income' || lc === 'total income' || lc === 'total budgeted income';
@@ -3767,9 +3783,6 @@ function parseAppfolioBudget(ws) {
       const isCapex       = !isNetIncome && (inCapexSection || (lc.includes('capex') && pastNOI));
 
       if(isNOI) { pastNOI = true; inCapexSection = false; inDebtSection = false; }
-
-      // Stop at Liability section — loan balance rows should not be parsed as P&L items
-      if(lc === 'liability' || lc.includes('total budgeted liability')) break;
 
       rows.push({
         label: raw, level: isTotal || isNOI ? 0 : 1,
@@ -4632,9 +4645,9 @@ function renderBenchmarkTab() {
     const t6Avg   = t6Slice.reduce((a,b)=>a+b,0) / (t6Slice.length || 1);
 
     let cells = `<td>${r._synthetic ? fmt(actual)+' <span style="font-size:10px;color:var(--text3)">(est)</span>' : fmt(actual)}</td>`;
-    // Budget columns — suppressed for DS and AMF (use T-6 actuals instead)
+    // Budget columns — suppressed for AMF only (DS rows now show budget when available)
     if(hasBG) {
-      if(useT6Benchmark) {
+      if(isAMF) {
         cells += `<td>—</td><td>—</td><td>—</td>`;
       } else {
         const bgMonth = bgAnnual !== null ? bgAnnual/12 : null;
@@ -4888,8 +4901,17 @@ function renderBenchmarkTab() {
     // Build subtotal cells (debt service is expense — lower is better)
     const varGoodDS = v => v <= 0;
     let subtotalCells = `<td style="font-weight:500">${fmt(totalActual)}</td>`;
-    // Budget — suppressed for debt service
-    if(hasBG) subtotalCells += `<td>—</td><td>—</td><td>—</td>`;
+    // Budget — sum all isDebtService rows from the budget
+    if(hasBG) {
+      const bgDSRows  = bg.rows.filter(r => r.isDebtService && r.total);
+      const bgDSMonth = bgDSRows.length ? bgDSRows.reduce((s,r) => s + r.total, 0) / 12 : null;
+      const bgVarD    = bgDSMonth !== null ? totalActual - bgDSMonth : null;
+      const bgVarPct  = (bgVarD !== null && bgDSMonth) ? bgVarD / Math.abs(bgDSMonth) * 100 : null;
+      const bgVCls    = bgVarD !== null ? (varGoodDS(bgVarD) ? 'val-pos' : 'val-neg') : '';
+      subtotalCells += `<td style="font-weight:500">${bgDSMonth !== null ? fmt(bgDSMonth) : '—'}</td>`;
+      subtotalCells += `<td class="${bgVCls}" style="font-weight:500">${bgVarD !== null ? fmtVar(bgVarD) : '—'}</td>`;
+      subtotalCells += `<td class="${bgVCls}" style="font-weight:500">${bgVarPct !== null ? bgVarPct.toFixed(1)+'%' : '—'}</td>`;
+    }
     subtotalCells += `<td style="font-weight:500">${fmt(totalT3)}</td>`;
     subtotalCells += `<td style="font-weight:500">${fmt(totalT6)}</td>`;
     subtotalCells += `<td style="font-weight:500">${fmt(totalT12)}</td>`;
