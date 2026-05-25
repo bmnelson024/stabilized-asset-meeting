@@ -1115,8 +1115,8 @@ function renderUploadTab(p) {
   const monthly = [
     {key:'statement', label:stmtLabel, sub:'Monthly .xlsx export'},
     {key:'rentroll', label:'Rent roll', sub:`Monthly .xlsx export${(d.rentRollHistory&&d.rentRollHistory.length>0)?' · '+d.rentRollHistory.length+' snapshot'+(d.rentRollHistory.length!==1?'s':'')+' stored':''}`},
-    {key:'delinquency', label:'Delinquency report', sub:'AppFolio "Delinquency As Of" .xlsx'},
-    {key:'capex', label:'Capex detail report', sub:'AppFolio transaction-level capex export .xlsx'},
+    {key:'delinquency', label:'Delinquency report', sub:'AppFolio "Delinquency As Of" or Buildium "Delinquent Tenants" .xlsx'},
+    {key:'capex', label:'Capex detail report', sub:'AppFolio General Ledger or Buildium "Transaction Detail by Account" .xlsx'},
   ];
   const benchmarks = [
     {key:'budget', label:'Budget', sub:'Annual — re-upload each year'},
@@ -1590,10 +1590,28 @@ function handleUpload(event, propId, fileKey) {
         }
       } else if(fileKey==='delinquency') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
-        parsed = parseDelinquencyReport(ws0);
+        // Auto-detect AppFolio ("Delinquency As Of") vs Buildium ("Delinquent Tenants")
+        try {
+          parsed = parseDelinquencyReport(ws0);
+        } catch(e1) {
+          try {
+            parsed = parseBuildiumDelinquency(ws0);
+          } catch(e2) {
+            throw new Error(`Could not parse delinquency report (AppFolio: ${e1.message} / Buildium: ${e2.message})`);
+          }
+        }
       } else if(fileKey==='capex') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
-        parsed = parseCapexReport(ws0);
+        // Auto-detect AppFolio General Ledger vs Buildium Transaction Detail
+        try {
+          parsed = parseCapexReport(ws0);
+        } catch(e1) {
+          try {
+            parsed = parseBuildiumCapex(ws0);
+          } catch(e2) {
+            throw new Error(`Could not parse capex report (AppFolio: ${e1.message} / Buildium: ${e2.message})`);
+          }
+        }
       } else if(fileKey==='cashbalance') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
         // Auto-detect: Buildium has "Bank Account Balance Breakdown" in cell; AppFolio has "Trial Balance"
@@ -2077,6 +2095,82 @@ function parseDelinquencyReport(ws) {
   return { asOfDate, totalAR, aging0_30, aging30Plus, units };
 }
 
+// ─── BUILDIUM DELINQUENCY PARSER ──────────────────────────────────────────────
+// Handles Buildium "Delinquent Tenants" export.
+// Returns same shape as parseDelinquencyReport: { asOfDate, totalAR, aging0_30, aging30Plus, units:[...] }
+function parseBuildiumDelinquency(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  if(!data || data.length < 5) throw new Error('File appears empty.');
+
+  // Row 0 contains "Delinquent Tenants\nAs of MM/DD/YYYY, ..."
+  const titleCell = data[0] && data[0][0] ? data[0][0].toString() : '';
+  if(!titleCell.toLowerCase().includes('delinquent')) throw new Error('Not a Buildium Delinquent Tenants report.');
+
+  // Parse "As of MM/DD/YYYY" from title
+  let asOfDate = null;
+  const asOfM = titleCell.match(/as of\s+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  if(asOfM) asOfDate = asOfM[1];
+
+  // Find header row where col 0 = "Unit"
+  let headerRow = -1;
+  for(let i = 0; i < Math.min(10, data.length); i++) {
+    if(data[i] && data[i][0] && data[i][0].toString().toLowerCase().trim() === 'unit') {
+      headerRow = i; break;
+    }
+  }
+  if(headerRow < 0) throw new Error('Could not find Unit/Tenant header row in Buildium delinquency report.');
+
+  const headers = data[headerRow].map(h => h ? h.toString().toLowerCase().trim() : '');
+  const unitCol   = headers.indexOf('unit');
+  const nameCol   = headers.indexOf('tenant');
+  const totalCol  = headers.findIndex(h => h === 'total');
+  const d0_30Col  = headers.findIndex(h => h.includes('0-30'));
+  const d31_60Col = headers.findIndex(h => h.includes('31-60'));
+  const d61_90Col = headers.findIndex(h => h.includes('61-90'));
+  const d91Col    = headers.findIndex(h => h.includes('91'));
+
+  const units = [];
+  let totalAR = 0, aging0_30 = 0, aging30Plus = 0;
+
+  for(let i = headerRow + 1; i < data.length; i++) {
+    const row = data[i];
+    if(!row) continue;
+    const col0 = row[0] != null ? row[0].toString().trim() : '';
+    if(!col0) continue;
+    // Stop at summary section
+    if(col0.toLowerCase() === 'summary') break;
+    // Skip subtotal / grand total rows
+    if(col0.toLowerCase().startsWith('total') || col0.toLowerCase().includes('grand total')) continue;
+    // Skip property section-header rows (tenant col is null and no numeric total)
+    if(row[nameCol] == null && (row[totalCol] == null || parseFloat(row[totalCol]) === 0)) continue;
+
+    const amt = parseFloat(row[totalCol]) || 0;
+    if(amt <= 0) continue; // skip zero-balance rows or credits
+
+    const a0_30  = parseFloat(row[d0_30Col])  || 0;
+    const a31_60 = d31_60Col >= 0 ? (parseFloat(row[d31_60Col]) || 0) : 0;
+    const a61_90 = d61_90Col >= 0 ? (parseFloat(row[d61_90Col]) || 0) : 0;
+    const a91    = d91Col    >= 0 ? (parseFloat(row[d91Col])    || 0) : 0;
+    const a30plus = a31_60 + a61_90 + a91;
+
+    totalAR     += amt;
+    aging0_30   += a0_30;
+    aging30Plus += a30plus;
+
+    units.push({
+      unit: col0,
+      name: row[nameCol] ? row[nameCol].toString().trim() : '',
+      status: 'Current',
+      amountReceivable: amt,
+      aging0_30: a0_30,
+      aging30Plus: a30plus,
+    });
+  }
+
+  if(!units.length && totalAR === 0) return { asOfDate, totalAR: 0, aging0_30: 0, aging30Plus: 0, units: [], system: 'buildium_delinquency' };
+  return { asOfDate, totalAR, aging0_30, aging30Plus, units, system: 'buildium_delinquency' };
+}
+
 // ─── CAPEX DETAIL REPORT PARSER ───────────────────────────────────────────────
 // Handles AppFolio transaction-level capex exports (transaction list or cash-flow style).
 // Returns { reportTitle, dateRange, transactions: [{date,category,description,unit,amount}], byCategory, totalSpend }
@@ -2279,6 +2373,153 @@ function parseCapexReport(ws) {
 }
 
 // ─── LEASE HISTORY / RENEWAL SUMMARY PARSER ──────────────────────────────────
+// ─── BUILDIUM CAPEX PARSER ────────────────────────────────────────────────────
+// Handles Buildium "Transaction Detail by Account" export.
+// Returns same shape as parseCapexReport: { reportTitle, dateRange, propertyName, style,
+//   transactions, byAccount, byUnit, turnoverTotal, capexTotal, totalSpend, turnedUnits }
+function parseBuildiumCapex(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  if(!data || data.length < 4) throw new Error('File appears empty.');
+
+  // Row 0: "Transaction Detail by Account\nMM/DD/YYYY - MM/DD/YYYY" in col 0
+  const titleCell = data[0] && data[0][0] ? data[0][0].toString() : '';
+  if(!titleCell.toLowerCase().includes('transaction detail')) throw new Error('Not a Buildium Transaction Detail by Account report.');
+
+  // Extract date range from title (second line after newline, or inline)
+  let dateRange = '';
+  const drM = titleCell.match(/(\d{1,2}\/\d{1,2}\/\d{4})\s*[-–]\s*(\d{1,2}\/\d{1,2}\/\d{4})/);
+  if(drM) dateRange = `${drM[1]} - ${drM[2]}`;
+
+  // Property name may be in col 4 of row 0 ("Prepared By: ..." line)
+  let propertyName = '';
+  if(data[0] && data[0][4]) {
+    const c4 = data[0][4].toString().split('\n')[0].trim();
+    if(!c4.toLowerCase().startsWith('prepared')) propertyName = c4;
+  }
+
+  // Find header row: col 0 = "Date"
+  let headerRow = -1;
+  for(let i = 0; i < Math.min(10, data.length); i++) {
+    if(data[i] && data[i][0] && data[i][0].toString().toLowerCase().trim() === 'date') {
+      headerRow = i; break;
+    }
+  }
+  if(headerRow < 0) throw new Error('Could not find Date header row in Buildium capex report.');
+
+  // Fixed column positions (Buildium Transaction Detail is always: Date, Type, Property, Name, Description, Amount)
+  const DATE_COL = 0, NAME_COL = 3, DESC_COL = 4, AMT_COL = 5;
+
+  const CAPEX_RE    = /^capital improvement/i;
+  const TURNOVER_RE = /make.?read|turnover|turn over/i;
+
+  function categorize(acct) {
+    if(TURNOVER_RE.test(acct)) return 'turnover';
+    if(CAPEX_RE.test(acct))    return 'capex';
+    return 'other';
+  }
+
+  function extractUnit(nameStr) {
+    if(!nameStr) return '';
+    const m = nameStr.match(/^unit\s+(\w[\w-]*)\s*-/i);
+    return m ? m[1] : '';
+  }
+
+  function parseDate(val) {
+    // Returns YYYY-MM-DD so the renderCapexTab date filter (string comparison) works correctly
+    if(!val) return '';
+    let d;
+    if(val instanceof Date) {
+      d = val;
+    } else if(typeof val === 'number' && val > 40000) {
+      d = new Date(Math.round((val - 25569) * 86400 * 1000));
+    } else {
+      const s = val.toString().trim();
+      // Already ISO
+      if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+      // M/D/YYYY or MM/DD/YYYY
+      const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if(m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+      d = new Date(s);
+    }
+    if(!d || isNaN(d.getTime())) return '';
+    return d.toISOString().slice(0, 10);
+  }
+
+  const transactions = [];
+  const byAccount = {};
+  const byUnit    = {};
+  let capexTotal = 0, turnoverTotal = 0;
+  let currentAccount = '', currentCategory = 'other';
+
+  for(let i = headerRow + 1; i < data.length; i++) {
+    const row = data[i];
+    if(!row) continue;
+    const col0 = row[0];
+    const col5 = row[AMT_COL];
+
+    // Section-total row: col 0 is string starting with "Total for"
+    if(typeof col0 === 'string' && col0.trim().toLowerCase().startsWith('total for')) continue;
+    // Grand total
+    if(typeof col0 === 'string' && col0.trim().toLowerCase().startsWith('total for expenses')) continue;
+    // Blank trailing row
+    if(col0 === null || col0 === '') continue;
+
+    // Account section header: string, no amount in col 5, col 1-4 all null
+    if(typeof col0 === 'string' && col5 == null
+       && row[1] == null && row[2] == null && row[3] == null) {
+      const lc = col0.trim().toLowerCase();
+      if(lc === 'expenses' || lc === 'income') continue; // top-level section labels
+      currentAccount  = col0.trim();
+      currentCategory = categorize(currentAccount);
+      if(!byAccount[currentAccount]) {
+        byAccount[currentAccount] = { account: currentAccount, categoryType: currentCategory, total: 0, transactions: [] };
+      }
+      continue;
+    }
+
+    // Transaction row: col 0 is a date value
+    const dateStr = parseDate(col0);
+    if(!dateStr) continue;
+
+    const amount  = parseFloat(col5) || 0;
+    const nameStr = row[NAME_COL] ? row[NAME_COL].toString() : '';
+    const desc    = row[DESC_COL] ? row[DESC_COL].toString().replace(/\n/g, ' ').trim() : '';
+    const unit    = extractUnit(nameStr);
+    const payee   = nameStr.replace(/^unit\s+\w[\w-]*\s*-\s*/i, '').trim();
+
+    const tx = { date: dateStr, account: currentAccount, categoryType: currentCategory, payee, description: desc, unit, amount };
+    transactions.push(tx);
+
+    if(byAccount[currentAccount]) {
+      byAccount[currentAccount].total += amount;
+      byAccount[currentAccount].transactions.push(tx);
+    }
+
+    if(unit) {
+      if(!byUnit[unit]) byUnit[unit] = { unit, capex: 0, turnover: 0, total: 0, transactions: [] };
+      byUnit[unit].total += amount;
+      if(currentCategory === 'capex')    byUnit[unit].capex    += amount;
+      else if(currentCategory === 'turnover') byUnit[unit].turnover += amount;
+      byUnit[unit].transactions.push(tx);
+    }
+
+    if(currentCategory === 'capex')    capexTotal    += amount;
+    else if(currentCategory === 'turnover') turnoverTotal += amount;
+  }
+
+  const totalSpend  = capexTotal + turnoverTotal;
+  const turnedUnits = Object.values(byUnit).filter(u => u.turnover > 0).length;
+
+  return {
+    reportTitle: 'Transaction Detail by Account',
+    dateRange, propertyName,
+    style: 'buildium_transaction',
+    transactions, byAccount, byUnit,
+    turnoverTotal, capexTotal, totalSpend, turnedUnits,
+    system: 'buildium_capex',
+  };
+}
+
 // Handles two AppFolio report formats:
 //   • "Renewal Summary"  — has Previous Rent + Rent + Dollar Difference columns
 //   • "Lease History"    — has Move In, Move Out, Rent per tenant row
@@ -7177,10 +7418,10 @@ function renderCapexTab() {
   if(!capexDetail) {
     html += `<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:20px;text-align:center;color:var(--text3);font-size:13px">
       <div style="font-size:20px;margin-bottom:8px">📂</div>
-      <div style="font-weight:500;color:var(--text2);margin-bottom:5px">No General Ledger uploaded</div>
-      <div style="font-size:12px">Upload an AppFolio <strong>General Ledger</strong> report (filtered to capex &amp; turnover GL accounts) on the <strong>Upload files</strong> tab to see the turnover-vs-capex breakdown here.</div>
+      <div style="font-weight:500;color:var(--text2);margin-bottom:5px">No Capex report uploaded</div>
+      <div style="font-size:12px">Upload an AppFolio <strong>General Ledger</strong> (filtered to capex &amp; turnover accounts) or a Buildium <strong>Transaction Detail by Account</strong> report on the <strong>Upload files</strong> tab to see the breakdown here.</div>
     </div>`;
-  } else if(capexDetail.style === 'general_ledger') {
+  } else if(capexDetail.style === 'general_ledger' || capexDetail.style === 'buildium_transaction') {
     // Date filter
     const filterMonths = settings.capexFilterMonths !== undefined ? settings.capexFilterMonths : 12;
     const filterCutoff = (() => {
@@ -7237,12 +7478,12 @@ function renderCapexTab() {
       </div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr)">
         <div style="padding:12px 14px;border-right:1px solid var(--border)">
-          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Unit Turnover (5xxx)</div>
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Unit Turnover</div>
           <div style="font-size:18px;font-weight:600;color:var(--amber)">${fmt(filteredTurnover)}</div>
           <div style="font-size:10px;color:var(--text3);margin-top:2px">Make-ready · cleaning · repairs</div>
         </div>
         <div style="padding:12px 14px;border-right:1px solid var(--border)">
-          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">True Capex (7xxx)</div>
+          <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">True Capex</div>
           <div style="font-size:18px;font-weight:600;color:var(--blue)">${fmt(filteredCapex)}</div>
           <div style="font-size:10px;color:var(--text3);margin-top:2px">HVAC · appliances · structure</div>
         </div>
@@ -7272,7 +7513,7 @@ function renderCapexTab() {
         <div style="background:var(--bg2);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);overflow:hidden">
         <table style="width:100%;border-collapse:collapse;font-size:12px">
           <thead><tr>
-            <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">GL Account</th>
+            <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Account</th>
             <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Total</th>
             <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">% of Group</th>
             <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Per Unit/Yr</th>
@@ -7292,8 +7533,8 @@ function renderCapexTab() {
       return t;
     };
 
-    html += renderAcctTable('Unit Turnover Costs — 5xxx (make-ready, cleaning, painting, flooring)', 'turnover', 'var(--amber)');
-    html += renderAcctTable('Capital Expenditures — 7xxx (HVAC, appliances, roofing, remodel)', 'capex', 'var(--blue)');
+    html += renderAcctTable('Unit Turnover Costs (make-ready, cleaning, painting, flooring)', 'turnover', 'var(--amber)');
+    html += renderAcctTable('Capital Expenditures (HVAC, appliances, roofing, remodel)', 'capex', 'var(--blue)');
 
     // ── Per-unit breakdown ───────────────────────────────────────────────────
     const unitEntries = Object.entries(filteredByUnit).sort((a,b) => b[1].total - a[1].total);
@@ -7451,7 +7692,7 @@ function renderCapexTab() {
         <table style="width:100%;border-collapse:collapse;font-size:12px">
           <thead><tr style="background:var(--bg3)">
             <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Date</th>
-            <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">GL Account</th>
+            <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Account</th>
             <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Payee</th>
             <th style="padding:6px 12px;text-align:left;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Description</th>
             <th style="padding:6px 12px;text-align:right;font-weight:500;color:var(--text3);border-bottom:1px solid var(--border)">Amount</th>
@@ -8172,8 +8413,8 @@ function downloadParsedFile(propId, fileKey) {
     aoa.push(['Total', '', '', parsed.totalAR, parsed.aging0_30, parsed.aging30Plus]);
   } else if(fileKey === 'capex') {
     sheetName = 'Capex Detail';
-    if(parsed.style === 'general_ledger') {
-      aoa = [['Date', 'GL Account', 'Type', 'Unit', 'Payee', 'Description', 'Amount']];
+    if(parsed.style === 'general_ledger' || parsed.style === 'buildium_transaction') {
+      aoa = [['Date', 'Account', 'Type', 'Unit', 'Payee', 'Description', 'Amount']];
       (parsed.transactions || []).sort((a,b)=>(a.date||'').localeCompare(b.date||'')).forEach(t => {
         aoa.push([t.date||'', t.account, t.categoryType, t.unit||'', t.payee||'', t.description||'', t.amount]);
       });
@@ -8191,7 +8432,7 @@ function downloadParsedFile(propId, fileKey) {
         aoa.push([item.label, ...(item.values || []), item.values ? item.values.reduce((a,b)=>a+b,0) : 0]);
       });
     }
-    if(parsed.style !== 'general_ledger' && parsed.totalSpend) aoa.push(['Total', ...Array((aoa[0]||[]).length - 2).fill(''), parsed.totalSpend]);
+    if(parsed.style !== 'general_ledger' && parsed.style !== 'buildium_transaction' && parsed.totalSpend) aoa.push(['Total', ...Array((aoa[0]||[]).length - 2).fill(''), parsed.totalSpend]);
   } else if(fileKey === 'proforma') {
     sheetName = 'Proforma';
     const prop = properties ? properties.find(p => p.id === propId) : null;
