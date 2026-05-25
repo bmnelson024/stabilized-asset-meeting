@@ -2428,10 +2428,22 @@ function parseBuildiumCapex(ws) {
     return 'other';
   }
 
-  function extractUnit(nameStr) {
-    if(!nameStr) return '';
-    const m = nameStr.match(/^unit\s+(\w[\w-]*)\s*-/i);
-    return m ? m[1] : '';
+  function extractUnit(nameStr, descStr) {
+    // Primary: "Unit 106 - Lowe's" in the Name field
+    if(nameStr) {
+      const m = nameStr.match(/^unit\s+(\w[\w-]*)\s*-/i);
+      if(m) return m[1];
+    }
+    // Fallback: scan description for "unit 209", "APT #203", "APT 120", etc.
+    // Require the captured token to start with a digit — prevents matching appliance
+    // model numbers like "GE EL UNIT GUD27ESSMWW" where the token starts with a letter.
+    if(descStr) {
+      const u = descStr.match(/\bunit\s+(\d[\w-]*)/i);
+      if(u) return u[1];
+      const a = descStr.match(/\bapt\s*#?\s*(\d+)/i);
+      if(a) return a[1];
+    }
+    return '';
   }
 
   function parseDate(val) {
@@ -2494,7 +2506,7 @@ function parseBuildiumCapex(ws) {
     const amount  = parseFloat(col5) || 0;
     const nameStr = row[NAME_COL] ? row[NAME_COL].toString() : '';
     const desc    = row[DESC_COL] ? row[DESC_COL].toString().replace(/\n/g, ' ').trim() : '';
-    const unit    = extractUnit(nameStr);
+    const unit    = extractUnit(nameStr, desc);
     const payee   = nameStr.replace(/^unit\s+\w[\w-]*\s*-\s*/i, '').trim();
 
     const tx = { date: dateStr, account: currentAccount, categoryType: currentCategory, payee, description: desc, unit, amount };
