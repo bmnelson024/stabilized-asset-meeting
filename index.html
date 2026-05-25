@@ -3723,12 +3723,14 @@ function parseAppfolioBudget(ws) {
       const isCategory = !row.slice(1).some(v => v !== null && v !== '' && v !== 0
         && !(typeof v === 'string' && v.startsWith('=')));
       if(isCategory) {
+        // Stop entirely at the Liability section — balance-sheet rows should not be P&L items
+        if(lc === 'liability' || lc.startsWith('liability')) break;
         // Update section state from section-header labels
         if(lc.includes('capital expense') || lc.includes('capital expenditure') || lc.includes('capex')) {
           inCapexSection = true; inDebtSection = false;
         } else if(lc === 'mortgage' || lc.startsWith('mortgage') || lc.includes('debt service')) {
           inDebtSection = true; inCapexSection = false;
-        } else if(lc === 'income' || lc === 'expense' || lc === 'other expense' || lc === 'liability') {
+        } else if(lc === 'income' || lc === 'expense' || lc === 'other expense') {
           inCapexSection = false; inDebtSection = false;
         }
         continue; // never emit section header rows as line items
@@ -4517,6 +4519,24 @@ function renderBenchmarkTab() {
   }
   const effectiveDebtSubs = debtSubs.length ? debtSubs : syntheticDebtSubs;
 
+  // Synthesize a capex row from the budget when the income statement has no capex lines.
+  // This mirrors the syntheticDebtSubs pattern: budget is the source of truth when actuals
+  // don't have an explicit capex line (common with AppFolio when capex is tracked separately).
+  const syntheticCapexSubs = [];
+  if(!capexSubs.length && hasBG) {
+    const bgCapexRows = bg.rows.filter(r => r.isCapex && r.total);
+    if(bgCapexRows.length) {
+      const bgCapexAnnual = bgCapexRows.reduce((s,r) => s + r.total, 0);
+      syntheticCapexSubs.push({
+        label: 'Capital Expenditures', isCapex: true, isTotalExpense: false, isNOI: false,
+        isNetIncome: false, isTotal: false, isCategory: false, isSubtotal: false, level: 1,
+        values: Array(stmt.months.length).fill(0), total: 0,
+        _bgAnnual: bgCapexAnnual, _synthetic: true,
+      });
+    }
+  }
+  const effectiveCapexSubs = capexSubs.length ? capexSubs : syntheticCapexSubs;
+
   // Detect if proforma places AMF inside operating expenses (common in templates).
   // If so, the proforma's isTotalExpense is overstated and isNOI is understated by that amount.
   // We strip AMF out of both figures so the benchmark rows compare apples-to-apples.
@@ -4814,11 +4834,36 @@ function renderBenchmarkTab() {
     const t3Avg  = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-2),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
     const t6Avg  = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-5),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
     const t12Avg = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-11),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
-    let cells = `<td>${fmt(actual)}</td>`;
-    if(hasBG) cells += `<td>—</td><td>—</td><td>—</td>`;
+    // Synthesized rows carry _bgAnnual from budget; otherwise sum bg.rows with isCapex
+    const bgCapexAnnual = (() => {
+      if(rows[0] && rows[0]._bgAnnual !== undefined) return rows[0]._bgAnnual;
+      if(!hasBG) return null;
+      const bgCx = bg.rows.filter(r => r.isCapex && r.total);
+      return bgCx.length ? bgCx.reduce((s,r) => s + r.total, 0) : null;
+    })();
+    let cells = `<td>${rows[0]?._synthetic ? '— <span style="font-size:10px;color:var(--text3)">(budget only)</span>' : fmt(actual)}</td>`;
+    if(hasBG) {
+      const bgMonth = bgCapexAnnual !== null ? bgCapexAnnual / 12 : null;
+      const varD    = (bgMonth !== null && !rows[0]?._synthetic) ? actual - bgMonth : null;
+      const varPct  = (varD !== null && bgMonth) ? varD / Math.abs(bgMonth) * 100 : null;
+      const vCls    = varD !== null ? (varD <= 0 ? 'val-pos' : 'val-neg') : '';
+      cells += `<td>${bgMonth !== null ? fmt(bgMonth) : '—'}</td>`;
+      cells += `<td class="${vCls}">${varD !== null ? fmtVar(varD) : '—'}</td>`;
+      cells += `<td class="${vCls}">${varPct !== null ? varPct.toFixed(1)+'%' : '—'}</td>`;
+    }
     cells += `<td>${fmt(t3Avg)}</td><td>${fmt(t6Avg)}</td><td>${fmt(t12Avg)}</td>`;
-    cells += `<td>—</td>`; // Trend — aggregated row
-    if(hasPF) cells += `<td>—</td><td>—</td><td>—</td>`;
+    cells += `<td>—</td>`; // Trend — aggregated row, not meaningful for capex
+    if(hasPF) {
+      const pfCapexRows = pf.rows.filter(r => r.isCapex && r.total);
+      const pfCapexAnnual = pfCapexRows.length ? pfCapexRows.reduce((s,r) => s + r.total, 0) : null;
+      const pfMonth = pfCapexAnnual ? pfCapexAnnual / 12 : null;
+      const t12VsPf = (pfMonth && !rows[0]?._synthetic) ? t12Avg - pfMonth : null;
+      const t12VsPct = (t12VsPf !== null && pfMonth) ? t12VsPf / Math.abs(pfMonth) * 100 : null;
+      const vCls = t12VsPf !== null ? (t12VsPf <= 0 ? 'val-pos' : 'val-neg') : '';
+      cells += `<td>${pfMonth !== null ? fmt(pfMonth) : '—'}</td>`;
+      cells += `<td class="${vCls}">${t12VsPf !== null ? fmtVar(t12VsPf) : '—'}</td>`;
+      cells += `<td class="${vCls}">${t12VsPct !== null ? t12VsPct.toFixed(1)+'%' : '—'}</td>`;
+    }
     return `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
       <td>Capital Expenditures</td>${cells}
     </tr>`;
@@ -5018,13 +5063,13 @@ function renderBenchmarkTab() {
 
   if(anchorIncome)  html += summaryRow(anchorIncome,  'income',  'row-total', hasIncomeSubs,              'Total Operating Income')  + incomeDetailRows('income');
   if(anchorExpense) html += summaryRow(anchorExpense, 'expense', 'row-total', hasExpenseSubs,             'Total Operating Expense') + expenseDetailRows('expense');
-  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',   effectiveAmfSubs.length>0||capexSubs.length>0||effectiveDebtSubs.length>0, 'Net Operating Income') + amfDetailRows(effectiveAmfSubs,'noi') + capexDetailRows(capexSubs,'noi') + debtDetailRows(effectiveDebtSubs,'noi');
+  if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',   effectiveAmfSubs.length>0||effectiveCapexSubs.length>0||effectiveDebtSubs.length>0, 'Net Operating Income') + amfDetailRows(effectiveAmfSubs,'noi') + capexDetailRows(effectiveCapexSubs,'noi') + debtDetailRows(effectiveDebtSubs,'noi');
 
   // Effective Cash Flow = NOI - AMF - Capex - Debt Service (computed, not read from statement)
   if(anchorNOI) {
     const sumValues = rows => rows.reduce((s,r) => s.map((v,i) => v + (r.values[i]||0)), Array(12).fill(0));
     const efcfValues = anchorNOI.values.map((v,i) =>
-      v - sumValues(effectiveAmfSubs)[i] - sumValues(capexSubs)[i] - sumValues(effectiveDebtSubs)[i]
+      v - sumValues(effectiveAmfSubs)[i] - sumValues(effectiveCapexSubs)[i] - sumValues(effectiveDebtSubs)[i]
     );
     const efcfRow = {
       label: 'Effective Cash Flow', isNetIncome: true,
