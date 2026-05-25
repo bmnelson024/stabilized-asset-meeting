@@ -4510,9 +4510,11 @@ function renderBenchmarkTab() {
           const isGood    = isExp ? !goingUp : goingUp;
           const color     = isGood ? 'var(--green)' : 'var(--red)';
           const arrow     = goingUp ? '▲' : '▼';
-          trendHtml = `<span style="color:${color};font-size:13px;font-weight:600">${arrow}</span>`;
+          const tipText   = `T-3 avg: ${fmt(recentAvg)} vs Prior 3 avg: ${fmt(prevAvg)} (${delta>=0?'+':''}${fmt(delta)})`;
+          trendHtml = `<span style="color:${color};font-size:13px;font-weight:600;cursor:default;border-bottom:1px dotted ${color}" title="${tipText}">${arrow}</span>`;
         } else {
-          trendHtml = `<span style="color:var(--text3);font-size:11px">—</span>`;
+          const tipText = `T-3 avg: ${fmt(recentAvg)} vs Prior 3 avg: ${fmt(prevAvg)} (no significant change)`;
+          trendHtml = `<span style="color:var(--text3);font-size:11px;cursor:default" title="${tipText}">—</span>`;
         }
       }
     }
