@@ -4865,7 +4865,26 @@ function renderBenchmarkTab() {
       cells += `<td class="${vCls}">${varPct !== null ? varPct.toFixed(1)+'%' : '—'}</td>`;
     }
     cells += `<td>${fmt(t3Avg)}</td><td>${fmt(t6Avg)}</td><td>${fmt(t12Avg)}</td>`;
-    cells += `<td>—</td>`; // Trend — aggregated row, not meaningful for capex
+    // Trend — compute for real rows; suppress for budget-only synthetic rows
+    let capexTrendHtml = `<span style="color:var(--text3);font-size:11px">—</span>`;
+    if(!rows[0]?._synthetic && monthIdx >= 3) {
+      const prevAvg = rows.reduce((s,r) => {
+        const sl = r.values.slice(Math.max(0, monthIdx - 5), Math.max(0, monthIdx - 2));
+        return s + (sl.length ? sl.reduce((a,b)=>a+b,0)/sl.length : 0);
+      }, 0);
+      const delta = t3Avg - prevAvg;
+      if(Math.abs(delta) > 0.01) {
+        const goingUp = delta > 0;
+        const color   = goingUp ? 'var(--red)' : 'var(--green)'; // capex: down is good
+        const arrow   = goingUp ? '▲' : '▼';
+        const tip     = `T-3 avg: ${fmt(t3Avg)} vs Prior 3 avg: ${fmt(prevAvg)} (${delta>=0?'+':''}${fmt(delta)})`;
+        capexTrendHtml = `<span style="color:${color};font-size:13px;font-weight:600;cursor:default;border-bottom:1px dotted ${color}" title="${tip}">${arrow}</span>`;
+      } else {
+        const tip = `T-3 avg: ${fmt(t3Avg)} vs Prior 3 avg: ${fmt(prevAvg)} (no significant change)`;
+        capexTrendHtml = `<span style="color:var(--text3);font-size:11px;cursor:default" title="${tip}">—</span>`;
+      }
+    }
+    cells += `<td style="text-align:center;padding:7px 4px">${capexTrendHtml}</td>`;
     if(hasPF) {
       const pfCapexRows = pf.rows.filter(r => r.isCapex && r.total);
       const pfCapexAnnual = pfCapexRows.length ? pfCapexRows.reduce((s,r) => s + r.total, 0) : null;
@@ -4893,10 +4912,11 @@ function renderBenchmarkTab() {
     if(rows.length < 2) return out;
 
     // Sum actual for selected month; T-3, T-6, T-12 anchored to monthIdx
-    const totalActual = rows.reduce((s,r) => s + r.values[monthIdx], 0);
-    const totalT3  = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-2),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
-    const totalT6  = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-5),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
-    const totalT12 = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-11),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
+    const totalActual   = rows.reduce((s,r) => s + r.values[monthIdx], 0);
+    const totalT3       = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-2),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
+    const totalT6       = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-5),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
+    const totalT12      = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-11),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
+    const totalPrevAvg  = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-5),Math.max(0,monthIdx-2)); return s + (sl.length ? sl.reduce((a,b)=>a+b,0)/sl.length : 0); }, 0);
 
     // Build subtotal cells (debt service is expense — lower is better)
     const varGoodDS = v => v <= 0;
@@ -4915,7 +4935,22 @@ function renderBenchmarkTab() {
     subtotalCells += `<td style="font-weight:500">${fmt(totalT3)}</td>`;
     subtotalCells += `<td style="font-weight:500">${fmt(totalT6)}</td>`;
     subtotalCells += `<td style="font-weight:500">${fmt(totalT12)}</td>`;
-    subtotalCells += `<td>—</td>`; // Trend — subtotal row
+    // Trend for Total Debt Service subtotal
+    let dsTrendHtml = `<span style="color:var(--text3);font-size:11px">—</span>`;
+    if(monthIdx >= 3) {
+      const dsDelta = totalT3 - totalPrevAvg;
+      if(Math.abs(dsDelta) > 0.01) {
+        const goingUp = dsDelta > 0;
+        const color   = goingUp ? 'var(--red)' : 'var(--green)'; // DS is expense
+        const arrow   = goingUp ? '▲' : '▼';
+        const tip     = `T-3 avg: ${fmt(totalT3)} vs Prior 3 avg: ${fmt(totalPrevAvg)} (${dsDelta>=0?'+':''}${fmt(dsDelta)})`;
+        dsTrendHtml = `<span style="color:${color};font-size:13px;font-weight:600;cursor:default;border-bottom:1px dotted ${color}" title="${tip}">${arrow}</span>`;
+      } else {
+        const tip = `T-3 avg: ${fmt(totalT3)} vs Prior 3 avg: ${fmt(totalPrevAvg)} (no significant change)`;
+        dsTrendHtml = `<span style="color:var(--text3);font-size:11px;cursor:default" title="${tip}">—</span>`;
+      }
+    }
+    subtotalCells += `<td style="text-align:center;padding:7px 4px">${dsTrendHtml}</td>`;
     // PF — compare T-12 avg to total proforma DS (sum of all PF DS rows, whether split or combined)
     // Individual interest/principal rows leave PF blank; the total is the right level to compare.
     if(hasPF) {
