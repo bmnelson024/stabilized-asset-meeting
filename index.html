@@ -1998,10 +1998,12 @@ function normalizePrincipalSign(rows) {
     // (to avoid touching combined "Principal & Interest" summary rows, which are
     //  usually already positive because their interest component dominates)
     const isPrincipalOnly = lc.includes('principal') && !lc.includes('interest');
+    // "Mortgage Payable" in AppFolio Liability section = mortgage principal payment
+    const isMortgagePayable = lc === 'mortgage payable' || lc === 'mortgages payable';
     // Capital Expenditures also lives in "Other Items" as a negative outflow
     const isCapexLine = lc === 'capital expenditures' || lc === 'capital expenditure'
                      || lc.includes('capex');
-    if((isPrincipalOnly || isCapexLine) && r.total < 0) {
+    if((isPrincipalOnly || isMortgagePayable || isCapexLine) && r.total < 0) {
       r.values = r.values.map(v => -v);
       r.total  = -r.total;
       r._signFlipped = true;
@@ -3739,8 +3741,7 @@ function parseAppfolioBudget(ws) {
       const isNOI         = lc.includes('net operating income');
       const isTotalIncome = lc.includes('total budgeted operating income') || lc === 'total operating income' || lc === 'total income' || lc === 'total budgeted income';
       const isTotalExpense= lc.includes('total budgeted operating expense') || lc === 'total operating expense' || lc === 'total budgeted expense';
-      const isNetIncome   = !isNOI && !isTotalIncome && !isTotalExpense
-                         && (lc === 'net income' || lc.includes('total budgeted income') && !isTotalIncome);
+      const isNetIncome   = !isNOI && !isTotalIncome && !isTotalExpense && lc === 'net income';
       const isTotal       = isTotalIncome || isTotalExpense;
       const isSubtotal    = !isNOI && !isTotal && lc.startsWith('total');
 
@@ -4421,7 +4422,7 @@ function renderBenchmarkTab() {
 
   // ── Classify statement rows into four buckets ──────────────────────────────
   // Debt service labels (below NOI in income statement)
-  const DEBT_SERVICE_KEYS = ['mortgage interest','mortgage principal','interest expense','principal','loan interest','debt service','loan payment'];
+  const DEBT_SERVICE_KEYS = ['mortgage interest','mortgage principal','mortgage payable','mortgages payable','interest expense','principal','loan interest','debt service','loan payment'];
   const isDebtService = r => {
     const lc = r.label.toLowerCase();
     return DEBT_SERVICE_KEYS.some(k => lc.includes(k));
@@ -4968,13 +4969,16 @@ function renderBenchmarkTab() {
         const arrow   = goingUp ? '▲' : '▼';
         const tip     = `T-3 avg: ${fmt(t3AvgLI)} vs Prior 3 avg: ${fmt(prevAvgLI)} (${deltaLI>=0?'+':''}${fmt(deltaLI)})`;
         trendLI = `<span style="color:${color};font-size:13px;font-weight:600;cursor:default;border-bottom:1px dotted ${color}" title="${tip}">${arrow}</span>`;
+      } else {
+        const tip = `T-3 avg: ${fmt(t3AvgLI)} vs Prior 3 avg: ${fmt(prevAvgLI)} (no significant change)`;
+        trendLI = `<span style="color:var(--text3);font-size:11px;cursor:default" title="${tip}">—</span>`;
       }
     }
     cells += `<td>${fmt(t3AvgLI)}</td><td>${fmt(t6AvgLI)}</td><td>${fmt(t12AvgLI)}</td>`;
     cells += `<td style="text-align:center">${trendLI}</td>`;
     if(hasPF) {
       const pfMonth = pfAnnualLI !== null ? pfAnnualLI/12 : null;
-      const t12VsPf = pfMonth !== null ? t12Avg - pfMonth : null;
+      const t12VsPf = pfMonth !== null ? t12AvgLI - pfMonth : null;
       const t12VsPct = (t12VsPf !== null && pfMonth) ? t12VsPf/Math.abs(pfMonth)*100 : null;
       const vCls = t12VsPf !== null ? (vgLI(t12VsPf)?'val-pos':'val-neg') : '';
       cells += `<td>${pfMonth!==null?fmt(pfMonth):'—'}</td><td class="${vCls}">${t12VsPf!==null?fmtVar(t12VsPf):'—'}</td><td class="${vCls}">${t12VsPct!==null?t12VsPct.toFixed(1)+'%':'—'}</td>`;
@@ -6839,7 +6843,7 @@ function renderCashReviewTab() {
   // ── Derive Debt Service/month — prefer T-6 actuals from statement ─────────
   // Use label-matching (same as benchmark tab) because AppFolio statement rows
   // do NOT carry an isDebtService property — only proforma/budget rows do.
-  const CR_DS_KEYS = ['mortgage interest','mortgage principal','interest expense','principal','loan interest','debt service','loan payment'];
+  const CR_DS_KEYS = ['mortgage interest','mortgage principal','mortgage payable','mortgages payable','interest expense','principal','loan interest','debt service','loan payment'];
   const crIsDS = r => { const lc = r.label.toLowerCase(); return CR_DS_KEYS.some(k => lc.includes(k)); };
   let dsMonthly = null, dsSource = '';
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
