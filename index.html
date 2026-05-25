@@ -5102,9 +5102,9 @@ function renderRentRollTab() {
       }).join('');
 
     html += `<div style="margin-top:16px">
-      <div class="bench-title" style="margin-bottom:12px">Delinquency / AR aging${dq.asOfDate ? ` <span style="font-size:12px;font-weight:400;color:var(--text3)">as of ${dq.asOfDate}</span>` : ''}</div>
+      <div class="bench-title" style="margin-bottom:12px">Delinquency${dq.asOfDate ? ` <span style="font-size:12px;font-weight:400;color:var(--text3)">as of ${dq.asOfDate}</span>` : ''}</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
-        <div class="kpi-card"><div class="kpi-label">Total AR</div><div class="kpi-val" style="color:${arColor}">${fmtD(dq.totalAR)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Past due</div><div class="kpi-val" style="color:${arColor}">${fmtD(dq.totalAR)}</div></div>
         <div class="kpi-card"><div class="kpi-label">0–30 days</div><div class="kpi-val">${fmtD(dq.aging0_30)}</div></div>
         <div class="kpi-card"><div class="kpi-label">30+ days</div><div class="kpi-val" style="color:${a30Color}">${fmtD(dq.aging30Plus)}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">${dq.totalAR > 0 ? (dq.aging30Plus/dq.totalAR*100).toFixed(0)+'% of total' : ''}</div></div>
         <div class="kpi-card"><div class="kpi-label">Delinquent units</div><div class="kpi-val">${dq.units.length}</div></div>
@@ -5115,7 +5115,7 @@ function renderRentRollTab() {
             <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Unit</th>
             <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Tenant</th>
             <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Status</th>
-            <th style="padding:6px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Total AR</th>
+            <th style="padding:6px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">Past Due</th>
             <th style="padding:6px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">0–30</th>
             <th style="padding:6px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em">30+</th>
           </tr></thead>
@@ -7924,32 +7924,7 @@ function portfolioPropRow(p, pm, isOpen) {
     const occupiedP = validP.filter(u=>!u.isVacant).length;
     const occPctP = (occupiedP / validP.length * 100).toFixed(0);
     const occColor = occPctP >= 90 ? 'var(--green)' : occPctP >= 85 ? '#ffa040' : 'var(--red)';
-    // Loss to lease for portfolio row
-    const totalMarketP = validP.reduce((a,u)=>a+u.marketRent,0);
-    const ltlAmtP = validP.filter(u=>!u.isVacant && u.marketRent>0 && u.actualRent<u.marketRent)
-                           .reduce((a,u)=>a+(u.marketRent-u.actualRent),0);
-    const ltlPctP = totalMarketP > 0 ? (ltlAmtP / totalMarketP * 100) : null;
-    const ltlColor = ltlPctP === null ? '' : ltlPctP < 2 ? 'var(--green)' : ltlPctP < 5 ? '#ffa040' : 'var(--red)';
-    const ltlLine = ltlPctP !== null
-      ? `<br><span style="color:${ltlColor};font-size:10px" title="Loss to lease: ${ltlPctP.toFixed(1)}% of GPR">LTL ${ltlPctP.toFixed(1)}%</span>`
-      : '';
-    // Near-expiry alert
-    const nowMs2 = Date.now();
-    const day2   = 1000 * 60 * 60 * 24;
-    const expiringCritical = validP.filter(u => u.leaseEndDate && !u.isVacant && (() => {
-      const ms = new Date(u.leaseEndDate+'T12:00:00').getTime() - nowMs2;
-      return ms >= 0 && ms <= 30 * day2;
-    })()).length;
-    const expiringWarn = validP.filter(u => u.leaseEndDate && !u.isVacant && (() => {
-      const ms = new Date(u.leaseEndDate+'T12:00:00').getTime() - nowMs2;
-      return ms > 30 * day2 && ms <= 90 * day2;
-    })()).length;
-    const expiryLine = expiringCritical > 0
-      ? `<br><span style="color:var(--red);font-size:10px" title="${expiringCritical} lease${expiringCritical>1?'s':''} expiring within 30 days">⚠ ${expiringCritical} exp &lt;30d</span>`
-      : expiringWarn > 0
-        ? `<br><span style="color:#ffa040;font-size:10px" title="${expiringWarn} lease${expiringWarn>1?'s':''} expiring within 90 days">${expiringWarn} exp &lt;90d</span>`
-        : '';
-    occHTML = `<span style="color:${occColor};font-weight:500">${occPctP}%</span> <span style="color:var(--text3);font-size:11px">${occupiedP}/${validP.length}</span>${ltlLine}${expiryLine}`;
+    occHTML = `<span style="color:${occColor};font-weight:500">${occPctP}%</span> <span style="color:var(--text3);font-size:11px">${occupiedP}/${validP.length}</span>`;
   }
 
   // Compute average monthly NOI, income, and expense
