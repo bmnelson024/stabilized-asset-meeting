@@ -759,7 +759,7 @@ async function clearPropFile(propId, key) {
   delete d[key];
   delete d[key + '_filename'];
   // Clear secondary keys for specific file types
-  if(key === 'statement') { delete d.statement_raw; delete d.pfMapping; }
+  if(key === 'statement') { delete d.pfMapping; }
   if(key === 'proforma')  { delete d.pfMapping; }
   await save(propId);
   const p = properties.find(x => x.id === propId);
@@ -983,13 +983,12 @@ function getStatusDot(id) {
   const budgetNoi = getKeyMetric(id, 'budget_noi');
   if(!budgetNoi || !noiRow) return 'dot-none';
 
-  // Use the most recent non-zero month's actual NOI vs budget/mo
+  // Use the reconciliation-aware current month (same logic as all other tabs)
   if(!noiRow.values.length) return 'dot-none';
-  const nonZeroIdxs = noiRow.values.map((v,i)=>v!==0?i:-1).filter(i=>i>=0);
-  const lastMonthIdx = nonZeroIdxs.length ? nonZeroIdxs[nonZeroIdxs.length-1] : noiRow.values.length - 1;
-  const currentMonthNoi = noiRow.values[lastMonthIdx];
+  const lastMonthIdx = getPrevMonthIdx(stmt.months, id);
+  const currentMonthNoi = noiRow.values[lastMonthIdx] ?? 0;
   const budgetMonthlyNoi = budgetNoi / 12;
-
+  if(!budgetMonthlyNoi) return 'dot-none';
   const pct = (currentMonthNoi - budgetMonthlyNoi) / Math.abs(budgetMonthlyNoi);
   if(pct >= -0.05) return 'dot-ok';
   if(pct >= -0.10) return 'dot-warn';
@@ -1190,7 +1189,7 @@ function renderUploadTab(p) {
       <div class="upload-slot-sub">${rrHistSub}</div>
       <div style="font-size:10px;color:var(--text3);margin-top:2px">→ Rent Progression history</div>
     </label>
-    ${rrHistCount>0 ? `<button onclick="event.preventDefault();if(confirm('Clear all rent roll history snapshots?')){propData['${p.id}'].rentRollHistory=[];save('${p.id}');renderUploadTab(properties.find(x=>x.id==='${p.id}'))}" title="Clear history" style="position:absolute;top:6px;right:6px;z-index:2;background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:2px 7px;font-size:11px;color:var(--text3);cursor:pointer;font-family:inherit;line-height:1.4">✕</button>` : ''}
+    ${rrHistCount>0 ? `<button onclick="event.preventDefault();if(confirm('Clear all rent roll history snapshots?')){propData['${p.id}'].rentRollHistory=[];save('${p.id}');renderUploadTab(properties.find(x=>x.id==='${p.id}'));renderRentProgressionTab()}" title="Clear history" style="position:absolute;top:6px;right:6px;z-index:2;background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:2px 7px;font-size:11px;color:var(--text3);cursor:pointer;font-family:inherit;line-height:1.4">✕</button>` : ''}
   </div>`;
 
   document.getElementById('rentroll-upload-grid').innerHTML = rrCurrentSlot + rrHistSlot;
@@ -1499,8 +1498,9 @@ function handleRentRollBatch(files, propId) {
   const total = files.length;
   let processed = 0, errors = 0;
   // Track the most recently dated snapshot to set as "current" rentroll
-  let latestDate   = (propData[propId].rentroll && propData[propId].rentroll.asOfDate) || '0000-00-00';
-  let latestParsed = null;
+  let latestDate    = (propData[propId].rentroll && propData[propId].rentroll.asOfDate) || '0000-00-00';
+  let latestParsed  = null;
+  let latestFilename = propData[propId]['rentroll_filename'] || '';
 
   setSaveStatus('saving');
 
@@ -1509,7 +1509,10 @@ function handleRentRollBatch(files, propId) {
       // Sort history chronologically
       propData[propId].rentRollHistory.sort((a,b) => (a.asOfDate||'').localeCompare(b.asOfDate||''));
       // Promote the most recent snapshot to active rent roll
-      if(latestParsed) propData[propId].rentroll = latestParsed;
+      if(latestParsed) {
+        propData[propId].rentroll = latestParsed;
+        propData[propId]['rentroll_filename'] = latestFilename;
+      }
       save(propId);
       renderUploadTab(p);
       renderRentRollTab();
@@ -1531,7 +1534,7 @@ function handleRentRollBatch(files, propId) {
         const snapshot = { asOfDate: snapDate, units: (parsed.units||[]).map(u => ({unitNum:u.unitNum, actualRent:u.actualRent, isVacant:u.isVacant})) };
         if(existIdx >= 0) propData[propId].rentRollHistory[existIdx] = snapshot;
         else propData[propId].rentRollHistory.push(snapshot);
-        if(snapDate > latestDate) { latestDate = snapDate; latestParsed = parsed; }
+        if(snapDate > latestDate) { latestDate = snapDate; latestParsed = parsed; latestFilename = file.name; }
         processed++;
       } catch(err) {
         console.warn('Skipped:', file.name, err.message);
@@ -2009,7 +2012,8 @@ function parseBuildium(ws) {
     const s = h.toString();
     if(s.match(/^\d{2}-\d{4}$/)) {
       const [mm,yyyy] = s.split('-');
-      months.push(MONTH_NAMES[parseInt(mm)-1]+' '+yyyy);
+      const mIdx = parseInt(mm) - 1;
+      months.push(mIdx >= 0 && mIdx <= 11 ? MONTH_NAMES[mIdx] + ' ' + yyyy : s);
     } else {
       months.push(s);
     }
@@ -2034,9 +2038,10 @@ function parseBuildium(ws) {
     const label = raw.toString().trim();
     if(!label) continue;
     const lc = label.toLowerCase();
-    // Formula strings (starting with =) count as non-empty — they have values even if SheetJS can't evaluate them
-    const isCategory = !row.slice(1,totalCol).some(v=>v!==null && v!=='' && v!==0 && v!=='0'
-      && !(typeof v === 'string' && v.startsWith('=')));
+    // A row is a category header only if every data cell is null/empty (not merely zero).
+    // Explicit zero values are legitimate data — a zero-spend line item is not a category.
+    const isCategory = !row.slice(1,totalCol).some(v =>
+      v !== null && v !== '' && !(typeof v === 'string' && v.trim() === ''));
     const isNOI = NOI_LABELS.some(x=>lc===x);
     const isTotalIncome = TOTAL_INCOME_LABELS.some(x=>lc===x);
     const isTotalExpense = TOTAL_EXPENSE_LABELS.some(x=>lc===x);
@@ -2640,7 +2645,7 @@ function parseBuildiumCapex(ws) {
     else if(currentCategory === 'turnover') turnoverTotal += amount;
   }
 
-  const totalSpend  = capexTotal + turnoverTotal;
+  const totalSpend  = transactions.reduce((s, t) => s + t.amount, 0);
   const turnedUnits = Object.values(byUnit).filter(u => u.turnover > 0).length;
 
   return {
@@ -3399,7 +3404,7 @@ function rehydrateProforma(pf, purchaseDate) {
   // Works on a shallow copy of rows to avoid mutating stored data.
   if(!pf || !pf.rows) return pf;
   const pfYear = getProformaYear(purchaseDate) || pf.pfYear || 1;
-  if(pf.pfYear === pfYear && pf.rows.every(r => !r.yearlyTotals)) return pf; // nothing to rehydrate
+  if(pf.pfYear === pfYear) return pf; // already correct year — no rehydration needed
   const rows = pf.rows.map(r => {
     if(!r.yearlyTotals) return r; // seeded/CSV rows — leave as-is
     const annual = r.yearlyTotals[pfYear] || r.yearlyTotals[Math.max(...Object.keys(r.yearlyTotals).map(Number))] || 0;
@@ -3524,7 +3529,6 @@ function parseProformaInfoSheet(ws, purchaseDate) {
           months:Array(12).fill(''), propertyName:''};
 }
 
-const LW_PROFORMA_TEMPLATE_B64 = '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';
 function downloadProformaTemplate() {
   alert('The LW Pro Forma Template is saved in your project folder:\n\nStabilized AM Tool → LW Pro Forma Template.xlsx');
 }
@@ -5243,7 +5247,6 @@ function renderBenchmarkTab() {
     if(!stmtLabels.length) return '';
 
     const actual  = sumStmtRows(stmtLabels, r => r.values[monthIdx]);
-    const t12Avg  = sumStmtRows(stmtLabels, r => r.values.reduce((a,b)=>a+b,0) / r.values.length);
 
     // Budget lookup — sum individual mapped rows; fall back to keyword-classified group total
     let bgAnnualLI = null;
@@ -5370,7 +5373,8 @@ function renderBenchmarkTab() {
 
   // Effective Cash Flow = NOI - AMF - Capex - Debt Service (computed, not read from statement)
   if(anchorNOI) {
-    const sumValues = rows => rows.reduce((s,r) => s.map((v,i) => v + (r.values[i]||0)), Array(12).fill(0));
+    const nMonths = anchorNOI.values.length;
+    const sumValues = rows => rows.reduce((s,r) => s.map((v,i) => v + (r.values[i]||0)), Array(nMonths).fill(0));
     const efcfValues = anchorNOI.values.map((v,i) =>
       v - sumValues(effectiveAmfSubs)[i] - sumValues(effectiveCapexSubs)[i] - sumValues(effectiveDebtSubs)[i]
     );
@@ -6352,18 +6356,19 @@ function renderPropertyValuationTab() {
   const bg   = d.budget;
   const pf   = d.proforma ? rehydrateProforma(d.proforma, p && p.purchaseDate) : null;
 
-  // ── Trailing NOI avgs ──────────────────────────────────────────────────────
+  // ── Trailing NOI avgs (anchored to reconciliation-aware current month) ──────
   let stmtNoiTrailingAvg = null, stmtNoiMonthsUsed = 0;
   let stmtNoiT6Avg = null, stmtNoiT6MonthsUsed = 0;
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
     const noiRow = stmt.rows.find(r => r.isNOI);
     if(noiRow) {
-      const n3 = Math.min(3, stmt.months.length);
-      let s3 = 0; for(let i=0;i<n3;i++) s3 += noiRow.values[stmt.months.length-1-i]||0;
+      const pvMi = getPrevMonthIdx(stmt.months, currentPropId);
+      const n3 = Math.min(3, pvMi + 1);
+      let s3 = 0; for(let i=0;i<n3;i++) s3 += noiRow.values[pvMi-i]||0;
       stmtNoiTrailingAvg = s3/n3; stmtNoiMonthsUsed = n3;
-      const n6 = Math.min(6, stmt.months.length);
+      const n6 = Math.min(6, pvMi + 1);
       if(n6 >= 4) {
-        let s6 = 0; for(let i=0;i<n6;i++) s6 += noiRow.values[stmt.months.length-1-i]||0;
+        let s6 = 0; for(let i=0;i<n6;i++) s6 += noiRow.values[pvMi-i]||0;
         stmtNoiT6Avg = s6/n6; stmtNoiT6MonthsUsed = n6;
       }
     }
@@ -6417,7 +6422,7 @@ function renderPropertyValuationTab() {
   // ── Hold period (years) from purchaseDate ──────────────────────────────────
   let holdYears = null;
   if(p && p.purchaseDate) {
-    const ms = Date.now() - new Date(p.purchaseDate).getTime();
+    const ms = Date.now() - new Date(p.purchaseDate + 'T12:00:00').getTime();
     holdYears = ms / (1000 * 60 * 60 * 24 * 365.25);
   }
   const annualizedAppreciation = (appreciationPct !== null && holdYears && holdYears > 0)
@@ -6600,8 +6605,8 @@ function computeFlags(propId) {
       let bgSum = 0, anyFound = false;
       stmtLabels.forEach(lbl => {
         const bgRow = bgMap[lbl.toLowerCase()];
-        // Use bgRow.total !== undefined to catch intentionally zero-budgeted lines
-        if(bgRow && bgRow.total !== undefined) { bgSum += bgRow.total; anyFound = true; }
+        // Only count rows with a non-zero budget; zero means unbudgeted, fall through to proforma
+        if(bgRow && bgRow.total) { bgSum += bgRow.total; anyFound = true; }
       });
       if(anyFound) budgetMonth = bgSum / 12;
     }
@@ -6708,12 +6713,12 @@ function computeLoanBalance(loan) {
   if(!loan.originalAmount || !loan.loanStartDate) return null;
   const P = loan.originalAmount;
   const nowDate = new Date();
-  const startDate = new Date(loan.loanStartDate + 'T00:00:00');
+  const startDate = new Date(loan.loanStartDate + 'T12:00:00');
   if(nowDate < startDate) return P;
 
   let amorStart = startDate;
   if(loan.hasIO && loan.ioEndDate) {
-    const ioEnd = new Date(loan.ioEndDate + 'T00:00:00');
+    const ioEnd = new Date(loan.ioEndDate + 'T12:00:00');
     if(nowDate <= ioEnd) return P; // still in IO — no principal paid
     amorStart = ioEnd;             // amortization started at IO end
   }
@@ -6742,11 +6747,12 @@ function computePropertyEstimatedValue(propId) {
   if(stmt?.rows && stmt.months?.length) {
     const r = stmt.rows.find(r => r.isNOI);
     if(r) {
-      const n3 = Math.min(3, stmt.months.length);
-      let s3 = 0; for(let i=0;i<n3;i++) s3 += r.values[stmt.months.length-1-i]||0;
+      const ceMi = getPrevMonthIdx(stmt.months, propId);
+      const n3 = Math.min(3, ceMi + 1);
+      let s3 = 0; for(let i=0;i<n3;i++) s3 += r.values[ceMi-i]||0;
       stmtNoiT3 = s3/n3;
-      const n6 = Math.min(6, stmt.months.length);
-      if(n6 >= 4) { let s6=0; for(let i=0;i<n6;i++) s6+=r.values[stmt.months.length-1-i]||0; stmtNoiT6=s6/n6; }
+      const n6 = Math.min(6, ceMi + 1);
+      if(n6 >= 4) { let s6=0; for(let i=0;i<n6;i++) s6+=r.values[ceMi-i]||0; stmtNoiT6=s6/n6; }
     }
   }
   let bgNoi = null, pfNoi = null;
@@ -6821,7 +6827,7 @@ function renderDebtTab() {
 
   function maturityInfo(dateStr) {
     if(!dateStr) return { label: '—', color: 'var(--text3)', urgency: 'none' };
-    const ms = new Date(dateStr + 'T00:00:00').getTime() - now;
+    const ms = new Date(dateStr + 'T12:00:00').getTime() - now;
     const months = ms / (1000 * 60 * 60 * 24 * 30.44);
     const absM = Math.abs(months);
     const yr = Math.floor(absM / 12), mo = Math.round(absM % 12);
@@ -6835,7 +6841,7 @@ function renderDebtTab() {
 
   function formatDate(dateStr) {
     if(!dateStr) return '';
-    return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
   }
 
   function ltvColor(pct) {
@@ -6857,7 +6863,7 @@ function renderDebtTab() {
     // ── IO phase status ───────────────────────────────────────────────────────
     let ioPhaseHtml = '';
     if(loan.hasIO && loan.ioEndDate) {
-      const msIO = new Date(loan.ioEndDate + 'T00:00:00').getTime() - now;
+      const msIO = new Date(loan.ioEndDate + 'T12:00:00').getTime() - now;
       const moIO = msIO / (1000 * 60 * 60 * 24 * 30.44);
       const isCurrentlyIO = moIO > 0;
       const c = isCurrentlyIO
@@ -7196,16 +7202,17 @@ function renderCashReviewTab() {
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
     const noiRow = stmt.rows.find(r => r.isNOI);
     if(noiRow) {
-      const n3 = Math.min(3, stmt.months.length);
+      const crMi = getPrevMonthIdx(stmt.months, currentPropId); // reconciliation-aware anchor
+      const n3 = Math.min(3, crMi + 1);
       let sum3 = 0;
-      for(let i = 0; i < n3; i++) sum3 += noiRow.values[stmt.months.length - 1 - i] || 0;
+      for(let i = 0; i < n3; i++) sum3 += noiRow.values[crMi - i] || 0;
       stmtNoiTrailingAvg = sum3 / n3;
       stmtNoiMonthsUsed = n3;
 
-      const n6 = Math.min(6, stmt.months.length);
+      const n6 = Math.min(6, crMi + 1);
       if(n6 >= 4) { // only show T6 if we have enough months to be meaningful
         let sum6 = 0;
-        for(let i = 0; i < n6; i++) sum6 += noiRow.values[stmt.months.length - 1 - i] || 0;
+        for(let i = 0; i < n6; i++) sum6 += noiRow.values[crMi - i] || 0;
         stmtNoiT6Avg = sum6 / n6;
         stmtNoiT6MonthsUsed = n6;
       }
@@ -7248,9 +7255,10 @@ function renderCashReviewTab() {
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
     const dsRows = stmt.rows.filter(r => crIsDS(r) && !r.isCategory && !r.isTotal && !r.isSubtotal);
     if(dsRows.length) {
-      const n = Math.min(6, stmt.months.length);
+      const crMiDS = getPrevMonthIdx(stmt.months, currentPropId);
+      const n = Math.min(6, crMiDS + 1);
       const t6 = dsRows.reduce((sum, r) => {
-        const slice = r.values.slice(-n);
+        const slice = r.values.slice(Math.max(0, crMiDS - n + 1), crMiDS + 1);
         return sum + slice.reduce((a,b) => a+b, 0) / n;
       }, 0);
       if(t6) { dsMonthly = Math.abs(t6); dsSource = `T${n} Avg`; }
@@ -7273,9 +7281,10 @@ function renderCashReviewTab() {
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
     const amfRows = stmt.rows.filter(r => crIsAMF(r) && !r.isCategory && !r.isTotal && !r.isSubtotal);
     if(amfRows.length) {
-      const n = Math.min(6, stmt.months.length);
+      const crMiAMF = getPrevMonthIdx(stmt.months, currentPropId);
+      const n = Math.min(6, crMiAMF + 1);
       const t6 = amfRows.reduce((sum, r) => {
-        const slice = r.values.slice(-n);
+        const slice = r.values.slice(Math.max(0, crMiAMF - n + 1), crMiAMF + 1);
         return sum + slice.reduce((a,b) => a+b, 0) / n;
       }, 0);
       if(t6) { amfMonthly = Math.abs(t6); amfSource = `T${n} Avg`; }
@@ -7810,7 +7819,9 @@ function renderFlagsTab() {
 // Examines a flag's historical values and returns a plain-English explanation
 // of the most likely cause, or null if no pattern is detected.
 function getFlagHeuristic(flag, d, stmt, monthIdx) {
-  const { group, actual, isIncome, stmtLabels } = flag;
+  const { actual, isIncome, stmtLabels } = flag;
+  // Derive group from PF_LINE_ITEMS (flag objects don't carry a group property)
+  const group = (PF_LINE_ITEMS.find(i => i.label === flag.label) || {}).group || flag.label;
   if(!stmt || !stmtLabels || !stmtLabels.length) return null;
 
   const fmtH = v => '$' + Math.abs(Math.round(v)).toLocaleString();
@@ -7984,9 +7995,13 @@ function renderCapexTab() {
   if(stmt && stmt.rows && stmt.months) {
     stmtMonths = stmt.months;
     capexRows = stmt.rows.filter(r => isCapexRow(r) && !r.isCategory && !r.isTotal);
-    t12CapexTotal = capexRows.reduce((sum, r) => sum + r.values.reduce((a, b) => a + b, 0), 0);
+    // Sum only the 12 months up to and including the reconciliation-aware current month
+    const capexMi = getPrevMonthIdx(stmt.months, currentPropId);
+    const capexStart = Math.max(0, capexMi - 11);
+    t12CapexTotal = capexRows.reduce((sum, r) =>
+      sum + r.values.slice(capexStart, capexMi + 1).reduce((a, b) => a + b, 0), 0);
     const totalIncomeRow = stmt.rows.find(r => r.isTotalIncome);
-    if(totalIncomeRow) egi = totalIncomeRow.values.reduce((a, b) => a + b, 0);
+    if(totalIncomeRow) egi = totalIncomeRow.values.slice(capexStart, capexMi + 1).reduce((a, b) => a + b, 0);
   }
 
   const capexPerUnit  = numUnits > 0 ? t12CapexTotal / numUnits : 0;
@@ -8006,12 +8021,12 @@ function renderCapexTab() {
     avgOccupiedRent   = occupiedUnits.length > 0 ? totalMonthlyRent / occupiedUnits.length : 0;
     expiring60 = occupiedUnits.filter(u => {
       if(!u.leaseEndDate) return false;
-      const ed = new Date(u.leaseEndDate);
+      const ed = new Date(u.leaseEndDate + 'T12:00:00');
       return ed >= today && ed <= d60;
     });
     expiring90 = occupiedUnits.filter(u => {
       if(!u.leaseEndDate) return false;
-      const ed = new Date(u.leaseEndDate);
+      const ed = new Date(u.leaseEndDate + 'T12:00:00');
       return ed > d60 && ed <= d90;
     });
   }
@@ -8654,7 +8669,7 @@ function makeSparkline(values, w=80, h=24) {
   const lastPt = pts[pts.length-1];
   const lx = scaleX(pts.length-1).toFixed(1);
   const ly = scaleY(lastPt.v).toFixed(1);
-  const monthChange = vals.length >= 2 ? ((vals[vals.length-1] - vals[0]) / Math.abs(vals[0]) * 100) : null;
+  const monthChange = (vals.length >= 2 && Math.abs(vals[0]) >= 1) ? ((vals[vals.length-1] - vals[0]) / Math.abs(vals[0]) * 100) : null;
   const tip = monthChange !== null ? `${monthChange>=0?'+':''}${monthChange.toFixed(1)}% over period` : '';
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" title="${tip}" style="display:block;overflow:visible">
     <polygon points="${fillPts}" fill="${fillColor}" stroke="none"/>
@@ -8720,7 +8735,9 @@ function portfolioPropRow(p, pm, isOpen) {
 
   const varHTML = budgetNoi && currentMonthNoi !== null ? (() => {
     const budgetMonthly = budgetNoi / 12;
+    if(!budgetMonthly) return '—';
     const pct = (currentMonthNoi - budgetMonthly) / Math.abs(budgetMonthly) * 100;
+    if(!isFinite(pct)) return '—';
     const cls = pct>=0?'val-pos':'val-neg';
     return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
   })() : '—';
@@ -9100,8 +9117,10 @@ function exportFlags() {
     flags.forEach(f => {
       const group = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group || f.label;
       const note = flagNotes[group] || '';
+      // For income flags, positive varPct means over budget (good); negative means under (bad).
+      // For expense flags, positive varPct means over budget (bad). Sign always reflects direction.
       const varSign = f.varPct >= 0 ? '+' : '−';
-      lines.push(`  ${f.label}: $${Math.round(Math.abs(f.actual)).toLocaleString()} actual vs $${Math.round(Math.abs(f.budget)).toLocaleString()} budget (${varSign}${Math.abs(f.varPct*100).toFixed(1)}%)`);
+      lines.push(`  ${f.isIncome ? '↓ INCOME' : '↑ EXPENSE'} ${f.label}: $${Math.round(Math.abs(f.actual)).toLocaleString()} actual vs $${Math.round(Math.abs(f.budget)).toLocaleString()} budget (${varSign}${Math.abs(f.varPct*100).toFixed(1)}%)`);
       if(note) lines.push(`  → ${note}`);
     });
     lines.push('');
