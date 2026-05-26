@@ -105,7 +105,7 @@
   .upload-section{margin-bottom:20px}
   .upload-section-title{font-size:13px;font-weight:500;margin-bottom:10px;color:var(--text2)}
   .upload-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
-  .upload-slot{border:1px dashed var(--border2);border-radius:var(--radius);padding:14px;text-align:center;cursor:pointer;transition:all .15s;position:relative}
+  .upload-slot{border:1px dashed var(--border2);border-radius:var(--radius);padding:14px;text-align:center;cursor:pointer;transition:all .15s;position:relative;min-height:100px;display:flex;flex-direction:column;justify-content:center}
   .upload-slot:hover{border-color:var(--blue);background:var(--blue-bg)}
   .upload-slot.has-file{border-style:solid;border-color:var(--green);background:var(--green-bg)}
   .upload-slot input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
@@ -329,7 +329,7 @@
         <div class="tab" id="tab-btn-debt" onclick="switchTab('debt')">Property debt</div>
         <div class="tab" id="tab-btn-flags" onclick="switchTab('flags')">Flags</div>
         <div class="tab" onclick="switchTab('notes')">Notes</div>
-        <div class="tab" onclick="switchTab('upload')">Upload files</div>
+        <div class="tab" id="tab-btn-upload" onclick="switchTab('upload')">Upload files</div>
       </div>
 
       <!-- UPLOAD TAB -->
@@ -337,15 +337,15 @@
         <div id="upload-completeness" style="margin-bottom:14px"></div>
         <div id="escrow-warning" style="display:none;margin-bottom:12px"></div>
         <div class="upload-section">
-          <div class="upload-section-title">Monthly files (re-upload each month)</div>
+          <div class="upload-section-title">Monthly files (re-upload each month)<span id="upload-badge-monthly"></span></div>
           <div class="upload-grid" id="monthly-upload-grid"></div>
         </div>
         <div class="upload-section">
-          <div class="upload-section-title">Rent rolls</div>
+          <div class="upload-section-title">Rent rolls<span id="upload-badge-rentroll"></span></div>
           <div class="upload-grid" id="rentroll-upload-grid"></div>
         </div>
         <div class="upload-section">
-          <div class="upload-section-title">Benchmarks &amp; reference (saved — only re-upload when changed)</div>
+          <div class="upload-section-title">Benchmarks &amp; reference (saved — only re-upload when changed)<span id="upload-badge-benchmarks"></span></div>
           <div style="margin-bottom:10px">
             <button onclick="downloadProformaTemplate()" style="font-size:12px;font-weight:500;padding:7px 14px;border:2px solid #4a90d9;border-radius:7px;background:#1a3a5c;color:#7ec8f7;cursor:pointer;display:inline-flex;align-items:center;gap:7px;font-family:inherit;box-shadow:0 1px 4px rgba(0,0,0,0.3)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 3v13M7 11l5 5 5-5"/><path d="M5 21h14"/></svg>
@@ -1341,6 +1341,9 @@ function renderUploadTab(p) {
         ${pillsHtml}
       </div>`;
   }
+
+  // Keep tab button badge + section badges in sync
+  updateUploadBadge(p.id);
 }
 
 function stalenessHtml(months) {
@@ -4462,13 +4465,24 @@ function getStmtStaleMonths(stmt) {
   return (exp.year - yr) * 12 + (exp.month0 - mIdx);
 }
 
-// How many months stale is an asOfDate string (YYYY-MM-DD or YYYY-MM) vs. expected?
+// How many months stale is a date string vs. expected?
+// Handles: "YYYY-MM", "YYYY-MM-DD", "M/D/YYYY", "MM/DD/YYYY"
 function getDateStaleMonths(asOfDateStr) {
   if(!asOfDateStr) return null;
-  const ym = asOfDateStr.slice(0, 7); // "YYYY-MM"
-  const yr = parseInt(ym.slice(0, 4));
-  const mo = parseInt(ym.slice(5, 7)) - 1; // 0-indexed
-  if(isNaN(yr) || isNaN(mo)) return null;
+  let yr, mo; // mo is 0-indexed
+  const s = asOfDateStr.toString().trim();
+  if(s.includes('/')) {
+    // US format: M/D/YYYY or MM/DD/YYYY
+    const parts = s.split('/');
+    if(parts.length < 3) return null;
+    mo = parseInt(parts[0]) - 1; // 0-indexed
+    yr = parseInt(parts[parts.length - 1]);
+  } else {
+    // ISO format: YYYY-MM or YYYY-MM-DD
+    yr = parseInt(s.slice(0, 4));
+    mo = parseInt(s.slice(5, 7)) - 1; // 0-indexed
+  }
+  if(isNaN(yr) || isNaN(mo) || yr < 2000 || yr > 2100) return null;
   const exp = getExpectedDataMonth();
   return (exp.year - yr) * 12 + (exp.month0 - mo);
 }
@@ -6995,6 +7009,52 @@ function renderDebtTab() {
       style="padding:8px 18px;border:1px dashed var(--border2);border-radius:var(--radius-lg);background:transparent;color:var(--text2);font-size:13px;cursor:pointer;font-family:inherit;width:100%;max-width:400px">
       + Add loan
     </button>`;
+}
+
+function updateUploadBadge(propId) {
+  const btn = document.getElementById('tab-btn-upload');
+  if(!btn) return;
+  if(!propId) { btn.textContent = 'Upload files'; return; }
+  const d = propData[propId] || {};
+
+  // Per-section issue counts
+  // Monthly: statement + delinquency missing or stale
+  let monthlyIssues = 0;
+  if(!d.statement) monthlyIssues++;
+  else if((getStmtStaleMonths(d.statement) || 0) > 0) monthlyIssues++;
+  if(!d.delinquency) monthlyIssues++;
+  else if((getDateStaleMonths(d.delinquency?.asOfDate) || 0) > 0) monthlyIssues++;
+
+  // Rent rolls: current rent roll missing or stale
+  let rentrollIssues = 0;
+  if(!d.rentroll) rentrollIssues++;
+  else if((getDateStaleMonths(d.rentroll?.asOfDate) || 0) > 0) rentrollIssues++;
+
+  // Benchmarks: budget or proforma missing
+  let benchmarkIssues = 0;
+  if(!d.budget)   benchmarkIssues++;
+  if(!d.proforma) benchmarkIssues++;
+
+  const total = monthlyIssues + rentrollIssues + benchmarkIssues;
+
+  // Update tab button badge
+  if(total > 0) {
+    btn.innerHTML = `Upload files <span style="background:var(--red,#e05454);color:#fff;border-radius:9px;font-size:10px;padding:1px 6px;font-weight:700;margin-left:3px;vertical-align:middle">${total}</span>`;
+  } else {
+    btn.textContent = 'Upload files';
+  }
+
+  // Update per-section badges
+  function setSectionBadge(id, count) {
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.innerHTML = count > 0
+      ? ` <span style="background:var(--amber,#ffa040);color:#000;border-radius:9px;font-size:10px;padding:1px 6px;font-weight:700;margin-left:4px;vertical-align:middle;opacity:0.9">${count}</span>`
+      : '';
+  }
+  setSectionBadge('upload-badge-monthly',    monthlyIssues);
+  setSectionBadge('upload-badge-rentroll',   rentrollIssues);
+  setSectionBadge('upload-badge-benchmarks', benchmarkIssues);
 }
 
 function updateFlagsBadge(count) {
