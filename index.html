@@ -3151,7 +3151,7 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system) {
       rental_income: lc => lc.includes('rental income') || lc.includes('rent income') || lc.includes('gross rent'),
       tax:           lc => lc.includes('property tax') || lc.includes('real estate tax')
                         || (lc.includes('escrow') && lc.includes('tax')),
-      insurance:     lc => lc.includes('insurance')
+      insurance:     lc => (lc.includes('insurance') && !lc.includes('mortgage insurance') && !lc.includes('mip') && !lc.includes('pmi'))
                         || (lc.includes('escrow') && (lc.includes('insur') || lc.includes('haz'))),
       repairs:       lc => lc.includes('repair') || lc.includes('maintenance') || lc.includes('make ready')
                         || lc.includes('make-ready') || lc.includes('pest') || lc.includes('locksmith')
@@ -3167,12 +3167,22 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system) {
       // parent/subtotal row ("Mortgage Escrow Expense") that the exact label would match.
       if(BUILDIUM_KEYWORD_FALLBACKS[group]) {
         const allowSub = SUBTOTAL_ALLOWED_GROUPS.has(group);
-        const keywordMatches = stmtRows
+        const allKeywordMatches = stmtRows
           .filter(r => !r.isCategory && !r.isTotal
                     && (allowSub || !r.isSubtotal)
-                    && BUILDIUM_KEYWORD_FALLBACKS[group](r.label.toLowerCase()))
-          .map(r => r.label);
-        if(keywordMatches.length) { matches[group] = keywordMatches; return; }
+                    && BUILDIUM_KEYWORD_FALLBACKS[group](r.label.toLowerCase()));
+        if(allKeywordMatches.length) {
+          // For income groups that allow subtotals: if any subtotal rows matched, use ONLY
+          // those — avoids double-counting when both the leaf row ("Rent Income") and its
+          // parent subtotal ("Total Rental Income") both pass the keyword test.
+          let chosen = allKeywordMatches;
+          if(allowSub) {
+            const subtotalMatches = allKeywordMatches.filter(r => r.isSubtotal);
+            if(subtotalMatches.length) chosen = subtotalMatches;
+          }
+          matches[group] = chosen.map(r => r.label);
+          return;
+        }
       }
       // Exact label match as fallback (handles properties with no sub-breakdown)
       const valid = labels.filter(l => stmtLabels.has(l));
