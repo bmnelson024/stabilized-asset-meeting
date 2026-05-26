@@ -3074,7 +3074,7 @@ const BUILDIUM_DEFAULT_MAPPING = {
   rental_income: ['Rent Income', 'Total Rental Income', 'Rental Income', 'Total for Rental Income'],
   utility_reimb: ['Utility Income'],
   mgmt_fee:      ['Management Fees'],
-  repairs:       ['Repairs'],
+  repairs:       ['Total for Repairs', 'Repairs', 'Total Repairs', 'Total for Repairs & Maintenance', 'Total Repairs & Maintenance'],
   tax:           ['Mortgage Escrow Expense'], // Buildium labels RE taxes as escrow expense
   insurance:     ['Insurance'],
   landscaping:   ['Landscaping'],
@@ -3157,9 +3157,11 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system) {
                         || lc.includes('make-ready') || lc.includes('pest') || lc.includes('locksmith')
                         || lc.includes('rekey') || lc.includes('drain'),
     };
-    // Income groups: prefer subtotals (the "Total for X" row is what we want to display).
-    // Expense groups: exclude subtotals so we get specific leaf rows (e.g. tax vs. parent escrow).
-    const SUBTOTAL_ALLOWED_GROUPS = new Set(['rental_income', 'utility_reimb', 'vacancy', 'pet', 'parking', 'laundry', 'late_fee']);
+    // Groups where we prefer the subtotal row ("Total for X") over individual leaf rows.
+    // For repairs: "Total for Repairs" aggregates all sub-categories correctly.
+    // For income groups: the subtotal is the clean total we want to display.
+    // Expense groups like tax/insurance stay OFF this list so we get specific escrow sub-rows.
+    const SUBTOTAL_ALLOWED_GROUPS = new Set(['rental_income', 'utility_reimb', 'repairs', 'vacancy', 'pet', 'parking', 'laundry', 'late_fee']);
 
     Object.entries(BUILDIUM_DEFAULT_MAPPING).forEach(([group, labels]) => {
       // For groups with keyword fallbacks, run keyword matching FIRST — it finds specific
@@ -5242,9 +5244,6 @@ function renderBenchmarkTab() {
 
     const actual  = sumStmtRows(stmtLabels, r => r.values[monthIdx]);
     const t12Avg  = sumStmtRows(stmtLabels, r => r.values.reduce((a,b)=>a+b,0) / r.values.length);
-    const rowNote = stmtLabels.length > 1
-      ? `<div style="font-size:10px;color:var(--text3);margin-top:1px">${stmtLabels.join(' + ')}</div>`
-      : '';
 
     // Budget lookup — sum individual mapped rows; fall back to keyword-classified group total
     let bgAnnualLI = null;
@@ -5337,7 +5336,7 @@ function renderBenchmarkTab() {
       ? `<span title="Expense flag: over budget by ≥25% and ≥$1,000" style="display:inline-block;background:var(--red,#e05454);color:#fff;border-radius:3px;font-size:9px;font-weight:700;padding:0px 4px;margin-left:5px;vertical-align:middle;line-height:16px">!</span>`
       : '';
     return `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
-      <td style="padding-left:28px">${item.label}${flagPip}${rowNote}</td>${cells}
+      <td style="padding-left:28px">${item.label}${flagPip}</td>${cells}
     </tr>`;
   }
 
@@ -7703,6 +7702,8 @@ function renderFlagsTab() {
 
   const btnStyle = (color) => `font-size:11px;padding:5px 12px;border:1px solid ${color};border-radius:var(--radius);background:var(--bg);color:${color};cursor:pointer;white-space:nowrap;font-family:inherit;font-weight:600`;
 
+  const monthIdx = getPrevMonthIdx(stmt.months, pid);
+
   flags.forEach(f => {
     const group = PF_LINE_ITEMS.find(i => i.label === f.label)?.group || f.label;
     const savedNote   = flagNotes[group] || '';
@@ -7711,6 +7712,17 @@ function renderFlagsTab() {
     const eg          = group.replace(/'/g, "\\'");
     const el2         = f.label.replace(/'/g, "\\'");
     const status      = flagReviews[group]?.status || 'unreviewed';
+
+    // Heuristic annotation
+    const heuristic = getFlagHeuristic(f, d, stmt, monthIdx);
+    const heuristicHtml = heuristic ? `
+      <div style="padding:9px 14px;background:var(--bg2);border-top:1px solid var(--border);display:flex;align-items:flex-start;gap:8px">
+        <span style="font-size:15px;line-height:1.4;flex-shrink:0">${heuristic.icon}</span>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:${heuristic.color};margin-bottom:2px;text-transform:uppercase;letter-spacing:0.04em">Likely explanation</div>
+          <div style="font-size:12px;color:var(--text2);line-height:1.5">${heuristic.text}</div>
+        </div>
+      </div>` : '';
 
     const isInc = !!f.isIncome;
     const varLabel  = isInc ? 'Under by $' : 'Over by $';
@@ -7746,6 +7758,7 @@ function renderFlagsTab() {
           <button onclick="setFlagStatus('${pid}','${eg}','unreviewed')" style="${btnStyle('var(--border)')}; color:var(--text3)">Undo</button>
         </div>
         ${dataTable(true)}
+        ${heuristicHtml}
         ${savedNote?`<div style="padding:6px 12px 8px;font-size:11px;color:var(--text3);background:var(--bg2);border-top:1px solid var(--border)">${escHtml(savedNote)}</div>`:''}
       </div>`;
 
@@ -7756,6 +7769,7 @@ function renderFlagsTab() {
           <span style="font-size:11px;font-weight:600;color:#ffa040">📋 To-Do</span>
         </div>
         ${dataTable(false)}
+        ${heuristicHtml}
         <div style="padding:10px 12px;background:var(--bg2);border-top:1px solid var(--border)">
           <input type="text" id="flagnote-${pid}-${group}" value="${escHtml(savedNote)}"
             placeholder="Describe the action needed..."
@@ -7773,6 +7787,7 @@ function renderFlagsTab() {
       html += `
       <div style="border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden">
         ${dataTable(false)}
+        ${heuristicHtml}
         <div style="padding:10px 12px;background:var(--bg2);border-top:1px solid var(--border)">
           <input type="text" id="flagnote-${pid}-${group}" value="${escHtml(savedNote)}"
             placeholder="Add explanation..."
@@ -7789,6 +7804,127 @@ function renderFlagsTab() {
   });
 
   el.innerHTML = html;
+}
+
+// ─── FLAG HEURISTICS ──────────────────────────────────────────────────────────
+// Examines a flag's historical values and returns a plain-English explanation
+// of the most likely cause, or null if no pattern is detected.
+function getFlagHeuristic(flag, d, stmt, monthIdx) {
+  const { group, actual, isIncome, stmtLabels } = flag;
+  if(!stmt || !stmtLabels || !stmtLabels.length) return null;
+
+  const fmtH = v => '$' + Math.abs(Math.round(v)).toLocaleString();
+
+  // Build a per-month sum across all mapped statement rows
+  const stmtLookupH = {};
+  stmt.rows.forEach(r => {
+    const ex = stmtLookupH[r.label];
+    if(!ex || r.isSubtotal || (ex.isCategory && !r.isCategory)) stmtLookupH[r.label] = r;
+  });
+
+  const numMonths = stmt.months.length;
+  const valArr = Array(numMonths).fill(0);
+  stmtLabels.forEach(lbl => {
+    const r = stmtLookupH[lbl];
+    if(r && r.values) r.values.forEach((v, i) => { valArr[i] += (v || 0); });
+  });
+
+  // Prior 3 months (before the selected month — excludes current so it's an unbiased baseline)
+  const priorSlice = valArr.slice(Math.max(0, monthIdx - 3), monthIdx);
+  const priorAvg   = priorSlice.length ? priorSlice.reduce((a,b)=>a+b,0) / priorSlice.length : null;
+
+  // Prior 6 months (includes current — used for trend detection)
+  const t6Slice = valArr.slice(Math.max(0, monthIdx - 5), monthIdx + 1);
+  const t6Avg   = t6Slice.length ? t6Slice.reduce((a,b)=>a+b,0) / t6Slice.length : null;
+
+  const monthLabel = stmt.months[monthIdx] || '';
+
+  // ── 1. Zero-month ──────────────────────────────────────────────────────────
+  // Expense/income was non-zero recently but is $0 this month
+  if(Math.abs(actual) < 1 && priorAvg !== null && Math.abs(priorAvg) > 100) {
+    return {
+      icon: '⚠',
+      color: 'var(--amber,#ffa040)',
+      text: `Value is $0 this month despite averaging ${fmtH(priorAvg)}/mo previously. May be an escrowed payment, a timing delay, or a missed entry — worth verifying.`,
+    };
+  }
+
+  // ── 2. Double draft ────────────────────────────────────────────────────────
+  // Expense is approximately 2× the prior-period average
+  if(!isIncome && priorAvg !== null && priorAvg > 100) {
+    const ratio = actual / priorAvg;
+    if(ratio >= 1.75 && ratio <= 2.35) {
+      return {
+        icon: '💡',
+        color: 'var(--blue,#4a90d9)',
+        text: `Value is ${ratio.toFixed(1)}× the prior 3-month average (${fmtH(priorAvg)}/mo). Possible double draft — check whether the charge was pulled twice this month.`,
+      };
+    }
+  }
+
+  // ── 3. Seasonal utility spike ──────────────────────────────────────────────
+  const utilityGroups = new Set(['water','electric','garbage']);
+  const isWinter = /^(Dec|Jan|Feb)/i.test(monthLabel);
+  const isSummer = /^(Jun|Jul|Aug)/i.test(monthLabel);
+  if(utilityGroups.has(group) && priorAvg !== null && actual > priorAvg * 1.15) {
+    if(isWinter) return {
+      icon: '❄',
+      color: 'var(--text2)',
+      text: `Seasonal — utilities (especially heating and water) tend to run higher in winter months. Prior 3-month average: ${fmtH(priorAvg)}/mo.`,
+    };
+    if(isSummer && group === 'electric') return {
+      icon: '☀',
+      color: 'var(--text2)',
+      text: `Seasonal — electric tends to run higher in summer months due to cooling. Prior 3-month average: ${fmtH(priorAvg)}/mo.`,
+    };
+  }
+
+  // ── 4. One-time spike ─────────────────────────────────────────────────────
+  // Single month substantially higher than the prior trend (but not double-draft territory)
+  if(!isIncome && priorAvg !== null && priorAvg > 50 && actual > priorAvg * 1.4) {
+    // Check if prior months were relatively stable (low variance)
+    const priorVariance = priorSlice.length > 1
+      ? priorSlice.reduce((s,v) => s + Math.pow(v - priorAvg, 2), 0) / priorSlice.length
+      : 0;
+    const priorStdDev = Math.sqrt(priorVariance);
+    if(priorStdDev < priorAvg * 0.3) { // prior months were stable
+      return {
+        icon: '📌',
+        color: 'var(--text2)',
+        text: `Prior 3 months averaged ${fmtH(priorAvg)}/mo with little variation — this looks like a one-time charge rather than a trend.`,
+      };
+    }
+  }
+
+  // ── 5. Income underperformance — vacancy-driven ────────────────────────────
+  if(isIncome && group === 'rental_income') {
+    const rrUnits = d.rentroll?.units || null;
+    if(rrUnits && rrUnits.length) {
+      const vacant = rrUnits.filter(u => u.isVacant).length;
+      if(vacant > 0) {
+        const vacPct = (vacant / rrUnits.length * 100).toFixed(0);
+        return {
+          icon: '🏠',
+          color: 'var(--text2)',
+          text: `${vacant} vacant unit${vacant !== 1 ? 's' : ''} (${vacPct}% vacancy rate) — income underperformance is likely vacancy-driven rather than a pricing issue.`,
+        };
+      }
+    }
+  }
+
+  // ── 6. Round number ────────────────────────────────────────────────────────
+  // Very round numbers suggest a manual entry or estimate
+  if(Math.abs(actual) >= 500 && Math.abs(actual) % 500 === 0) {
+    if(priorAvg === null || Math.abs(actual - priorAvg) > 200) {
+      return {
+        icon: '🔢',
+        color: 'var(--text3)',
+        text: `${fmtH(actual)} is a round number — may be a manual journal entry or estimate rather than an actual vendor charge.`,
+      };
+    }
+  }
+
+  return null;
 }
 
 // ─── CAPEX SETTINGS HELPER ────────────────────────────────────────────────────
@@ -8545,26 +8681,33 @@ function portfolioPropRow(p, pm, isOpen) {
     occHTML = `<span style="color:${occColor};font-weight:500">${occPctP}%</span> <span style="color:var(--text3);font-size:11px">${occupiedP}/${validP.length}</span>`;
   }
 
-  // Compute average monthly NOI, income, and expense
+  // Compute current-month NOI, income, and expense (matching the month used by benchmarks/flags tabs)
   let annualizedNoi = null;
   let annualizedIncome = null;
   let annualizedExpense = null;
   let currentMonthNoi = null;
+  let currentMonthIncome = null;
+  let currentMonthExpense = null;
   if(stmt) {
     const noiRow = stmt.rows.find(r=>r.isNOI);
     const incRow = stmt.rows.find(r=>r.isTotalIncome);
     const expRow = stmt.rows.find(r=>r.isTotalExpense);
     const monthsWithData = noiRow ? (noiRow.values.filter(v=>v!==0).length || 1) : 1;
+    const portfolioMi = getPrevMonthIdx(stmt.months, p.id);
     if(noiRow) {
       annualizedNoi = noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
-      // Use same month-selection logic as benchmarks/flags tabs for consistency
-      const portfolioMi = getPrevMonthIdx(stmt.months, p.id);
-      currentMonthNoi = noiRow.values[portfolioMi] || 0;
+      currentMonthNoi = noiRow.values[portfolioMi] ?? 0;
     }
-    if(incRow) annualizedIncome = incRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
-    if(expRow) annualizedExpense = expRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
+    if(incRow) {
+      annualizedIncome = incRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
+      currentMonthIncome = incRow.values[portfolioMi] ?? null;
+    }
+    if(expRow) {
+      annualizedExpense = expRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
+      currentMonthExpense = expRow.values[portfolioMi] ?? null;
+    }
   }
-  const noi = annualizedNoi;
+  const noi = currentMonthNoi;
   const sparklineHTML = (() => {
     if(!stmt) return '—';
     const nr = stmt.rows.find(r=>r.isNOI);
@@ -8619,8 +8762,8 @@ function portfolioPropRow(p, pm, isOpen) {
     <td>${p.system==='buildium'?'Buildium':'Appfolio'}</td>
     <td>${statusBadge}</td>
     <td>${occHTML}</td>
-    <td>${annualizedIncome!==null?fmt(annualizedIncome):'—'}</td>
-    <td>${annualizedExpense!==null?fmt(annualizedExpense):'—'}</td>
+    <td>${currentMonthIncome!==null?fmt(currentMonthIncome):'—'}</td>
+    <td>${currentMonthExpense!==null?fmt(currentMonthExpense):'—'}</td>
     <td>${(() => {
       const noiStr = noi !== null ? fmt(noi) : '—';
       const dqD = (propData[p.id] || {}).delinquency;
@@ -8868,13 +9011,13 @@ function renderPortfolio() {
   const stabProps = properties.filter(p => p.stabilized !== false);
   const nonStabProps = properties.filter(p => p.stabilized === false);
 
-  function getAvgMonthlyNoi(propId) {
+  function getCurrentMonthNoi(propId) {
     const stmt = (propData[propId]||{}).statement;
-    if(!stmt) return 0;
+    if(!stmt || !stmt.months || !stmt.months.length) return 0;
     const noiRow = stmt.rows.find(r=>r.isNOI);
     if(!noiRow) return 0;
-    const monthsWithData = noiRow.values.filter(v=>v!==0).length || 1;
-    return noiRow.values.reduce((a,b)=>a+b,0) / monthsWithData;
+    const mi = getPrevMonthIdx(stmt.months, propId);
+    return noiRow.values[mi] ?? 0;
   }
 
   function buildPmGroups(propList) {
@@ -8903,7 +9046,7 @@ function renderPortfolio() {
       const hasWarn = dots.some(d=>d==='dot-warn');
       const hasLoaded = dots.some(d=>d!=='dot-none');
       const summaryDotClass = !hasLoaded ? 'dot-none' : hasFlag ? 'dot-flag' : hasWarn ? 'dot-warn' : 'dot-ok';
-      const groupNoi = props.reduce((sum,p)=>sum+getAvgMonthlyNoi(p.id), 0);
+      const groupNoi = props.reduce((sum,p)=>sum+getCurrentMonthNoi(p.id), 0);
       const groupBgNoi = props.reduce((sum,p)=>{ const n=getKeyMetric(p.id,'budget_noi'); return sum+(n?n/12:0); }, 0);
       const groupLoaded = props.filter(p=>propData[p.id]&&propData[p.id].statement).length;
       const groupNoteCount = props.reduce((sum,p)=>sum+notes.filter(n=>n.propId===p.id).length,0);
