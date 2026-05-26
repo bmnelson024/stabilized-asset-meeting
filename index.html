@@ -3026,9 +3026,27 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system) {
     // Verify each default label actually exists in this statement; drop any that don't
     const stmtLabels = new Set(stmtRows.map(r=>r.label));
     const matches = {};
+
+    // Keyword fallbacks for groups whose Buildium label varies by property.
+    // Used when no exact label from BUILDIUM_DEFAULT_MAPPING matches.
+    const BUILDIUM_KEYWORD_FALLBACKS = {
+      tax:       lc => lc.includes('property tax') || lc.includes('real estate tax')
+                    || (lc.includes('escrow') && lc.includes('tax')),
+      insurance: lc => lc.includes('insurance')
+                    || (lc.includes('escrow') && (lc.includes('insur') || lc.includes('haz'))),
+    };
+
     Object.entries(BUILDIUM_DEFAULT_MAPPING).forEach(([group, labels]) => {
       const valid = labels.filter(l => stmtLabels.has(l));
-      if(valid.length) matches[group] = valid;
+      if(valid.length) {
+        matches[group] = valid;
+      } else if(BUILDIUM_KEYWORD_FALLBACKS[group]) {
+        // Fall back to keyword scan across all non-category statement rows
+        const fallback = stmtRows
+          .filter(r => !r.isCategory && BUILDIUM_KEYWORD_FALLBACKS[group](r.label.toLowerCase()))
+          .map(r => r.label);
+        if(fallback.length) matches[group] = fallback;
+      }
     });
     return matches;
   }
@@ -4431,6 +4449,19 @@ function renderBenchmarkTab() {
   const pfMap = buildLookup(pf);
   const bgMap = buildLookup(bg);
 
+  // Precompute budget group totals by keyword classification — used as a fallback when the
+  // budget has no subtotal rows (e.g. PGO/Buildium budgets list individual line items with no
+  // section headers). Groups individual budget rows into canonical PF_LINE_ITEMS groups.
+  const bgGroupTotals = {};
+  if(bg) {
+    bg.rows.forEach(r => {
+      if(r.isCategory || r.isSubtotal || r.isTotal || r.isNOI || r.isNetIncome) return;
+      if(r.isDebtService || r.isAssetMgmt || r.isCapex) return; // handled separately
+      const grp = getStmtMatchGroup(r.label);
+      if(grp) bgGroupTotals[grp] = (bgGroupTotals[grp] || 0) + (r.total || 0);
+    });
+  }
+
   // Always recalculate pfYear dynamically from purchase date — never trust the stored value
   const pfYear = pf ? (getProformaYear(p.purchaseDate) || pf.pfYear || 1) : null;
   const pfYearLabel = pfYear ? `Proforma Yr ${pfYear}` : 'Proforma';
@@ -4633,7 +4664,12 @@ function renderBenchmarkTab() {
                || (hasBG && r.isNetIncome   ? bestRow(bg.rows.filter(x=>x.isNetIncome))   : null)
                || bgMap[r.label.toLowerCase()]
                || null;
-    const bgAnnual = bgRow ? bgRow.total : null;
+    // Fallback: if no budget row found by label, use keyword-classified group total
+    // (handles flat-list budgets like PGO/Buildium that have no subtotal rows)
+    const bgRowGroup = !bgRow ? getStmtMatchGroup(r.label) : null;
+    const bgAnnual = bgRow ? bgRow.total
+                   : (bgRowGroup && bgGroupTotals[bgRowGroup]) ? bgGroupTotals[bgRowGroup]
+                   : null;
 
     // Rows that use T-6 actuals as their benchmark (no budget/PF comparison)
     // Use label-matcher as fallback since AppFolio statement rows don't carry isDebtService flag
@@ -4977,7 +5013,15 @@ function renderBenchmarkTab() {
   // ── Helpers for mapped line item rows ────────────────────────────────────────
   const mapping = (d.pfMapping && Object.keys(d.pfMapping).length) ? d.pfMapping : null;
   const stmtLookup = {};
-  stmt.rows.forEach(r => { stmtLookup[r.label] = r; });
+  stmt.rows.forEach(r => {
+    const existing = stmtLookup[r.label];
+    // Prefer subtotal rows (e.g. "Total for Repairs" → cleaned to "Repairs") over plain leaf rows
+    // or category headers with the same label. Buildium subtotals hold the section total — that's
+    // what the mapped line item should read, not a same-named individual leaf line.
+    if(!existing || r.isSubtotal || (existing.isCategory && !r.isCategory)) {
+      stmtLookup[r.label] = r;
+    }
+  });
 
   function getMappedLabels(group) {
     if(!mapping) return [];
@@ -5005,7 +5049,7 @@ function renderBenchmarkTab() {
       ? `<div style="font-size:10px;color:var(--text3);margin-top:1px">${stmtLabels.join(' + ')}</div>`
       : '';
 
-    // Budget lookup — sum individual mapped rows
+    // Budget lookup — sum individual mapped rows; fall back to keyword-classified group total
     let bgAnnualLI = null;
     if(hasBG) {
       let bgSum = 0, anyFound = false;
@@ -5013,7 +5057,13 @@ function renderBenchmarkTab() {
         const bgRow = bgMap[lbl.toLowerCase()];
         if(bgRow && bgRow.total) { bgSum += bgRow.total; anyFound = true; }
       });
-      if(anyFound) bgAnnualLI = bgSum;
+      if(anyFound) {
+        bgAnnualLI = bgSum;
+      } else if(bgGroupTotals[item.group]) {
+        // Budget has no subtotal row matching the statement label — sum individual line items
+        // that keyword-match this group (handles PGO/Buildium flat-list budgets)
+        bgAnnualLI = bgGroupTotals[item.group];
+      }
     }
 
     // Proforma lookup by pfKeys
@@ -6322,7 +6372,12 @@ function computeFlags(propId) {
   const selMonth = stmt.months[monthIdx] || '';
 
   const stmtLookup = {};
-  stmt.rows.forEach(r => { stmtLookup[r.label] = r; });
+  stmt.rows.forEach(r => {
+    const existing = stmtLookup[r.label];
+    if(!existing || r.isSubtotal || (existing.isCategory && !r.isCategory)) {
+      stmtLookup[r.label] = r;
+    }
+  });
 
   const bgMap = {};
   if(bg) bg.rows.forEach(r => { bgMap[r.label.toLowerCase()] = r; });
