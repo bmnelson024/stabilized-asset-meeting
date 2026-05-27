@@ -1247,18 +1247,23 @@ function renderUploadTab(p) {
   const acqSlotHasFile = acqImported || acqPending;
   const acqSlotIcon = acqPending ? '⚠' : acqImported ? '✓' : '↑';
   document.getElementById('acq-rr-upload-grid').innerHTML = `
-    <label class="upload-slot ${acqSlotHasFile?'has-file':''}" style="${acqPending?'border-color:var(--amber);background:var(--amber-bg)':''}">
-      <input type="file" accept=".xlsx,.xls,.xlsm,.pdf" onchange="handleUpload(event,'${p.id}','acqrentroll')">
-      <div class="upload-slot-icon" style="${acqPending?'color:var(--amber)':''}">${acqSlotIcon}</div>
-      <div class="upload-slot-label" style="${acqPending?'color:var(--amber)':''}">Acquisition rent roll</div>
-      <div class="upload-slot-sub">${acqSlotSub}</div>
-    </label>`;
+    <div class="upload-slot-wrap" style="position:relative">
+      <label class="upload-slot ${acqSlotHasFile?'has-file':''}" style="${acqPending?'border-color:var(--amber);background:var(--amber-bg)':''}">
+        <input type="file" accept=".xlsx,.xls,.xlsm,.pdf" onchange="handleUpload(event,'${p.id}','acqrentroll')">
+        <div class="upload-slot-icon" style="${acqPending?'color:var(--amber)':''}">${acqSlotIcon}</div>
+        <div class="upload-slot-label" style="${acqPending?'color:var(--amber)':''}">Acquisition rent roll</div>
+        <div class="upload-slot-sub">${acqSlotSub}</div>
+      </label>
+      ${acqImported ? `<button onclick="event.stopPropagation();downloadParsedFile('${p.id}','acqrentroll')" title="Download" style="position:absolute;top:5px;right:28px;background:none;border:none;cursor:pointer;color:var(--text2);font-size:14px;padding:2px 4px;line-height:1;opacity:0.7" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.7">⬇</button>` : ''}
+      ${acqImported ? `<button onclick="event.stopPropagation();clearPropFile('${p.id}','acqrentroll')" title="Remove" style="position:absolute;top:5px;right:6px;background:none;border:none;cursor:pointer;color:var(--text2);font-size:14px;padding:2px 4px;line-height:1;opacity:0.7" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.7">✕</button>` : ''}
+    </div>`;
 
   // Always render unit editor / mapper if we have a current rent roll
   if(d._acqRawData && d._acqRawFilename) {
     // Restore pending mapper
     showAcqColumnMapper(p.id, d._acqRawData, d._acqRawFilename, d._acqSheetNames||['Sheet1'], null);
-  } else if(d.rentroll && d.rentroll.units && d.rentroll.units.length) {
+  } else if((d.rentroll && d.rentroll.units && d.rentroll.units.length) ||
+            (d.acqUnits && Object.keys(d.acqUnits).length > 0)) {
     renderAcqUnitEditor(p.id);
   } else {
     document.getElementById('acq-unit-editor').innerHTML = '';
@@ -5985,6 +5990,7 @@ function applyAcqMapping(propId, filename) {
   save(propId); // fire-and-forget
 
   if(window._acqMapperState) delete window._acqMapperState[propId];
+  window._acqUnitsCollapsed = false; // auto-expand unit editor after import
 
   const prop = properties.find(x=>x.id===propId);
   renderUploadTab(prop);
@@ -6006,13 +6012,29 @@ function renderAcqUnitEditor(propId) {
   const d = propData[propId]||{};
   const rr = d.rentroll;
   const el = document.getElementById('acq-unit-editor');
-  if(!el || !rr || !rr.units || !rr.units.length) return;
+  if(!el) return;
 
   const acqUnits = d.acqUnits || {};
   const p = properties.find(x=>x.id===propId);
   const hasAcqFile = !!d['acqrentroll_filename'];
+
+  // If no regular rent roll yet, build synthetic unit list from acqUnits
+  const hasCurrentRR = !!(rr && rr.units && rr.units.length);
+  const unitList = hasCurrentRR
+    ? rr.units
+    : Object.entries(acqUnits).map(([unitNum, acq]) => ({
+        unitNum,
+        unitType: acq.unitType || 'Unknown',
+        tier: acq.tier || 'Classic',
+        isVacant: false,
+        marketRent: 0,
+        actualRent: 0,
+      }));
+
+  if(!unitList.length) { el.innerHTML = ''; return; }
+
   const filledCount = Object.keys(acqUnits).length;
-  const totalCount = rr.units.length;
+  const totalCount = unitList.length;
 
   const acqCollapsed = window._acqUnitsCollapsed !== false;
 
@@ -6046,15 +6068,15 @@ function renderAcqUnitEditor(propId) {
           <th style="padding:7px 10px;text-align:left;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">Unit</th>
           <th style="padding:7px 10px;text-align:left;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">Type</th>
           ${p.system==='appfolio'?'<th style="padding:7px 10px;text-align:left;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">Tier</th>':''}
-          <th style="padding:7px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">Current market rent</th>
-          <th style="padding:7px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">Current actual rent</th>
+          ${hasCurrentRR?`<th style="padding:7px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">Current market rent</th>`:''}
+          ${hasCurrentRR?`<th style="padding:7px 10px;text-align:right;font-weight:500;color:var(--text2);border-bottom:1px solid var(--border)">Current actual rent</th>`:''}
           <th style="padding:7px 10px;text-align:right;font-weight:500;color:var(--green);border-bottom:1px solid var(--border)">Acq. market rent</th>
           <th style="padding:7px 10px;text-align:right;font-weight:500;color:var(--green);border-bottom:1px solid var(--border)">Acq. actual rent</th>
         </tr>
       </thead>
       <tbody>`;
 
-  rr.units.forEach(u => {
+  unitList.forEach(u => {
     const acq = acqUnits[u.unitNum] || {};
     const hasAcq = acq.marketRent || acq.actualRent;
     const tierCell = p.system==='appfolio'
@@ -6066,8 +6088,8 @@ function renderAcqUnitEditor(propId) {
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-weight:500;${vacantCellStyle}">${u.unitNum}${u.isVacant?' <span style="color:var(--text3);font-weight:400">(vacant)</span>':''}</td>
       <td style="padding:6px 10px;border-bottom:1px solid var(--border);${vacantCellStyle}">${u.unitType}</td>
       ${tierCell}
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;${vacantCellStyle}">${fmt(u.marketRent)}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;${vacantCellStyle}">${u.isVacant?'<span style="color:var(--text3)">vacant</span>':fmt(u.actualRent)}</td>
+      ${hasCurrentRR?`<td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;${vacantCellStyle}">${fmt(u.marketRent)}</td>`:''}
+      ${hasCurrentRR?`<td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;${vacantCellStyle}">${u.isVacant?'<span style="color:var(--text3)">vacant</span>':fmt(u.actualRent)}</td>`:''}
       <td style="padding:4px 6px;border-bottom:1px solid var(--border)">
         <input type="number" value="${acq.marketRent||''}" placeholder="e.g. 750"
           style="width:100%;padding:4px 6px;border:1px solid ${hasAcq?'var(--green)':'var(--border)'};border-radius:4px;font-size:12px;font-family:inherit;text-align:right;background:${hasAcq?'var(--green-bg)':'var(--bg)'};color:var(--text)"
@@ -6197,7 +6219,7 @@ function renderRentProgressionTab() {
       overallCards += `<div style="${cellStyle}">
         <div style="${labelStyle}">Avg rent vs Proforma Yr ${pfYear}</div>
         <div style="${valStyle}">${avgCurActualAll!==null?fmt(avgCurActualAll):'—'} <span style="font-size:12px;color:var(--text3)">vs ${fmt(pfAvgPerUnit)}</span></div>
-        <div style="${deltaStyle}" class="${cls}">${pfVsActual!==null?(pfVsActual>=0?'+':'')+fmtVar(pfVsActual)+(pfVsPct!==null?' ('+pfVsPct.toFixed(1)+'%)':''):'—'}</div>
+        <div style="${deltaStyle}" class="${cls}">${pfVsActual!==null?fmtVar(pfVsActual)+(pfVsPct!==null?' ('+pfVsPct.toFixed(1)+'%)':''):'—'}</div>
       </div>`;
     }
 
@@ -6643,8 +6665,8 @@ function computeFlags(propId) {
     if(budgetMonth === null || budgetMonth === 0) return;
     const varD   = actual - budgetMonth; // negative = underperforming
     const varPct = varD / Math.abs(budgetMonth);
-    // Flag if under budget by ≥10% AND ≥$300 monthly shortfall
-    if(varD <= -300 && varPct <= -0.10) {
+    // Flag if under budget by ≥15% AND ≥$500 monthly shortfall
+    if(varD <= -500 && varPct <= -0.15) {
       flags.push({ label: item.label, stmtLabels, actual, budget: budgetMonth, varD, varPct, isIncome: true });
     }
   });
@@ -7716,8 +7738,8 @@ function renderFlagsTab() {
   flags.forEach(f => {
     const group = PF_LINE_ITEMS.find(i => i.label === f.label)?.group || f.label;
     const savedNote   = flagNotes[group] || '';
-    const varDStr     = fmt(f.varD);
-    const varPctStr   = (f.varPct * 100).toFixed(1) + '%';
+    const varDStr     = fmt(Math.abs(f.varD));
+    const varPctStr   = (Math.abs(f.varPct) * 100).toFixed(1) + '%';
     const eg          = group.replace(/'/g, "\\'");
     const el2         = f.label.replace(/'/g, "\\'");
     const status      = flagReviews[group]?.status || 'unreviewed';
@@ -8979,7 +9001,7 @@ function renderPortfolioFlags() {
       return `<tr style="${f.status==='reviewed'?'opacity:0.5':''}">
         <td style="padding:7px 10px;font-size:12px">${statusBadge(f.status)}</td>
         <td style="padding:7px 10px;font-size:13px;font-weight:500;color:var(--text)">${escHtml(f.label)}${typeTag}${noteHtml}</td>
-        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">${varSign}${fmt(f.varD)}</td>
+        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">${varSign}${fmt(Math.abs(f.varD))}</td>
         <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">${varSign}${(Math.abs(f.varPct)*100).toFixed(1)}%</td>
       </tr>`;
     }).join('');
@@ -9197,8 +9219,8 @@ function downloadParsedFile(propId, fileKey) {
     (parsed.rows || []).forEach(r => {
       aoa.push([r.label, ...(r.values || []), r.total]);
     });
-  } else if(fileKey === 'rentroll') {
-    sheetName = 'Rent Roll';
+  } else if(fileKey === 'rentroll' || fileKey === 'acqrentroll') {
+    sheetName = fileKey === 'acqrentroll' ? 'Acq Rent Roll' : 'Rent Roll';
     aoa = [['Unit', 'Type', 'Tier', 'Status', 'Market Rent', 'Actual Rent']];
     (parsed.units || []).forEach(u => {
       aoa.push([u.unitNum, u.unitType, u.tier || '', u.isVacant ? 'Vacant' : 'Occupied', u.marketRent, u.actualRent]);
