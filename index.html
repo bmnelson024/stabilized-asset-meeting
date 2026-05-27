@@ -294,7 +294,7 @@
             <tr>
               <th>Property</th><th>System</th><th>Status</th><th>Occupancy</th>
               <th>Total income / mo</th><th>Total expense / mo</th><th>NOI / mo</th>
-              <th>Trend</th><th>Exp ratio</th><th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
+              <th>Trend</th><th>Exp ratio</th><th>DSCR</th><th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
             </tr>
           </thead>
           <tbody id="portfolio-tbody"></tbody>
@@ -2010,11 +2010,23 @@ function parseAppfolio(ws) {
 
 function parseBuildium(ws) {
   const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  // Helper: normalize a header cell to "MM-YYYY" string if it's a Date object
+  function _buildiumDateStr(cell) {
+    if(cell instanceof Date) {
+      return String(cell.getMonth()+1).padStart(2,'0') + '-' + cell.getFullYear();
+    }
+    return cell ? cell.toString() : '';
+  }
+
   let headerRow = -1;
   for(let i=0;i<data.length;i++) {
     const row = data[i];
-    if(row[1] && row[1].toString().match(/^\d{2}-\d{4}$/)) { headerRow=i; break; }
-    if(row[1] && row[1].toString().match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s/)) { headerRow=i; break; }
+    const cell = row[1];
+    if(!cell) continue;
+    if(cell instanceof Date) { headerRow=i; break; }
+    const s = cell.toString();
+    if(s.match(/^\d{2}-\d{4}$/)) { headerRow=i; break; }
+    if(s.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s/)) { headerRow=i; break; }
   }
   if(headerRow<0) throw new Error('Could not find header row in Buildium file (expected date columns like "04-2025").');
 
@@ -2030,7 +2042,7 @@ function parseBuildium(ws) {
   headers.slice(1, totalCol).forEach((h, ci) => {
     if(!h) return; // skip blank header columns
     monthColIndices.push(ci + 1); // +1 because we sliced from index 1
-    const s = h.toString();
+    const s = _buildiumDateStr(h);
     if(s.match(/^\d{2}-\d{4}$/)) {
       const [mm,yyyy] = s.split('-');
       const mIdx = parseInt(mm) - 1;
@@ -8812,6 +8824,29 @@ function portfolioPropRow(p, pm, isOpen) {
     const cls = pct >= 0 ? 'val-pos' : 'val-neg';
     return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
   })() : '—';
+
+  // DSCR: T-12 NOI ÷ T-12 Debt Service (uses last 12 months from portfolioMi)
+  const dscrHTML = (() => {
+    if(!stmt) return '—';
+    const noiRow = stmt.rows.find(r => r.isNOI);
+    if(!noiRow) return '—';
+    const portfolioMi = getPrevMonthIdx(stmt.months, p.id);
+    const dsRows = stmt.rows.filter(r => {
+      const lc = r.label.toLowerCase();
+      return r.isDebtService || lc.includes('debt service') || lc.includes('mortgage') || lc.includes('loan payment');
+    });
+    if(!dsRows.length) return '—';
+    // Sum last 12 months ending at portfolioMi
+    const window = 12;
+    const start = Math.max(0, portfolioMi - window + 1);
+    const t12NOI = noiRow.values.slice(start, portfolioMi + 1).reduce((a,b) => a+b, 0);
+    const t12DS  = dsRows.reduce((sum, r) => sum + r.values.slice(start, portfolioMi + 1).reduce((a,b) => a+b, 0), 0);
+    if(!t12DS) return '—';
+    const dscr = t12NOI / t12DS;
+    const color = dscr >= 1.25 ? 'var(--green)' : dscr >= 1.0 ? '#ffa040' : 'var(--red)';
+    const tip = `T-12 NOI: ${fmt(t12NOI/12)}/mo · T-12 Debt Service: ${fmt(t12DS/12)}/mo`;
+    return `<span style="color:${color};font-weight:500;cursor:default" title="${tip}">${dscr.toFixed(2)}x</span>`;
+  })();
   const statusBadge = dot==='dot-none'?'<span class="badge badge-neutral">No data</span>':
     dot==='dot-ok'?'<span class="badge badge-ok">On track</span>':
     dot==='dot-warn'?'<span class="badge badge-warn">Watch</span>':
@@ -8862,6 +8897,7 @@ function portfolioPropRow(p, pm, isOpen) {
       const color = pct > 55 ? 'var(--red)' : pct > 45 ? '#ffa040' : 'var(--green)';
       return `<span style="color:${color};font-weight:500">${pct.toFixed(1)}%</span>`;
     })()}</td>
+    <td>${dscrHTML}</td>
     <td>${varHTML}</td>
     <td>${t12VsPfHTML}</td>
     <td>${(() => {
