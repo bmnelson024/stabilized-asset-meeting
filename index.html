@@ -294,7 +294,7 @@
             <tr>
               <th>Property</th><th>System</th><th>Status</th><th>Occupancy</th>
               <th>Total income / mo</th><th>Total expense / mo</th><th>NOI / mo</th>
-              <th>Trend</th><th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
+              <th>Trend</th><th>Exp ratio</th><th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
             </tr>
           </thead>
           <tbody id="portfolio-tbody"></tbody>
@@ -1179,8 +1179,18 @@ function renderUploadTab(p) {
   const rrHistory   = d.rentRollHistory || [];
   const rrHistCount = rrHistory.length;
   const rrHistSub   = rrHistCount > 0
-    ? `${rrHistCount} snapshot${rrHistCount!==1?'s':''} stored · ${rrHistory[0].asOfDate?.slice(0,7)||''} → ${rrHistory[rrHistCount-1].asOfDate?.slice(0,7)||''}`
+    ? `${rrHistCount} snapshot${rrHistCount!==1?'s':''} · click to add more`
     : 'Upload multiple files at once to build history';
+  const _rrMoNames  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const rrMonthPills = rrHistCount > 0
+    ? rrHistory.map(h => {
+        if(!h.asOfDate) return '';
+        const parts = h.asOfDate.split('-');
+        const mo = _rrMoNames[parseInt(parts[1]||1)-1];
+        const yr = (parts[0]||'').slice(2);
+        return `<span style="display:inline-block;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;padding:1px 7px;font-size:10px;color:var(--text2);white-space:nowrap">${mo} '${yr}</span>`;
+      }).join('')
+    : '';
   const rrHistSlot = `<div style="position:relative">
     <label class="upload-slot ${rrHistCount>0?'has-file':''}" style="display:block;cursor:pointer">
       <input type="file" accept=".xlsx,.xls,.xlsm" multiple onchange="handleUpload(event,'${p.id}','rentroll_history')">
@@ -1189,6 +1199,7 @@ function renderUploadTab(p) {
       <div class="upload-slot-sub">${rrHistSub}</div>
       <div style="font-size:10px;color:var(--text3);margin-top:2px">→ Rent Progression history</div>
     </label>
+    ${rrMonthPills ? `<div style="padding:5px 8px 4px;display:flex;flex-wrap:wrap;gap:3px;border-top:1px solid var(--border2)">${rrMonthPills}</div>` : ''}
     ${rrHistCount>0 ? `<button onclick="event.preventDefault();if(confirm('Clear all rent roll history snapshots?')){propData['${p.id}'].rentRollHistory=[];save('${p.id}');renderUploadTab(properties.find(x=>x.id==='${p.id}'));renderRentProgressionTab()}" title="Clear history" style="position:absolute;top:6px;right:6px;z-index:2;background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:2px 7px;font-size:11px;color:var(--text3);cursor:pointer;font-family:inherit;line-height:1.4">✕</button>` : ''}
   </div>`;
 
@@ -2407,12 +2418,15 @@ function parseCapexReport(ws) {
     const acctName = currentAccount.toLowerCase();
     const acctNum  = parseInt(currentAccountNum, 10);
     let categoryType;
-    if(acctName.includes('capital expenditure') || acctName.includes('capex') ||
+    if(acctName.includes('capital expenditure') || acctName.includes('capital expense') ||
+       acctName.includes('capital improvement') || acctName.includes('capex') ||
        acctName.includes('landscaping') || acctName.includes('landscape') ||
-       acctName.includes('renovation') || acctName.includes('improvement')) {
+       acctName.includes('renovation') || acctName.includes('improvement') ||
+       acctName.includes('remodel') || acctName.includes('replacement reserve')) {
       categoryType = 'capex';
     } else if(acctName.includes('turnover') || acctName.includes('turn over') ||
-              acctName.includes('make ready') || acctName.includes('make-ready')) {
+              acctName.includes('turn-over') || acctName.includes('make ready') ||
+              acctName.includes('make-ready') || acctName.includes('unit prep')) {
       categoryType = 'turnover';
     } else {
       // Number-range fallback (works for standard AppFolio chart of accounts)
@@ -2517,8 +2531,8 @@ function parseBuildiumCapex(ws) {
   const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
   if(!data || data.length < 4) throw new Error('File appears empty.');
 
-  // Row 0: "Transaction Detail by Account\nMM/DD/YYYY - MM/DD/YYYY" in col 0
-  const titleCell = data[0] && data[0][0] ? data[0][0].toString() : '';
+  // Row 0: "Transaction Detail by Account\nMM/DD/YYYY - MM/DD/YYYY" — may land in col 0 OR col 1
+  const titleCell = data[0] ? (data[0].find(c => c && c.toString().toLowerCase().includes('transaction detail')) || '').toString() : '';
   if(!titleCell.toLowerCase().includes('transaction detail')) throw new Error('Not a Buildium Transaction Detail by Account report.');
 
   // Extract date range from title (second line after newline, or inline)
@@ -2545,8 +2559,8 @@ function parseBuildiumCapex(ws) {
   // Fixed column positions (Buildium Transaction Detail is always: Date, Type, Property, Name, Description, Amount)
   const DATE_COL = 0, NAME_COL = 3, DESC_COL = 4, AMT_COL = 5;
 
-  const CAPEX_RE    = /^capital improvement/i;
-  const TURNOVER_RE = /make.?read|turnover|turn over/i;
+  const CAPEX_RE    = /capital\s*(improvements?|expenditures?|expenses?|expend)|^capex|renovation|remodel|building\s*improvements?|replacement\s*reserve/i;
+  const TURNOVER_RE = /make.?read|turnover|turn[\s-]over|unit\s*prep|cleaning.*unit|unit.*cleaning/i;
 
   function categorize(acct) {
     if(TURNOVER_RE.test(acct)) return 'turnover';
@@ -8376,6 +8390,7 @@ function renderCapexTab() {
 
     html += renderAcctTable('Unit Turnover Costs (make-ready, cleaning, painting, flooring)', 'turnover', 'var(--amber)');
     html += renderAcctTable('Capital Expenditures (HVAC, appliances, roofing, remodel)', 'capex', 'var(--blue)');
+    html += renderAcctTable('Other / Uncategorized', 'other', 'var(--text2)');
 
     // ── Per-unit breakdown ───────────────────────────────────────────────────
     const unitEntries = Object.entries(filteredByUnit).sort((a,b) => b[1].total - a[1].total);
@@ -8817,6 +8832,14 @@ function portfolioPropRow(p, pm, isOpen) {
       return `${noiStr}<br><span style="font-size:10px;color:${arColor}" title="AR balance as of ${dqD.asOfDate||'?'}">AR ${arStr}</span>`;
     })()}</td>
     <td style="padding:4px 10px">${sparklineHTML}</td>
+    <td>${(() => {
+      if(currentMonthIncome === null || !currentMonthIncome) return '—';
+      const ratio = currentMonthExpense !== null ? currentMonthExpense / currentMonthIncome : null;
+      if(ratio === null) return '—';
+      const pct = ratio * 100;
+      const color = pct > 55 ? 'var(--red)' : pct > 45 ? '#ffa040' : 'var(--green)';
+      return `<span style="color:${color};font-weight:500">${pct.toFixed(1)}%</span>`;
+    })()}</td>
     <td>${varHTML}</td>
     <td>${t12VsPfHTML}</td>
     <td>${(() => {
