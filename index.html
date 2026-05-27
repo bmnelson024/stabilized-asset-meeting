@@ -4319,6 +4319,8 @@ function renderMappingEditor(propId) {
     if(r.isTotalExpense) return r.label + ' [total expense]';
     if(r.isNetIncome)    return r.label + ' [net income]';
     if(r.isSubtotal)     return r.label + ' [subtotal]';
+    // Back-compat: old parsed data may have "Total for X" without isSubtotal flag
+    if(/^total for /i.test(r.label)) return r.label + ' [subtotal]';
     return r.label + ' [line item]';
   }
 
@@ -4898,11 +4900,13 @@ function renderBenchmarkTab() {
                    : (bgRowGroup && bgGroupTotals[bgRowGroup]) ? bgGroupTotals[bgRowGroup]
                    : null;
 
-    // Rows that use T-6 actuals as their benchmark (no budget/PF comparison)
+    // Rows that use T-6 actuals as their benchmark (no budget comparison)
     // Use label-matcher as fallback since AppFolio statement rows don't carry isDebtService flag
     const isDS  = !!(r.isDebtService) || isDebtService(r);
     const isAMF = !!(isAssetMgmtFee(r));
-    const useT6Benchmark = isDS || isAMF;
+    // DS rows: suppress both budget and proforma comparisons (debt service is structural, not operational)
+    // AMF rows: suppress budget comparison only — show proforma column when a PF value is available
+    const useT6Benchmark = isDS;
 
     const t6Slice = r.values.slice(Math.max(0, mi - 5), mi + 1);
     const t6Avg   = t6Slice.reduce((a,b)=>a+b,0) / (t6Slice.length || 1);
@@ -5247,6 +5251,15 @@ function renderBenchmarkTab() {
     // what the mapped line item should read, not a same-named individual leaf line.
     if(!existing || r.isSubtotal || (existing.isCategory && !r.isCategory)) {
       stmtLookup[r.label] = r;
+    }
+    // Back-compat: if old parsed data stored "Total for X" without cleaning the label,
+    // also register it under the cleaned key "X" so mappings pointing to "X" find the total.
+    if(/^total for /i.test(r.label)) {
+      const cleanedKey = r.label.replace(/^total for /i, '').trim();
+      const existClean = stmtLookup[cleanedKey];
+      if(!existClean || existClean.isCategory || !existClean.isSubtotal) {
+        stmtLookup[cleanedKey] = r;
+      }
     }
   });
 
@@ -6618,6 +6631,15 @@ function computeFlags(propId) {
     const existing = stmtLookup[r.label];
     if(!existing || r.isSubtotal || (existing.isCategory && !r.isCategory)) {
       stmtLookup[r.label] = r;
+    }
+    // Back-compat: if old parsed data stored "Total for X" without cleaning the label,
+    // register it under the cleaned key "X" so mappings find the total, not the category header.
+    if(/^total for /i.test(r.label)) {
+      const cleanedKey = r.label.replace(/^total for /i, '').trim();
+      const existClean = stmtLookup[cleanedKey];
+      if(!existClean || existClean.isCategory || !existClean.isSubtotal) {
+        stmtLookup[cleanedKey] = r;
+      }
     }
   });
 
