@@ -2010,10 +2010,17 @@ function parseAppfolio(ws) {
 
 function parseBuildium(ws) {
   const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
-  // Helper: normalize a header cell to "MM-YYYY" string if it's a Date object
+  // Helper: normalize a header cell to "MM-YYYY" string.
+  // Handles: "04-2025" strings, "Apr 2025" strings, JS Date objects,
+  // and raw Excel serial date numbers (returned by SheetJS when cellDates is not set).
   function _buildiumDateStr(cell) {
     if(cell instanceof Date) {
       return String(cell.getMonth()+1).padStart(2,'0') + '-' + cell.getFullYear();
+    }
+    if(typeof cell === 'number' && cell > 40000 && cell < 60000) {
+      // Excel serial date — convert via SheetJS SSF utility
+      const d = XLSX.SSF.parse_date_code(cell);
+      if(d) return String(d.m).padStart(2,'0') + '-' + d.y;
     }
     return cell ? cell.toString() : '';
   }
@@ -2022,8 +2029,10 @@ function parseBuildium(ws) {
   for(let i=0;i<data.length;i++) {
     const row = data[i];
     const cell = row[1];
-    if(!cell) continue;
+    if(cell == null) continue;
     if(cell instanceof Date) { headerRow=i; break; }
+    // Excel serial date number (no cellDates option set on XLSX.read)
+    if(typeof cell === 'number' && cell > 40000 && cell < 60000) { headerRow=i; break; }
     const s = cell.toString();
     if(s.match(/^\d{2}-\d{4}$/)) { headerRow=i; break; }
     if(s.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s/)) { headerRow=i; break; }
@@ -8825,7 +8834,7 @@ function portfolioPropRow(p, pm, isOpen) {
     return `<span class="${cls}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
   })() : '—';
 
-  // DSCR: T-12 NOI ÷ T-12 Debt Service (uses last 12 months from portfolioMi)
+  // DSCR: current month NOI ÷ current month Debt Service
   const dscrHTML = (() => {
     if(!stmt) return '—';
     const noiRow = stmt.rows.find(r => r.isNOI);
@@ -8836,15 +8845,12 @@ function portfolioPropRow(p, pm, isOpen) {
       return r.isDebtService || lc.includes('debt service') || lc.includes('mortgage') || lc.includes('loan payment');
     });
     if(!dsRows.length) return '—';
-    // Sum last 12 months ending at portfolioMi
-    const window = 12;
-    const start = Math.max(0, portfolioMi - window + 1);
-    const t12NOI = noiRow.values.slice(start, portfolioMi + 1).reduce((a,b) => a+b, 0);
-    const t12DS  = dsRows.reduce((sum, r) => sum + r.values.slice(start, portfolioMi + 1).reduce((a,b) => a+b, 0), 0);
-    if(!t12DS) return '—';
-    const dscr = t12NOI / t12DS;
+    const curNOI = noiRow.values[portfolioMi] || 0;
+    const curDS  = dsRows.reduce((sum, r) => sum + (r.values[portfolioMi] || 0), 0);
+    if(!curDS) return '—';
+    const dscr = curNOI / curDS;
     const color = dscr >= 1.25 ? 'var(--green)' : dscr >= 1.0 ? '#ffa040' : 'var(--red)';
-    const tip = `T-12 NOI: ${fmt(t12NOI/12)}/mo · T-12 Debt Service: ${fmt(t12DS/12)}/mo`;
+    const tip = `${stmt.months[portfolioMi]} · NOI: ${fmt(curNOI)} · Debt Service: ${fmt(curDS)}`;
     return `<span style="color:${color};font-weight:500;cursor:default" title="${tip}">${dscr.toFixed(2)}x</span>`;
   })();
   const statusBadge = dot==='dot-none'?'<span class="badge badge-neutral">No data</span>':
@@ -9160,7 +9166,7 @@ function renderPortfolio() {
     if(!propList.length) return '';
     const groups = buildPmGroups(propList);
     const allPms = [...GROUP_ORDER, ...Object.keys(groups).filter(k=>!GROUP_ORDER.includes(k))];
-    let html = `<tr><td colspan="11" style="padding:8px 12px 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text2);background:var(--bg);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:2">${sectionLabel} <span style="font-weight:400;color:var(--text3)">(${propList.length})</span></td></tr>`;
+    let html = `<tr><td colspan="14" style="padding:8px 12px 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text2);background:var(--bg);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:2">${sectionLabel} <span style="font-weight:400;color:var(--text3)">(${propList.length})</span></td></tr>`;
     allPms.forEach(pm => {
       const props = groups[pm];
       if(!props || !props.length) return;
@@ -9180,7 +9186,7 @@ function renderPortfolio() {
         return `<span class="${pct>=0?'val-pos':'val-neg'}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
       })() : '—';
       html += `<tr class="ptbl-group-row" data-pm="${escHtml(stateKey)}" onclick="togglePortfolioGroup('${escHtml(stateKey)}')">
-        <td colspan="11">
+        <td colspan="14">
           <span class="ptbl-chevron ${isOpen?'open':''}" id="bch-${escHtml(stateKey)}">▶</span>
           <span class="prop-dot ${summaryDotClass}" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle"></span>
           ${pm}
@@ -9195,7 +9201,7 @@ function renderPortfolio() {
   }
 
   let tbody = renderSection(stabProps, 'Stabilized', 'stab') + renderSection(nonStabProps, 'Non-Stabilized', 'ns');
-  if(!properties.length) tbody=`<tr><td colspan="11" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
+  if(!properties.length) tbody=`<tr><td colspan="14" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
   document.getElementById('portfolio-tbody').innerHTML=tbody;
   document.getElementById('pk-loaded').textContent=loaded;
   document.getElementById('pk-ok').textContent=ok;
