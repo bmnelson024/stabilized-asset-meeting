@@ -1334,7 +1334,7 @@ function renderUploadTab(p) {
     let color, icon;
     if(!c.ok) {
       color = 'var(--text3)'; icon = '○';
-    } else if(c.stale > 2) {
+    } else if(c.stale >= 3) {
       color = 'var(--red)'; icon = '⚠';
     } else if(c.stale > 0) {
       color = 'var(--amber,#ffa040)'; icon = '⚠';
@@ -1901,6 +1901,7 @@ function parseTrialBalance(ws) {
       const raw = row[endCol];
       cash = (raw !== null && raw !== undefined) ? (parseFloat(raw) || 0) : 0;
       matchedGL = glStr.split(/[\s:–-]/)[0]; // just the numeric portion
+      break; // first match wins — don't let sub-accounts override the parent
     }
   }
 
@@ -2124,12 +2125,18 @@ function parseBuildium(ws) {
     if(expenseTotal && expenseTotal.values.every(v=>v===0)) {
       const expIdx = rows.indexOf(expenseTotal);
       const noiIdx = noiRow ? rows.indexOf(noiRow) : rows.length;
-      const expLines = rows.filter((r,i) => i < expIdx && i > rows.indexOf(incomeTotal||rows[0])
+      // Guard: if incomeTotal is null, skip reconstruction rather than using rows[0] as boundary
+      // (rows.indexOf(null||rows[0]) === 0 would include income rows as expenses)
+      if(!incomeTotal) { /* cannot safely reconstruct expense total without income boundary */ }
+      else {
+      const incomeTotalIdx = rows.indexOf(incomeTotal);
+      const expLines = rows.filter((r,i) => i < expIdx && i > incomeTotalIdx
         && !r.isCategory && !r.isTotal && !r.isNOI && !r.isSubtotal);
       if(expLines.length) {
         expenseTotal.values = Array(nMonths).fill(0).map((_,mi) => expLines.reduce((s,r)=>s+r.values[mi],0));
         expenseTotal.total  = expenseTotal.values.reduce((a,b)=>a+b,0);
       }
+      } // end else (incomeTotal exists)
     }
     if(noiRow && noiRow.values.every(v=>v===0) && incomeTotal && expenseTotal) {
       noiRow.values = Array(nMonths).fill(0).map((_,mi) => incomeTotal.values[mi] - expenseTotal.values[mi]);
@@ -2998,8 +3005,7 @@ function normalizeRenovTier(tags) {
   const hasNew = t.includes('new lvt') || t.includes('new flooring') || t.includes('new appliance') || t.includes('new fridge');
   const hasOld = t.includes('old carpet') || t.includes('older carpet') || t.includes('old vinyl') || t.includes('older vinyl') || t.includes('old mg');
   if(hasNew && !hasOld) return 'Full remodel';
-  if(hasOld || (!hasNew && t.includes('remodel'))) return 'Partial remodel';
-  return 'Full remodel';
+  return 'Partial remodel'; // hasOld, or hasNew+hasOld (mixed), or remodel tag with no new markers
 }
 
 // ─── PROFORMA LINE ITEM MATCHING ─────────────────────────────────────────────
@@ -3702,7 +3708,8 @@ function parseProformaCsv(text, purchaseDate) {
   // Find actual column index for YEAR 1 from header row (don't assume it's column 1)
   const yearRowCells = data[yearRow] || [];
   const year1ColIdx = yearRowCells.findIndex(c => c && c.toString().trim().toUpperCase() === 'YEAR 1');
-  const targetCol = year1ColIdx >= 0 ? year1ColIdx + (pfYear - 1) : pfYear;
+  if(year1ColIdx < 0) throw new Error('Could not locate YEAR 1 column in CSV proforma header row.');
+  const targetCol = year1ColIdx + (pfYear - 1);
 
   // Parse value helper — strip commas, parens for negatives
   function parseVal(s) {
@@ -5604,7 +5611,7 @@ function renderRentRollTab() {
     const isBelowMarket = !u.isVacant && u.marketRent > 0 && u.actualRent < u.marketRent;
     const rowStyle = u.isVacant ? 'color:var(--text3)' : isBelowMarket ? 'background:rgba(255,160,64,0.05)' : '';
     html+=`<tr ${rowStyle?`style="${rowStyle}"`:''}>
-      <td>${u.unitNum}</td><td>${u.unitType}</td>${tierBadge}
+      <td>${escHtml(u.unitNum||'')}</td><td>${escHtml(u.unitType||'')}</td>${tierBadge}
       <td>${u.isVacant?'<span class="badge badge-flag">Vacant</span>':'<span class="badge badge-ok">Occupied</span>'}</td>
       <td>${fmt(u.marketRent)}</td>
       <td>${u.isVacant?'—':fmt(u.actualRent)}</td>
@@ -6512,7 +6519,7 @@ function renderPropertyValuationTab() {
   // ── NOI source chips ───────────────────────────────────────────────────────
   const noiChips = [];
   if(bgNoiMonthly!==null) noiChips.push(`<button style="${effectiveSrc==='budget'?chipActive:chipInactive}" onclick="setPvNoiSource('${currentPropId}','budget')">Budget: ${fmt(bgNoiMonthly)}/mo</button>`);
-  if(pfNoiMonthly!==null && bgNoiMonthly===null) noiChips.push(`<button style="${effectiveSrc==='proforma'?chipActive:chipInactive}" onclick="setPvNoiSource('${currentPropId}','proforma')">Proforma: ${fmt(pfNoiMonthly)}/mo</button>`);
+  if(pfNoiMonthly!==null) noiChips.push(`<button style="${effectiveSrc==='proforma'?chipActive:chipInactive}" onclick="setPvNoiSource('${currentPropId}','proforma')">Proforma: ${fmt(pfNoiMonthly)}/mo</button>`);
   if(stmtNoiTrailingAvg!==null) noiChips.push(`<button style="${effectiveSrc==='stmt_avg'?chipActive:chipInactive}" onclick="setPvNoiSource('${currentPropId}','stmt_avg')">T${stmtNoiMonthsUsed} Avg: ${fmt(stmtNoiTrailingAvg)}/mo</button>`);
   if(stmtNoiT6Avg!==null)       noiChips.push(`<button style="${effectiveSrc==='stmt_t6'?chipActive:chipInactive}" onclick="setPvNoiSource('${currentPropId}','stmt_t6')">T${stmtNoiT6MonthsUsed} Avg: ${fmt(stmtNoiT6Avg)}/mo</button>`);
 
@@ -6965,7 +6972,7 @@ function renderDebtTab() {
 
       <!-- Header -->
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
-        <input type="text" placeholder="Loan label (e.g. Senior, Mezz)" value="${(loan.label||'').replace(/"/g,'&quot;')}"
+        <input type="text" placeholder="Loan label (e.g. Senior, Mezz)" value="${escHtml(loan.label||'')}"
           style="${inputStyle};font-size:14px;font-weight:600;flex:1;min-width:180px;border-color:transparent;background:transparent;padding-left:0"
           onfocus="this.style.background='var(--bg2)';this.style.borderColor='var(--blue)';this.style.paddingLeft='10px'"
           onblur="this.style.background='transparent';this.style.borderColor='transparent';this.style.paddingLeft='0'"
@@ -6981,7 +6988,7 @@ function renderDebtTab() {
         <!-- Lender -->
         <div>
           <div style="${labelStyle}">Lender</div>
-          <input type="text" placeholder="Bank / lender name" value="${(loan.lender||'').replace(/"/g,'&quot;')}"
+          <input type="text" placeholder="Bank / lender name" value="${escHtml(loan.lender||'')}"
             style="${inputStyle}" onchange="updateDebtLoan('${currentPropId}','${loan.id}','lender',this.value)"
             onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
         </div>
@@ -7396,11 +7403,12 @@ function renderCashReviewTab() {
     // Include subtotal rows — Buildium stores capex as "Total for Capital Improvements" (isSubtotal)
     const capexRows = stmt.rows.filter(r => isCapexRow(r) && !r.isCategory && !r.isTotal);
     if(capexRows.length) {
-      const nMonths = Math.min(3, stmt.months.length);
-      const lastN = stmt.months.length - nMonths;
+      // Use the same reconciliation-aware anchor as all other trailing averages
+      const capexMi = getPrevMonthIdx(stmt.months, currentPropId);
+      const nMonths = Math.min(3, capexMi + 1);
       let total = 0;
       capexRows.forEach(r => {
-        for(let m = lastN; m < stmt.months.length; m++) total += Math.abs(r.values[m] || 0);
+        for(let i = 0; i < nMonths; i++) total += Math.abs(r.values[capexMi - i] || 0);
       });
       trailingCapex = total / nMonths;
       capexMonthsUsed = nMonths;
@@ -7725,7 +7733,9 @@ function renderCashReviewTab() {
 function renderFlagsTab() {
   const el = document.getElementById('tab-flags');
   if(!el) return;
-  const fmt = v => '$' + Math.abs(Math.round(v)).toLocaleString();
+  // fmtAbs: absolute-value formatter for flag variance amounts (AppFolio stores expenses as negatives)
+  // Deliberately NOT shadowing the global fmt which returns '—' for null/NaN
+  const fmtAbs = v => (v===null||v===undefined||isNaN(v)) ? '—' : '$' + Math.abs(Math.round(v)).toLocaleString();
 
   if(!currentPropId) {
     el.innerHTML = '<p style="color:var(--text2);padding:20px 0">Select a property to view flags.</p>';
@@ -7800,7 +7810,7 @@ function renderFlagsTab() {
   flags.forEach(f => {
     const group = PF_LINE_ITEMS.find(i => i.label === f.label)?.group || f.label;
     const savedNote   = flagNotes[group] || '';
-    const varDStr     = fmt(Math.abs(f.varD));
+    const varDStr     = fmtAbs(f.varD);
     const varPctStr   = (Math.abs(f.varPct) * 100).toFixed(1) + '%';
     const eg          = group.replace(/'/g, "\\'");
     const el2         = f.label.replace(/'/g, "\\'");
@@ -7836,8 +7846,8 @@ function renderFlagsTab() {
         </tr></thead>
         <tbody><tr>
           <td style="font-weight:500">${f.label}${flagTypeTag}${f.stmtLabels.length>1?`<div style="font-size:10px;color:var(--text3);margin-top:2px">${f.stmtLabels.join(' + ')}</div>`:''}</td>
-          <td style="text-align:right">${fmt(f.budget)}</td>
-          <td style="text-align:right"${muted?'':' class="val-neg"'}>${fmt(f.actual)}</td>
+          <td style="text-align:right">${fmtAbs(f.budget)}</td>
+          <td style="text-align:right"${muted?'':' class="val-neg"'}>${fmtAbs(f.actual)}</td>
           <td style="text-align:right"${muted?'':' class="val-neg"'}>${varSign}${varDStr}</td>
           <td style="text-align:right"${muted?'':' class="val-neg"'}>${varSign}${varPctStr}</td>
         </tr></tbody>
@@ -8835,14 +8845,24 @@ function portfolioPropRow(p, pm, isOpen) {
   })() : '—';
 
   // DSCR: current month NOI ÷ current month Debt Service
+  // Uses the same DEBT_SERVICE_KEYS matching as the benchmarks section to avoid
+  // double-counting subtotals / category headers (especially for Buildium statements
+  // where r.isDebtService is not set and a broad 'mortgage' match overcounts).
   const dscrHTML = (() => {
     if(!stmt) return '—';
     const noiRow = stmt.rows.find(r => r.isNOI);
     if(!noiRow) return '—';
     const portfolioMi = getPrevMonthIdx(stmt.months, p.id);
+    const DS_KEYS = ['mortgage interest','mortgage principal','mortgage payable','mortgages payable',
+                     'interest expense','principal','loan interest','debt service','loan payment',
+                     'principal & interest','p & i','total debt service'];
     const dsRows = stmt.rows.filter(r => {
+      if(r.isCategory) return false; // category header rows have no values
       const lc = r.label.toLowerCase();
-      return r.isDebtService || lc.includes('debt service') || lc.includes('mortgage') || lc.includes('loan payment');
+      // Explicit flag (set by AppFolio post-processor) — but exclude subtotals to avoid
+      // double-counting when both line items and a "Total Debt Service" subtotal exist
+      if(r.isDebtService && !r.isSubtotal) return true;
+      return DS_KEYS.some(k => lc === k || lc.startsWith(k + ' ') || lc.endsWith(' ' + k) || lc.includes(' ' + k + ' '));
     });
     if(!dsRows.length) return '—';
     const curNOI = noiRow.values[portfolioMi] || 0;
@@ -8897,7 +8917,8 @@ function portfolioPropRow(p, pm, isOpen) {
     <td style="padding:4px 10px">${sparklineHTML}</td>
     <td>${(() => {
       if(currentMonthIncome === null || !currentMonthIncome) return '—';
-      const ratio = currentMonthExpense !== null ? currentMonthExpense / currentMonthIncome : null;
+      // Use Math.abs() on both values: AppFolio stores expenses as negatives, Buildium as positives
+      const ratio = currentMonthExpense !== null ? Math.abs(currentMonthExpense) / Math.abs(currentMonthIncome) : null;
       if(ratio === null) return '—';
       const pct = ratio * 100;
       const color = pct > 55 ? 'var(--red)' : pct > 45 ? '#ffa040' : 'var(--green)';
@@ -9019,7 +9040,7 @@ function renderPortfolioFlags() {
   // ── If the flagreview screen isn't open, stop here ────────────────────────
   if(!el) return;
 
-  const fmt = v => '$' + Math.round(Math.abs(v)).toLocaleString();
+  const fmtAbs = v => (v===null||v===undefined||isNaN(v)) ? '—' : '$' + Math.abs(Math.round(v)).toLocaleString();
 
   // ── Collect full annotated flags per property (only those with flags) ─────
   const propertyResults = propsWithData.map(p => {
@@ -9093,7 +9114,7 @@ function renderPortfolioFlags() {
       return `<tr style="${f.status==='reviewed'?'opacity:0.5':''}">
         <td style="padding:7px 10px;font-size:12px">${statusBadge(f.status)}</td>
         <td style="padding:7px 10px;font-size:13px;font-weight:500;color:var(--text)">${escHtml(f.label)}${typeTag}${noteHtml}</td>
-        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">${varSign}${fmt(Math.abs(f.varD))}</td>
+        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">${varSign}${fmtAbs(f.varD)}</td>
         <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">${varSign}${(Math.abs(f.varPct)*100).toFixed(1)}%</td>
       </tr>`;
     }).join('');
@@ -9272,7 +9293,13 @@ function exportNotes() {
     const { flags } = computeFlags(p.id);
     const flagNotes = (propData[p.id]||{}).flagNotes || {};
     const flagLines = flags
-      .map(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; return flagNotes[g] ? `[EXPENSE FLAG] ${f.label} (+${(f.varPct*100).toFixed(1)}%): ${flagNotes[g]}` : null; })
+      .map(f => {
+        const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label;
+        if(!flagNotes[g]) return null;
+        const flagType = f.isIncome ? '[INCOME FLAG]' : '[EXPENSE FLAG]';
+        const varSign  = f.isIncome ? '-' : '+';
+        return `${flagType} ${f.label} (${varSign}${(Math.abs(f.varPct)*100).toFixed(1)}%): ${flagNotes[g]}`;
+      })
       .filter(Boolean);
     if(!propNotes.length && !flagLines.length) return;
     hasContent = true;
@@ -9292,7 +9319,7 @@ function exportNotes() {
   const a = document.createElement('a');
   a.href=URL.createObjectURL(blob);
   a.download='meeting-notes-'+now.toISOString().slice(0,10)+'.txt';
-  a.click();
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
 }
 
 // ─── DOWNLOAD PARSED FILE ────────────────────────────────────────────────────
