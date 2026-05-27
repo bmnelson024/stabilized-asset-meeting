@@ -1183,7 +1183,7 @@ function renderUploadTab(p) {
     : 'Upload multiple files at once to build history';
   const rrHistSlot = `<div style="position:relative">
     <label class="upload-slot ${rrHistCount>0?'has-file':''}" style="display:block;cursor:pointer">
-      <input type="file" accept=".xlsx,.xls,.xlsm" multiple onchange="handleUpload(event,'${p.id}','rentroll')">
+      <input type="file" accept=".xlsx,.xls,.xlsm" multiple onchange="handleUpload(event,'${p.id}','rentroll_history')">
       <div class="upload-slot-icon" style="font-size:18px">${rrHistCount>0?'🕐':'↑'}</div>
       <div class="upload-slot-label">Back-dated rent rolls</div>
       <div class="upload-slot-sub">${rrHistSub}</div>
@@ -1495,14 +1495,14 @@ async function extractPdfToRows(file) {
 // ── Batch rent roll loader ────────────────────────────────────────────────────
 // Processes multiple rent roll files in sequence, adding each as a history snapshot.
 // The most recently dated file becomes the active rent roll for the rent roll tab.
-function handleRentRollBatch(files, propId) {
+function handleRentRollBatch(files, propId, historyOnly = false) {
   const p = properties.find(x => x.id === propId);
   if(!propData[propId]) propData[propId] = {};
   if(!propData[propId].rentRollHistory) propData[propId].rentRollHistory = [];
 
   const total = files.length;
   let processed = 0, errors = 0;
-  // Track the most recently dated snapshot to set as "current" rentroll
+  // Track the most recently dated snapshot — only promotes to active rent roll when historyOnly=false
   let latestDate    = (propData[propId].rentroll && propData[propId].rentroll.asOfDate) || '0000-00-00';
   let latestParsed  = null;
   let latestFilename = propData[propId]['rentroll_filename'] || '';
@@ -1513,8 +1513,8 @@ function handleRentRollBatch(files, propId) {
     if(idx >= total) {
       // Sort history chronologically
       propData[propId].rentRollHistory.sort((a,b) => (a.asOfDate||'').localeCompare(b.asOfDate||''));
-      // Promote the most recent snapshot to active rent roll
-      if(latestParsed) {
+      // Promote the most recent snapshot to active rent roll — only for non-history-only uploads
+      if(!historyOnly && latestParsed) {
         propData[propId].rentroll = latestParsed;
         propData[propId]['rentroll_filename'] = latestFilename;
       }
@@ -1555,9 +1555,14 @@ function handleRentRollBatch(files, propId) {
 }
 
 function handleUpload(event, propId, fileKey) {
-  // Rent roll supports multi-select — route to batch handler if >1 file
+  // Back-dated rent roll history — always routes to batch handler, never overwrites current rent roll
+  if(fileKey === 'rentroll_history') {
+    handleRentRollBatch(event.target.files, propId, true);
+    return;
+  }
+  // Current rent roll multi-select — route to batch handler (promotes newest to active)
   if(fileKey === 'rentroll' && event.target.files.length > 1) {
-    handleRentRollBatch(event.target.files, propId);
+    handleRentRollBatch(event.target.files, propId, false);
     return;
   }
   const file = event.target.files[0];
