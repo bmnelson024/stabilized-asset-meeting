@@ -5378,6 +5378,28 @@ function renderBenchmarkTab() {
       }
     }
   });
+  // Second pass: for any leaf row that is covered by a parent subtotal with a DIFFERENT name,
+  // upgrade stmtLookup[leafLabel] to the subtotal so that proforma mappings pointing to the
+  // leaf label (e.g. "Utility Reimbursement") return the section total (e.g. "Utility Income")
+  // rather than just one sub-line item.
+  stmt.rows.forEach((subRow, subIdx) => {
+    if(!subRow.isSubtotal) return;
+    let catIdx = -1;
+    for(let i = subIdx - 1; i >= 0; i--) {
+      const prev = stmt.rows[i];
+      if(prev.isCategory) { catIdx = i; break; }
+      if(prev.isSubtotal || prev.isTotal || prev.isNOI) break;
+    }
+    if(catIdx < 0) return;
+    for(let i = catIdx + 1; i < subIdx; i++) {
+      const leafRow = stmt.rows[i];
+      if(leafRow.isCategory || leafRow.isSubtotal || leafRow.isTotal) continue;
+      // Only upgrade if this leaf label currently resolves to the leaf itself (not already a subtotal)
+      if(stmtLookup[leafRow.label] === leafRow) {
+        stmtLookup[leafRow.label] = subRow;
+      }
+    }
+  });
 
   function getMappedLabels(group) {
     if(!mapping) return [];
