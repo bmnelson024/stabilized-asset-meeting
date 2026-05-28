@@ -67,7 +67,7 @@
   .portfolio-header{padding:20px 24px 0}
   .portfolio-header h2{font-size:18px;font-weight:500;margin-bottom:4px}
   .portfolio-sub{font-size:13px;color:var(--text2)}
-  .portfolio-kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;padding:16px 24px}
+  .portfolio-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;padding:16px 24px}
   .kpi-card-clickable{cursor:pointer;transition:border-color .15s,box-shadow .15s}
   .kpi-card-clickable:hover{box-shadow:0 0 0 2px var(--blue,#4a90d9);border-color:var(--blue,#4a90d9)!important}
   /* FLAG REVIEW VIEW */
@@ -286,6 +286,11 @@
           <div class="kpi-label">Flag Review</div>
           <div class="kpi-val" id="pk-flagreview-count" style="font-size:20px">—</div>
           <div id="pk-flagreview-sub" style="font-size:11px;color:var(--text3);margin-top:2px">active items</div>
+        </div>
+        <div class="kpi-card" id="pk-reviewed-tile">
+          <div class="kpi-label">Monthly Reviews</div>
+          <div class="kpi-val" id="pk-reviewed-count" style="font-size:20px">—</div>
+          <div id="pk-reviewed-sub" style="font-size:11px;color:var(--text3);margin-top:2px">of <span id="pk-reviewed-total">0</span> properties</div>
         </div>
       </div>
       <div id="portfolio-table-wrap" class="portfolio-table-wrap">
@@ -1544,6 +1549,35 @@ function handleRentRollBatch(files, propId, historyOnly = false) {
         const wb = XLSX.read(e.target.result, {type:'array'});
         const ws = wb.Sheets[wb.SheetNames[0]];
         const parsed = parseRentRoll(ws, p.system);
+        // If the parser couldn't find a date (common with Buildium where "Exported On" is
+        // today's export date, not the rent roll period), try to extract from the filename.
+        // Supports patterns like "Jan 2025", "January 2025", "01-2025", "01_2025", "2025-01"
+        if(!parsed.asOfDate) {
+          const fn = file.name;
+          const MONTHS = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
+                         january:1,february:2,march:3,april:4,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
+          // Try "Month YYYY" or "Month_YYYY" patterns (e.g. "January 2025", "Jan2025")
+          const moYr = fn.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[_\s-]*(\d{4})\b/i);
+          if(moYr) {
+            const m = MONTHS[moYr[1].toLowerCase().slice(0,3)];
+            const y = parseInt(moYr[2]);
+            if(m && y >= 2000 && y <= 2100) {
+              parsed.asOfDate = `${y}-${String(m).padStart(2,'0')}-28`; // last-ish day of month
+            }
+          }
+          // Try numeric patterns: MM-YYYY, MM/YYYY, YYYY-MM
+          if(!parsed.asOfDate) {
+            const numPat = fn.match(/\b(\d{2})[\/\-_](\d{4})\b/) || fn.match(/\b(\d{4})[\/\-_](\d{2})\b/);
+            if(numPat) {
+              const [, a, b] = numPat;
+              const [mm, yyyy] = parseInt(a) > 12 ? [b, a] : [a, b];
+              const m = parseInt(mm), y = parseInt(yyyy);
+              if(m >= 1 && m <= 12 && y >= 2000 && y <= 2100) {
+                parsed.asOfDate = `${y}-${String(m).padStart(2,'0')}-28`;
+              }
+            }
+          }
+        }
         const snapDate = parsed.asOfDate || new Date().toISOString().slice(0,10);
         const snapYM   = snapDate.slice(0,7);
         const existIdx = propData[propId].rentRollHistory.findIndex(h => (h.asOfDate||'').slice(0,7) === snapYM);
@@ -4615,6 +4649,26 @@ function setMonthlyReview(propId, month, isReviewed) {
       if(prop) row.outerHTML = portfolioPropRow(prop, stateKey, isOpen);
     });
   }
+  // Refresh the "Monthly Reviews" KPI tile without re-rendering the whole portfolio
+  const reviewEl = document.getElementById('pk-reviewed-count');
+  if(reviewEl) {
+    let rev = 0, tot = 0;
+    properties.forEach(p => {
+      const pd = propData[p.id]||{};
+      if(!pd.statement || !pd.statement.months || !pd.statement.months.length) return;
+      tot++;
+      const mi = getPrevMonthIdx(pd.statement.months, p.id);
+      const mo = pd.statement.months[mi];
+      if(mo && (pd.monthlyReviews||{})[mo]) rev++;
+    });
+    const allDone = tot > 0 && rev === tot;
+    reviewEl.textContent = rev;
+    reviewEl.style.color = allDone ? 'var(--green)' : rev > 0 ? '#ffa040' : 'var(--text2)';
+    const subEl = document.getElementById('pk-reviewed-sub');
+    if(subEl) subEl.innerHTML = allDone
+      ? `<span style="color:var(--green)">✓ all caught up</span>`
+      : `of <span id="pk-reviewed-total">${tot}</span> with data`;
+  }
 }
 
 function updateDetailReviewButton() {
@@ -4745,10 +4799,43 @@ function renderBenchmarkTab() {
   const idxExpense = anchorExpense ? stmt.rows.indexOf(anchorExpense) : -1;
   const idxNOI     = anchorNOI     ? stmt.rows.indexOf(anchorNOI)     : -1;
 
-  // Collect detail rows for each bucket — individual line items only
-  const incomeSubs  = stmt.rows.filter((r, ri) =>
-    !r.isCategory && !r.isSubtotal && !r.isTotal && !r.isNOI && !r.isNetIncome &&
-    r.level > 0 && !isDebtService(r) &&
+  // Collect detail rows for each bucket — individual line items only.
+  // For income/expense: when a sub-section has a subtotal row (e.g. "Total for Utility Income" →
+  // cleaned "Utility Income"), show the subtotal instead of the individual leaves beneath it.
+  // This prevents multi-item groups (e.g. several utility reimbursement lines) from each appearing
+  // as separate entries when only their total is meaningful in the benchmark view.
+  function buildSubsWithSubtotals(rows, filterFn) {
+    // Step 1: find subtotal rows that pass the filter (minus the isSubtotal exclusion)
+    const subtotalRows = rows.reduce((acc, r, ri) => {
+      if(r.isSubtotal && filterFn(r, ri, /*skipSubtotalCheck*/true))
+        acc.push({r, ri});
+      return acc;
+    }, []);
+    // Step 2: for each subtotal, find the preceding category and mark its leaf rows as covered
+    const coveredIdx = new Set();
+    subtotalRows.forEach(({ri: subIdx}) => {
+      for(let i = subIdx - 1; i >= 0; i--) {
+        const prev = rows[i];
+        if(prev.isCategory) {
+          for(let j = i + 1; j < subIdx; j++) coveredIdx.add(j);
+          break;
+        }
+        if(prev.isSubtotal || prev.isTotal || prev.isNOI) break;
+      }
+    });
+    // Step 3: combine uncovered leaves + subtotal rows, preserving original order
+    const result = [];
+    rows.forEach((r, ri) => {
+      if(filterFn(r, ri) && !coveredIdx.has(ri)) result.push({r, ri});
+    });
+    subtotalRows.forEach(st => result.push(st));
+    result.sort((a, b) => a.ri - b.ri);
+    return result.map(x => x.r);
+  }
+
+  const incomeSubs = buildSubsWithSubtotals(stmt.rows, (r, ri, skipSub) =>
+    !r.isCategory && (skipSub || !r.isSubtotal) && !r.isTotal && !r.isNOI && !r.isNetIncome &&
+    (skipSub || r.level > 0) && !isDebtService(r) &&
     (idxIncome < 0 || ri < idxIncome)
   );
   const isCapex     = r => { const lc = r.label.toLowerCase(); return lc.includes('capex') || lc.includes('capital expenditure') || lc.includes('capital improvement'); };
@@ -4776,9 +4863,10 @@ function renderBenchmarkTab() {
   const effectiveAmfSubs = amfSubs.length ? amfSubs : syntheticAmfSubs;
   // Exclude AMF and capex rows from expenseSubs — they are shown separately under the NOI row.
   // Without this, those rows appear under both Total Operating Expense and the NOI section.
-  const expenseSubs = stmt.rows.filter((r, ri) =>
-    !r.isCategory && !r.isSubtotal && !r.isTotal && !r.isNOI && !r.isNetIncome &&
-    r.level > 0 && !isDebtService(r) && !isAssetMgmtFee(r) && !isCapex(r) &&
+  // Also prefer subtotal rows over their individual leaf children (same as incomeSubs above).
+  const expenseSubs = buildSubsWithSubtotals(stmt.rows, (r, ri, skipSub) =>
+    !r.isCategory && (skipSub || !r.isSubtotal) && !r.isTotal && !r.isNOI && !r.isNetIncome &&
+    (skipSub || r.level > 0) && !isDebtService(r) && !isAssetMgmtFee(r) && !isCapex(r) &&
     (idxIncome < 0 || ri > idxIncome) &&
     (idxExpense < 0 || ri < idxExpense)
   );
@@ -9148,7 +9236,7 @@ function renderPortfolioFlags() {
 
 function renderPortfolio() {
   if(!properties) return; // guard against call before first load completes
-  let loaded=0, ok=0, warn=0, flag=0;
+  let loaded=0, ok=0, warn=0, flag=0, reviewed=0;
   properties.forEach(p=>{
     const d = propData[p.id]||{};
     if(d.statement) loaded++;
@@ -9156,6 +9244,12 @@ function renderPortfolio() {
     if(dot==='dot-ok') ok++;
     else if(dot==='dot-warn') warn++;
     else if(dot==='dot-flag') flag++;
+    // Check if this property has been reviewed for its current month
+    if(d.statement && d.statement.months && d.statement.months.length) {
+      const mi = getPrevMonthIdx(d.statement.months, p.id);
+      const month = d.statement.months[mi];
+      if(month && (d.monthlyReviews||{})[month]) reviewed++;
+    }
   });
 
 
@@ -9228,6 +9322,19 @@ function renderPortfolio() {
   document.getElementById('pk-ok').textContent=ok;
   document.getElementById('pk-warn').textContent=warn;
   document.getElementById('pk-flag').textContent=flag;
+  // Monthly reviews tile
+  const reviewEl = document.getElementById('pk-reviewed-count');
+  const reviewSubEl = document.getElementById('pk-reviewed-sub');
+  const reviewTotalEl = document.getElementById('pk-reviewed-total');
+  if(reviewEl) {
+    const allDone = loaded > 0 && reviewed === loaded;
+    reviewEl.textContent = reviewed;
+    reviewEl.style.color = allDone ? 'var(--green)' : reviewed > 0 ? '#ffa040' : 'var(--text2)';
+    if(reviewTotalEl) reviewTotalEl.textContent = loaded;
+    if(reviewSubEl) reviewSubEl.innerHTML = allDone
+      ? `<span style="color:var(--green)">✓ all caught up</span>`
+      : `of <span id="pk-reviewed-total">${loaded}</span> with data`;
+  }
   const bld = properties.filter(p=>p.system==='buildium').length;
   const afp = properties.filter(p=>p.system==='appfolio').length;
   document.getElementById('portfolio-sub').textContent=`${properties.length} properties · ${bld} Buildium · ${afp} Appfolio · ${loaded} with data loaded`;
