@@ -3876,7 +3876,10 @@ function parseBuildiumBudget(ws) {
   // SKIP_LABELS: section-header rows and subtotal rows we don't want as line items
   // Note: individual capex line items (Appliance, Blinds, etc.) are NOT skipped —
   // they are included with isCapex:true based on section tracking below.
-  const SKIP_LABELS       = ['non-operating','fixed'];
+  // 'non-operating' catches standalone sub-header rows like "NON-OPERATING EXPENSES" that
+  // appear in some budget formats WITHOUT a ▼ section marker. Do NOT include 'fixed' here —
+  // that word appears in real data rows like "Debt Service — FIXED".
+  const SKIP_LABELS       = ['non-operating'];
 
   let inCapexSection = false; // true while inside the ▼ CAPITAL EXPENDITURES section
   let pastNOI        = false;
@@ -4404,7 +4407,7 @@ function renderMappingEditor(propId) {
     if(r.isNetIncome)    return r.label + ' [net income]';
     if(r.isSubtotal)     return r.label + ' [subtotal]';
     // Back-compat: old parsed data may have "Total for X" without isSubtotal flag
-    if(/^total for /i.test(r.label)) return r.label + ' [subtotal]';
+    if(/^total\s+for\s+/i.test(r.label)) return r.label + ' [subtotal]';
     return r.label + ' [line item]';
   }
 
