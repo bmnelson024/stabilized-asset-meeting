@@ -2176,6 +2176,28 @@ function parseBuildium(ws) {
       noiRow.values = Array(nMonths).fill(0).map((_,mi) => incomeTotal.values[mi] - expenseTotal.values[mi]);
       noiRow.total  = noiRow.values.reduce((a,b)=>a+b,0);
     }
+
+    // Also fill in any zero-valued subtotal rows (e.g. "Total for Utility Income") by
+    // summing the leaf rows between their preceding category and themselves.
+    // This handles Buildium exports where section subtotals are formula-only cells that
+    // SheetJS cannot evaluate, leaving them as zeros even though leaf items have values.
+    rows.forEach((subRow, subIdx) => {
+      if(!subRow.isSubtotal) return;
+      if(!subRow.values.every(v => v === 0)) return; // already has values — skip
+      // Walk backward to find the preceding category row
+      let catIdx = -1;
+      for(let i = subIdx - 1; i >= 0; i--) {
+        if(rows[i].isCategory) { catIdx = i; break; }
+        if(rows[i].isSubtotal || rows[i].isTotal || rows[i].isNOI) break;
+      }
+      if(catIdx < 0) return;
+      const leafRows = rows.filter((r, i) =>
+        i > catIdx && i < subIdx && !r.isCategory && !r.isSubtotal && !r.isTotal && !r.isNOI
+      );
+      if(!leafRows.length) return;
+      subRow.values = Array(nMonths).fill(0).map((_, mi) => leafRows.reduce((s, r) => s + (r.values[mi] || 0), 0));
+      subRow.total  = subRow.values.reduce((a, b) => a + b, 0);
+    });
   }
 
   normalizePrincipalSign(rows);
@@ -4754,7 +4776,32 @@ function renderBenchmarkTab() {
   function buildLookup(parsed) {
     if(!parsed) return {};
     const map = {};
-    parsed.rows.forEach(r=>{ map[r.label.toLowerCase()]=r; });
+    parsed.rows.forEach(r => {
+      const key = r.label.toLowerCase();
+      const ex  = map[key];
+      if(!ex || r.isSubtotal || (ex.isCategory && !r.isCategory)) map[key] = r;
+    });
+    // Same second-pass subtotal upgrade as buildStmtLookup: if a leaf is covered
+    // by a parent subtotal, point the leaf's key to the subtotal so budget lookups
+    // by mapped leaf label (e.g. "property insurance") return the section total.
+    parsed.rows.forEach((subRow, subIdx) => {
+      if(!subRow.isSubtotal) return;
+      let catIdx = -1;
+      for(let i = subIdx - 1; i >= 0; i--) {
+        const prev = parsed.rows[i];
+        // Also match Buildium category-header rows whose blank cells parsed as numeric 0
+        // (isCategory=false) but whose label matches the subtotal and all values are zero.
+        if(prev.isCategory || (prev.label === subRow.label && !prev.isSubtotal && !prev.isTotal && !prev.isNOI && prev.values && prev.values.every(v => v === 0))) { catIdx = i; break; }
+        if(prev.isSubtotal || prev.isTotal || prev.isNOI) break;
+      }
+      if(catIdx < 0) return;
+      for(let i = catIdx + 1; i < subIdx; i++) {
+        const leafRow = parsed.rows[i];
+        if(leafRow.isCategory || leafRow.isSubtotal || leafRow.isTotal) continue;
+        const key = leafRow.label.toLowerCase();
+        if(map[key] === leafRow) map[key] = subRow;
+      }
+    });
     return map;
   }
   const pfMap = buildLookup(pf);
@@ -5359,47 +5406,7 @@ function renderBenchmarkTab() {
 
   // ── Helpers for mapped line item rows ────────────────────────────────────────
   const mapping = (d.pfMapping && Object.keys(d.pfMapping).length) ? d.pfMapping : null;
-  const stmtLookup = {};
-  stmt.rows.forEach(r => {
-    const existing = stmtLookup[r.label];
-    // Prefer subtotal rows (e.g. "Total for Repairs" → cleaned to "Repairs") over plain leaf rows
-    // or category headers with the same label. Buildium subtotals hold the section total — that's
-    // what the mapped line item should read, not a same-named individual leaf line.
-    if(!existing || r.isSubtotal || (existing.isCategory && !r.isCategory)) {
-      stmtLookup[r.label] = r;
-    }
-    // Back-compat: if old parsed data stored "Total for X" without cleaning the label,
-    // also register it under the cleaned key "X" so mappings pointing to "X" find the total.
-    if(/^total for /i.test(r.label)) {
-      const cleanedKey = r.label.replace(/^total for /i, '').trim();
-      const existClean = stmtLookup[cleanedKey];
-      if(!existClean || existClean.isCategory || !existClean.isSubtotal) {
-        stmtLookup[cleanedKey] = r;
-      }
-    }
-  });
-  // Second pass: for any leaf row that is covered by a parent subtotal with a DIFFERENT name,
-  // upgrade stmtLookup[leafLabel] to the subtotal so that proforma mappings pointing to the
-  // leaf label (e.g. "Utility Reimbursement") return the section total (e.g. "Utility Income")
-  // rather than just one sub-line item.
-  stmt.rows.forEach((subRow, subIdx) => {
-    if(!subRow.isSubtotal) return;
-    let catIdx = -1;
-    for(let i = subIdx - 1; i >= 0; i--) {
-      const prev = stmt.rows[i];
-      if(prev.isCategory) { catIdx = i; break; }
-      if(prev.isSubtotal || prev.isTotal || prev.isNOI) break;
-    }
-    if(catIdx < 0) return;
-    for(let i = catIdx + 1; i < subIdx; i++) {
-      const leafRow = stmt.rows[i];
-      if(leafRow.isCategory || leafRow.isSubtotal || leafRow.isTotal) continue;
-      // Only upgrade if this leaf label currently resolves to the leaf itself (not already a subtotal)
-      if(stmtLookup[leafRow.label] === leafRow) {
-        stmtLookup[leafRow.label] = subRow;
-      }
-    }
-  });
+  const stmtLookup = buildStmtLookup(stmt);
 
   function getMappedLabels(group) {
     if(!mapping) return [];
@@ -6749,6 +6756,50 @@ function renderPropertyValuationTab() {
     </table>`:'<div style="font-size:13px;color:var(--text3);padding:8px 0">Upload a budget, proforma, or cash flow statement to enable valuation estimates.</div>'}`;
 }
 
+// ─── SHARED STMT LOOKUP BUILDER ───────────────────────────────────────────────
+// Builds a label→row map for a parsed statement, used by both renderBenchmarkTab
+// and computeFlags. Rules:
+//   1. Prefer subtotal rows over plain leaves or category headers with the same label.
+//   2. Register cleaned "X" aliases for any "Total for X" rows still stored with the old label.
+//   3. Second pass: for any leaf whose label only resolves to itself and is covered by a
+//      parent subtotal (different name), upgrade the entry to the subtotal so that proforma
+//      mappings pointing to the leaf label return the section total.
+function buildStmtLookup(stmt) {
+  const lookup = {};
+  stmt.rows.forEach(r => {
+    const existing = lookup[r.label];
+    if(!existing || r.isSubtotal || (existing.isCategory && !r.isCategory)) {
+      lookup[r.label] = r;
+    }
+    if(/^total for /i.test(r.label)) {
+      const cleanedKey = r.label.replace(/^total for /i, '').trim();
+      const existClean = lookup[cleanedKey];
+      if(!existClean || existClean.isCategory || !existClean.isSubtotal) {
+        lookup[cleanedKey] = r;
+      }
+    }
+  });
+  // Upgrade leaf entries that are covered by a differently-named parent subtotal
+  stmt.rows.forEach((subRow, subIdx) => {
+    if(!subRow.isSubtotal) return;
+    let catIdx = -1;
+    for(let i = subIdx - 1; i >= 0; i--) {
+      const prev = stmt.rows[i];
+      // Also match Buildium category-header rows whose blank cells parsed as numeric 0
+      // (isCategory=false) but whose label matches the subtotal and all values are zero.
+      if(prev.isCategory || (prev.label === subRow.label && !prev.isSubtotal && !prev.isTotal && !prev.isNOI && prev.values && prev.values.every(v => v === 0))) { catIdx = i; break; }
+      if(prev.isSubtotal || prev.isTotal || prev.isNOI) break;
+    }
+    if(catIdx < 0) return;
+    for(let i = catIdx + 1; i < subIdx; i++) {
+      const leafRow = stmt.rows[i];
+      if(leafRow.isCategory || leafRow.isSubtotal || leafRow.isTotal) continue;
+      if(lookup[leafRow.label] === leafRow) lookup[leafRow.label] = subRow;
+    }
+  });
+  return lookup;
+}
+
 // ─── FLAGS TAB ────────────────────────────────────────────────────────────────
 
 function computeFlags(propId) {
@@ -6764,25 +6815,36 @@ function computeFlags(propId) {
   const monthIdx = getPrevMonthIdx(stmt.months, propId);
   const selMonth = stmt.months[monthIdx] || '';
 
-  const stmtLookup = {};
-  stmt.rows.forEach(r => {
-    const existing = stmtLookup[r.label];
-    if(!existing || r.isSubtotal || (existing.isCategory && !r.isCategory)) {
-      stmtLookup[r.label] = r;
-    }
-    // Back-compat: if old parsed data stored "Total for X" without cleaning the label,
-    // register it under the cleaned key "X" so mappings find the total, not the category header.
-    if(/^total for /i.test(r.label)) {
-      const cleanedKey = r.label.replace(/^total for /i, '').trim();
-      const existClean = stmtLookup[cleanedKey];
-      if(!existClean || existClean.isCategory || !existClean.isSubtotal) {
-        stmtLookup[cleanedKey] = r;
-      }
-    }
-  });
+  const stmtLookup = buildStmtLookup(stmt);
 
   const bgMap = {};
-  if(bg) bg.rows.forEach(r => { bgMap[r.label.toLowerCase()] = r; });
+  if(bg) {
+    bg.rows.forEach(r => {
+      const key = r.label.toLowerCase();
+      const ex  = bgMap[key];
+      if(!ex || r.isSubtotal || (ex.isCategory && !r.isCategory)) bgMap[key] = r;
+    });
+    // Second pass: upgrade leaf entries to their covering subtotal so mapped labels
+    // like "property insurance" resolve to the full "insurance" section total.
+    bg.rows.forEach((subRow, subIdx) => {
+      if(!subRow.isSubtotal) return;
+      let catIdx = -1;
+      for(let i = subIdx - 1; i >= 0; i--) {
+        const prev = bg.rows[i];
+        // Also match Buildium category-header rows whose blank cells parsed as numeric 0
+        // (isCategory=false) but whose label matches the subtotal and all values are zero.
+        if(prev.isCategory || (prev.label === subRow.label && !prev.isSubtotal && !prev.isTotal && !prev.isNOI && prev.values && prev.values.every(v => v === 0))) { catIdx = i; break; }
+        if(prev.isSubtotal || prev.isTotal || prev.isNOI) break;
+      }
+      if(catIdx < 0) return;
+      for(let i = catIdx + 1; i < subIdx; i++) {
+        const leafRow = bg.rows[i];
+        if(leafRow.isCategory || leafRow.isSubtotal || leafRow.isTotal) continue;
+        const key = leafRow.label.toLowerCase();
+        if(bgMap[key] === leafRow) bgMap[key] = subRow;
+      }
+    });
+  }
 
   function getMappedLabels(group) {
     const v = mapping[group];
@@ -6819,9 +6881,12 @@ function computeFlags(propId) {
     return budgetMonth;
   }
 
+  const suppressed = d.flagSuppressed || {};
+
   // ── Expense flags: over budget by ≥25% AND ≥$1,000 ──────────────────────
   const expenseGroups = PF_LINE_ITEMS.filter(i => !i.isIncome && !i.isComputed && !i.isDebtService && !i.isAssetMgmt);
   expenseGroups.forEach(item => {
+    if(suppressed[item.group]) return;
     const stmtLabels = getMappedLabels(item.group);
     if(!stmtLabels.length) return;
     const actual = sumStmtMonth(stmtLabels);
@@ -6830,13 +6895,14 @@ function computeFlags(propId) {
     const varD   = actual - budgetMonth;
     const varPct = varD / Math.abs(budgetMonth);
     if(varD >= 1000 && varPct >= 0.25) {
-      flags.push({ label: item.label, stmtLabels, actual, budget: budgetMonth, varD, varPct, isIncome: false });
+      flags.push({ label: item.label, group: item.group, stmtLabels, actual, budget: budgetMonth, varD, varPct, isIncome: false });
     }
   });
 
   // ── Income flags: under budget by ≥10% AND ≥$300 shortfall ──────────────
   const incomeGroups = PF_LINE_ITEMS.filter(i => i.isIncome && !i.isComputed);
   incomeGroups.forEach(item => {
+    if(suppressed[item.group]) return;
     const stmtLabels = getMappedLabels(item.group);
     if(!stmtLabels.length) return;
     const actual = sumStmtMonth(stmtLabels);
@@ -6846,14 +6912,14 @@ function computeFlags(propId) {
     const varPct = varD / Math.abs(budgetMonth);
     // Flag if under budget by ≥15% AND ≥$500 monthly shortfall
     if(varD <= -500 && varPct <= -0.15) {
-      flags.push({ label: item.label, stmtLabels, actual, budget: budgetMonth, varD, varPct, isIncome: true });
+      flags.push({ label: item.label, group: item.group, stmtLabels, actual, budget: budgetMonth, varD, varPct, isIncome: true });
     }
   });
 
   // ── Also flag total income vs budget using isTotalIncome row ────────────
   // Only runs if NO income line was already flagged (avoids redundant/overlapping flags)
   const alreadyFlaggedIncome = flags.some(f => f.isIncome);
-  if(!alreadyFlaggedIncome) {
+  if(!alreadyFlaggedIncome && !suppressed['total_income']) {
     const totalIncRow = stmt.rows.find(r => r.isTotalIncome);
     if(totalIncRow) {
       const actual = totalIncRow.values[monthIdx] || 0;
@@ -6871,7 +6937,7 @@ function computeFlags(propId) {
         const varD   = actual - budgetMonth;
         const varPct = varD / Math.abs(budgetMonth);
         if(varD <= -500 && varPct <= -0.08) {
-          flags.push({ label: 'Total Income', stmtLabels: [totalIncRow.label], actual, budget: budgetMonth, varD, varPct, isIncome: true, isTotalIncome: true });
+          flags.push({ label: 'Total Income', group: 'total_income', stmtLabels: [totalIncRow.label], actual, budget: budgetMonth, varD, varPct, isIncome: true, isTotalIncome: true });
         }
       }
     }
@@ -7305,6 +7371,24 @@ function clearAllFlagNotes(propId) {
   save();
   renderFlagsTab();
   renderPortfolio();
+}
+
+function suppressFlag(propId, group) {
+  if(!propData[propId]) propData[propId] = {};
+  if(!propData[propId].flagSuppressed) propData[propId].flagSuppressed = {};
+  propData[propId].flagSuppressed[group] = true;
+  // Clear any review state so it doesn't persist confusingly
+  if(propData[propId].flagReviews) delete propData[propId].flagReviews[group];
+  save();
+  renderFlagsTab();
+  renderPortfolioFlags();
+}
+
+function unsuppressFlag(propId, group) {
+  if(propData[propId]?.flagSuppressed) delete propData[propId].flagSuppressed[group];
+  save();
+  renderFlagsTab();
+  renderPortfolioFlags();
 }
 
 function setFlagStatus(propId, group, status) {
@@ -7886,11 +7970,17 @@ function renderFlagsTab() {
   </div>` : '';
 
   if(!flags.length) {
+    const suppressed2 = d.flagSuppressed || {};
+    const suppGroups2 = Object.keys(suppressed2).filter(g => suppressed2[g]);
+    const dismissedNote = suppGroups2.length
+      ? `<div style="margin-top:20px;font-size:12px;color:var(--text3)">${suppGroups2.length} flag${suppGroups2.length>1?'s':''} dismissed · <button onclick="(function(){const s=propData['${pid}'].flagSuppressed||{};Object.keys(s).forEach(g=>delete s[g]);save();renderFlagsTab();renderPortfolioFlags();})()" style="font-size:12px;background:none;border:none;color:var(--blue,#4a90d9);cursor:pointer;font-family:inherit;padding:0;text-decoration:underline">Restore</button></div>`
+      : '';
     el.innerHTML = monthSel + `
       <div style="text-align:center;padding:56px 0">
         <div style="font-size:28px;margin-bottom:10px">✓</div>
         <div style="font-size:14px;font-weight:600;color:var(--green,#4caf7d)">No flags for ${selMonth}</div>
         <div style="font-size:12px;color:var(--text3);margin-top:6px">All mapped line items are within threshold — expenses ≤25% over budget, income ≥10% of target</div>
+        ${dismissedNote}
       </div>`;
     return;
   }
@@ -7914,11 +8004,12 @@ function renderFlagsTab() {
     </div>`;
 
   const btnStyle = (color) => `font-size:11px;padding:5px 12px;border:1px solid ${color};border-radius:var(--radius);background:var(--bg);color:${color};cursor:pointer;white-space:nowrap;font-family:inherit;font-weight:600`;
+  const dismissBtnStyle = `font-size:11px;padding:4px 9px;border:1px solid var(--border);border-radius:var(--radius);background:transparent;color:var(--text3);cursor:pointer;font-family:inherit;line-height:1`;
 
   const monthIdx = getPrevMonthIdx(stmt.months, pid);
 
   flags.forEach(f => {
-    const group = PF_LINE_ITEMS.find(i => i.label === f.label)?.group || f.label;
+    const group = f.group || PF_LINE_ITEMS.find(i => i.label === f.label)?.group || f.label;
     const savedNote   = flagNotes[group] || '';
     const varDStr     = fmtAbs(f.varD);
     const varPctStr   = (Math.abs(f.varPct) * 100).toFixed(1) + '%';
@@ -7978,8 +8069,9 @@ function renderFlagsTab() {
     } else if(status === 'todo') {
       html += `
       <div style="border:1px solid #ffa040;border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden">
-        <div style="padding:6px 12px;background:color-mix(in srgb,#ffa040 10%,transparent)">
+        <div style="padding:6px 12px;background:color-mix(in srgb,#ffa040 10%,transparent);display:flex;align-items:center;justify-content:space-between">
           <span style="font-size:11px;font-weight:600;color:#ffa040">📋 To-Do</span>
+          <button onclick="suppressFlag('${pid}','${eg}')" style="${dismissBtnStyle}" title="Dismiss this flag permanently">✕ Dismiss</button>
         </div>
         ${dataTable(false)}
         ${heuristicHtml}
@@ -8008,6 +8100,7 @@ function renderFlagsTab() {
             onkeydown="if(event.key==='Enter'){this.blur()}"
             style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none;margin-bottom:8px"/>
           <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="suppressFlag('${pid}','${eg}')" style="${dismissBtnStyle}" title="Dismiss this flag permanently">✕ Dismiss</button>
             <button onclick="setFlagStatus('${pid}','${eg}','reviewed')" style="${btnStyle('var(--green)')}">✓ Reviewed</button>
             <button onclick="setFlagStatus('${pid}','${eg}','todo')" style="${btnStyle('#ffa040')}">→ To-Do</button>
           </div>
@@ -8015,6 +8108,23 @@ function renderFlagsTab() {
       </div>`;
     }
   });
+
+  // ── Dismissed flags section ───────────────────────────────────────────────
+  const suppressed = d.flagSuppressed || {};
+  const suppressedGroups = Object.keys(suppressed).filter(g => suppressed[g]);
+  if(suppressedGroups.length) {
+    const suppressedItems = suppressedGroups.map(g => {
+      const item = PF_LINE_ITEMS.find(i => i.group === g);
+      return item ? item.label : g;
+    });
+    html += `
+    <div style="margin-top:8px;padding:10px 14px;border:1px dashed var(--border);border-radius:var(--radius-lg);background:var(--bg2)">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:12px;color:var(--text3)">${suppressedGroups.length} dismissed flag${suppressedGroups.length>1?'s':''}: ${suppressedItems.join(', ')}</span>
+        <button onclick="(function(){const sup=propData['${pid}'].flagSuppressed||{};Object.keys(sup).forEach(g=>delete sup[g]);save();renderFlagsTab();renderPortfolioFlags();})()" style="font-size:11px;padding:3px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text3);cursor:pointer;font-family:inherit">Restore all</button>
+      </div>
+    </div>`;
+  }
 
   el.innerHTML = html;
 }
