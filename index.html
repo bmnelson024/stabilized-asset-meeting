@@ -2131,7 +2131,7 @@ function parseBuildium(ws) {
     const total = (totalRaw !== null && typeof totalRaw === 'number')
       ? totalRaw
       : values.reduce((a,b)=>a+b,0);
-    const cleanLabel = isSubtotal ? label.replace(/^total for /i,'').trim() : label;
+    const cleanLabel = isSubtotal ? label.replace(/^total\s+for\s+/i,'').trim() : label;
     rows.push({label:cleanLabel, level: isSubtotal||isTotal||isNOI ? 0 : 1,
                isCategory, isSubtotal, isTotal, isNOI, values, total,
                isTotalIncome, isTotalExpense, isNetIncome});
@@ -4786,12 +4786,13 @@ function renderBenchmarkTab() {
     // by mapped leaf label (e.g. "property insurance") return the section total.
     parsed.rows.forEach((subRow, subIdx) => {
       if(!subRow.isSubtotal) return;
+      const subLabel = subRow.label.replace(/^total\s+for\s+/i, '').trim();
       let catIdx = -1;
       for(let i = subIdx - 1; i >= 0; i--) {
         const prev = parsed.rows[i];
         // Also match Buildium category-header rows whose blank cells parsed as numeric 0
-        // (isCategory=false) but whose label matches the subtotal and all values are zero.
-        if(prev.isCategory || (prev.label === subRow.label && !prev.isSubtotal && !prev.isTotal && !prev.isNOI && prev.values && prev.values.every(v => v === 0))) { catIdx = i; break; }
+        // (isCategory=false) but whose label matches the cleaned subtotal and all values are zero.
+        if(prev.isCategory || (prev.label === subLabel && !prev.isSubtotal && !prev.isTotal && !prev.isNOI && prev.values && prev.values.every(v => v === 0))) { catIdx = i; break; }
         if(prev.isSubtotal || prev.isTotal || prev.isNOI) break;
       }
       if(catIdx < 0) return;
@@ -4860,10 +4861,13 @@ function renderBenchmarkTab() {
     }, []);
     // Step 2: for each subtotal, find the preceding category and mark its leaf rows as covered
     const coveredIdx = new Set();
-    subtotalRows.forEach(({ri: subIdx}) => {
+    subtotalRows.forEach(({r: subRow, ri: subIdx}) => {
+      const subLabel = subRow.label.replace(/^total\s+for\s+/i, '').trim();
       for(let i = subIdx - 1; i >= 0; i--) {
         const prev = rows[i];
-        if(prev.isCategory) {
+        // Also match Buildium category-header rows whose blank cells parsed as numeric 0
+        // (isCategory=false) but whose label matches the cleaned subtotal and all values are zero.
+        if(prev.isCategory || (prev.label === subLabel && !prev.isSubtotal && !prev.isTotal && !prev.isNOI && prev.values && prev.values.every(v => v === 0))) {
           for(let j = i + 1; j < subIdx; j++) coveredIdx.add(j);
           break;
         }
@@ -6771,32 +6775,19 @@ function buildStmtLookup(stmt) {
     if(!existing || r.isSubtotal || (existing.isCategory && !r.isCategory)) {
       lookup[r.label] = r;
     }
-    if(/^total for /i.test(r.label)) {
-      const cleanedKey = r.label.replace(/^total for /i, '').trim();
+    if(/^total\s+for\s+/i.test(r.label)) {
+      const cleanedKey = r.label.replace(/^total\s+for\s+/i, '').trim();
       const existClean = lookup[cleanedKey];
       if(!existClean || existClean.isCategory || !existClean.isSubtotal) {
         lookup[cleanedKey] = r;
       }
     }
   });
-  // Upgrade leaf entries that are covered by a differently-named parent subtotal
-  stmt.rows.forEach((subRow, subIdx) => {
-    if(!subRow.isSubtotal) return;
-    let catIdx = -1;
-    for(let i = subIdx - 1; i >= 0; i--) {
-      const prev = stmt.rows[i];
-      // Also match Buildium category-header rows whose blank cells parsed as numeric 0
-      // (isCategory=false) but whose label matches the subtotal and all values are zero.
-      if(prev.isCategory || (prev.label === subRow.label && !prev.isSubtotal && !prev.isTotal && !prev.isNOI && prev.values && prev.values.every(v => v === 0))) { catIdx = i; break; }
-      if(prev.isSubtotal || prev.isTotal || prev.isNOI) break;
-    }
-    if(catIdx < 0) return;
-    for(let i = catIdx + 1; i < subIdx; i++) {
-      const leafRow = stmt.rows[i];
-      if(leafRow.isCategory || leafRow.isSubtotal || leafRow.isTotal) continue;
-      if(lookup[leafRow.label] === leafRow) lookup[leafRow.label] = subRow;
-    }
-  });
+  // NOTE: No leaf-to-subtotal second pass here. The subtotal-preference logic in the first pass
+  // above (r.isSubtotal takes priority) combined with the "Total for X" → "X" alias registration
+  // is sufficient to make lookup["Utility Income"] etc. resolve to the correct subtotal row.
+  // A blanket leaf-upgrade pass would cause individual expense items (Water, Garbage, Electricity)
+  // that are each mapped in pfMapping to incorrectly resolve to their group subtotal.
   return lookup;
 }
 
@@ -6828,12 +6819,13 @@ function computeFlags(propId) {
     // like "property insurance" resolve to the full "insurance" section total.
     bg.rows.forEach((subRow, subIdx) => {
       if(!subRow.isSubtotal) return;
+      const subLabel = subRow.label.replace(/^total\s+for\s+/i, '').trim();
       let catIdx = -1;
       for(let i = subIdx - 1; i >= 0; i--) {
         const prev = bg.rows[i];
         // Also match Buildium category-header rows whose blank cells parsed as numeric 0
-        // (isCategory=false) but whose label matches the subtotal and all values are zero.
-        if(prev.isCategory || (prev.label === subRow.label && !prev.isSubtotal && !prev.isTotal && !prev.isNOI && prev.values && prev.values.every(v => v === 0))) { catIdx = i; break; }
+        // (isCategory=false) but whose label matches the cleaned subtotal and all values are zero.
+        if(prev.isCategory || (prev.label === subLabel && !prev.isSubtotal && !prev.isTotal && !prev.isNOI && prev.values && prev.values.every(v => v === 0))) { catIdx = i; break; }
         if(prev.isSubtotal || prev.isTotal || prev.isNOI) break;
       }
       if(catIdx < 0) return;
