@@ -257,6 +257,7 @@
   <div class="topbar-right">
     <span id="save-status" style="font-size:12px;min-width:110px;text-align:right"></span>
     <button class="btn" onclick="openAddProperty()">+ Add property</button>
+    <button class="btn" onclick="downloadAllStatements()" title="Download all parsed T-12 income statements as a single Excel workbook">↓ All T-12s</button>
     <button class="btn btn-primary" onclick="exportNotes()">Export notes</button>
     <button class="btn" onclick="signOut()" style="color:var(--text3)">Sign out</button>
   </div>
@@ -3109,7 +3110,7 @@ const PF_LINE_ITEMS = [
     group: 'tax',
     label: 'Real Estate Taxes',
     pfKeys:   ['real estate tax','property tax','taxes','real estate taxes','mortgage escrow','escrow'],
-    stmtKeys: ['real estate tax','property tax','taxes','tax'],
+    stmtKeys: ['real estate tax','property tax','taxes','tax','mortgage escrow'],
     isIncome: false,
   },
   {
@@ -9624,6 +9625,44 @@ function downloadParsedFile(propId, fileKey) {
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
   const basename = (d[fileKey + '_filename'] || fileKey).replace(/\.[^.]+$/, '');
   XLSX.writeFile(wb, basename + ' (parsed).xlsx');
+}
+
+// ─── DOWNLOAD ALL STATEMENTS ─────────────────────────────────────────────────
+function downloadAllStatements() {
+  const wb = XLSX.utils.book_new();
+  const usedNames = {};
+
+  const propertiesWithStmt = (properties || []).filter(p => propData[p.id] && propData[p.id].statement);
+  if(!propertiesWithStmt.length) {
+    alert('No parsed income statements found. Upload T-12 files for your properties first.');
+    return;
+  }
+
+  propertiesWithStmt.forEach(p => {
+    const parsed = propData[p.id].statement;
+
+    // Build sheet name: sanitize, truncate to 31 chars (Excel limit), deduplicate
+    let sheetName = (p.name || p.id).replace(/[\\\/\?\*\[\]\:]/g, '').trim().substring(0, 31);
+    if(!sheetName) sheetName = p.id.substring(0, 31);
+    if(usedNames[sheetName.toLowerCase()]) {
+      const base = sheetName.substring(0, 28);
+      let n = 2;
+      while(usedNames[(base + ' ' + n).toLowerCase()]) n++;
+      sheetName = base + ' ' + n;
+    }
+    usedNames[sheetName.toLowerCase()] = true;
+
+    const aoa = [['Account', ...(parsed.months || []), 'Total']];
+    (parsed.rows || []).forEach(r => {
+      aoa.push([r.label, ...(r.values || []), r.total]);
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  });
+
+  const today = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `All T-12 Statements (parsed) ${today}.xlsx`);
 }
 
 // ─── FORMATTING ───────────────────────────────────────────────────────────────
