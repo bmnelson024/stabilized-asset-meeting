@@ -3263,6 +3263,7 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system) {
       // rental_income: we WANT the subtotal ("Total Rental Income") — so allowSubtotals is set below
       rental_income: lc => lc.includes('rental income') || lc.includes('rent income') || lc.includes('gross rent'),
       tax:           lc => lc.includes('property tax') || lc.includes('real estate tax')
+                        || lc.includes('mortgage escrow')
                         || (lc.includes('escrow') && lc.includes('tax')),
       insurance:     lc => (lc.includes('insurance') && !lc.includes('mortgage insurance') && !lc.includes('mip') && !lc.includes('pmi'))
                         || (lc.includes('escrow') && (lc.includes('insur') || lc.includes('haz'))),
@@ -3273,8 +3274,11 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system) {
     // Groups where we prefer the subtotal row ("Total for X") over individual leaf rows.
     // For repairs: "Total for Repairs" aggregates all sub-categories correctly.
     // For income groups: the subtotal is the clean total we want to display.
-    // Expense groups like tax/insurance stay OFF this list so we get specific escrow sub-rows.
-    const SUBTOTAL_ALLOWED_GROUPS = new Set(['rental_income', 'utility_reimb', 'repairs', 'vacancy', 'pet', 'parking', 'laundry', 'late_fee']);
+    // 'tax' is included because Buildium may split property taxes across sub-rows (e.g.
+    // "Mortgage Escrow Expense" monthly + "Mortgage Escrow Expense - Property Taxes" lump-sum);
+    // the "Total for Mortgage Escrow Expense" subtotal is the correct aggregate for benchmarking.
+    // 'insurance' stays OFF — we want the specific "Property Insurance" leaf when available.
+    const SUBTOTAL_ALLOWED_GROUPS = new Set(['rental_income', 'utility_reimb', 'repairs', 'vacancy', 'pet', 'parking', 'laundry', 'late_fee', 'tax']);
 
     Object.entries(BUILDIUM_DEFAULT_MAPPING).forEach(([group, labels]) => {
       // For groups with keyword fallbacks, run keyword matching FIRST — it finds specific
