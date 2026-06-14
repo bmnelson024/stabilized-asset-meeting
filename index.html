@@ -1783,14 +1783,19 @@ function handleUpload(event, propId, fileKey) {
         }
       } else if(fileKey==='capex') {
         const ws0 = wb.Sheets[wb.SheetNames[0]];
-        // Auto-detect AppFolio General Ledger vs Buildium Transaction Detail
+        // Auto-detect Buildium "Transaction Detail by Account" vs AppFolio "General Ledger".
+        // Try Buildium first — it throws immediately if row 0 doesn't contain
+        // "transaction detail", so AppFolio files fall through cleanly.
+        // (Previously AppFolio was tried first, but its generic fallback path would
+        //  accept Buildium files and misclassify all transactions as categoryType='other'
+        //  with no unit data, making the capex detail and ROI sections empty.)
         try {
-          parsed = parseCapexReport(ws0);
+          parsed = parseBuildiumCapex(ws0);
         } catch(e1) {
           try {
-            parsed = parseBuildiumCapex(ws0);
+            parsed = parseCapexReport(ws0);
           } catch(e2) {
-            throw new Error(`Could not parse capex report (AppFolio: ${e1.message} / Buildium: ${e2.message})`);
+            throw new Error(`Could not parse capex report (Buildium: ${e1.message} / AppFolio: ${e2.message})`);
           }
         }
       } else if(fileKey==='cashbalance') {
