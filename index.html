@@ -814,6 +814,18 @@ async function loadFromSupabase() {
       }
     });
   }
+
+  // Re-run Buildium auto-match on every load so that keyword-fallback improvements in the code
+  // take effect without requiring a file re-upload.  AppFolio properties are skipped here (handled
+  // by the upload path only) to preserve any manual pfMapping customisations.
+  if(properties) {
+    properties.forEach(p => {
+      const pd = propData[p.id];
+      if(!pd || !pd.statement) return;
+      const system = p.system || pd.statement.system || '';
+      if(system === 'buildium') maybeAutoMatch(p.id, p);
+    });
+  }
 }
 
 function showSaveError() {
@@ -1550,8 +1562,9 @@ function handleRentRollBatch(files, propId, historyOnly = false) {
         const wb = XLSX.read(e.target.result, {type:'array'});
         const ws = wb.Sheets[wb.SheetNames[0]];
         const parsed = parseRentRoll(ws, p.system);
-        // If the parser couldn't find a date (common with Buildium where "Exported On" is
-        // today's export date, not the rent roll period), try to extract from the filename.
+        // If the parser couldn't find a date, try to extract from the filename.
+        // Buildium's "As of MM/DD/YYYY" is now detected inside the file, so filename
+        // extraction is only a fallback for files where that header is absent.
         // Supports patterns like "Jan 2025", "January 2025", "01-2025", "01_2025", "2025-01"
         if(!parsed.asOfDate) {
           const fn = file.name;
@@ -2238,13 +2251,24 @@ function parseRentRoll(ws, system) {
   for(let i = 0; i < Math.min(12, data.length); i++) {
     const row = data[i];
     if(!row) continue;
-    const cell = (row[0]||'').toString().trim();
-    // "Exported On: 05/21/2026 03:43 PM"
-    const expMatch = cell.match(/^exported on[:\s]+(\d{1,2}\/\d{1,2}\/\d{4})/i);
-    if(expMatch) { asOfDate = parseRentRollDate(expMatch[1]) || asOfDate; }
-    // "Date Range: May 2025" or "As of: 04/30/2025"
-    const drMatch = cell.match(/^(?:date range|as of)[:\s]+(.+)/i);
-    if(drMatch) { asOfDate = parseRentRollDate(drMatch[1].trim()) || asOfDate; }
+    // Check all cells in the row — date may appear in any column
+    for(let col = 0; col < Math.min(row.length, 4); col++) {
+      const cell = (row[col]||'').toString().trim();
+      if(!cell) continue;
+      // "Exported On: 05/21/2026 03:43 PM"
+      const expMatch = cell.match(/^exported on[:\s]+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+      if(expMatch) { asOfDate = parseRentRollDate(expMatch[1]) || asOfDate; }
+      // "Date Range: May 2025" or "As of: 04/30/2025" at start of cell
+      const drMatch = cell.match(/^(?:date range|as of)[:\s]+(.+)/i);
+      if(drMatch) { asOfDate = parseRentRollDate(drMatch[1].trim()) || asOfDate; }
+      // "As of MM/DD/YYYY" anywhere in cell — handles Buildium multi-line header like
+      // "Rent Roll\nAs of 5/31/2026, Property Name, Current leases"
+      const anyAsOf = cell.match(/\bas\s+of\s+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+      if(anyAsOf) { asOfDate = parseRentRollDate(anyAsOf[1]) || asOfDate; }
+    }
+    // "As of" match gives a real period date — stop scanning once found to avoid
+    // a later "Exported On" row overwriting it with today's date
+    if(asOfDate) break;
   }
   const parsed = system === 'appfolio' ? parseAppfolioRentRoll(data) : parseBuildiumRentRoll(data);
   if(asOfDate) parsed.asOfDate = asOfDate;
