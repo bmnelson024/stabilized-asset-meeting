@@ -3127,7 +3127,10 @@ const PF_LINE_ITEMS = [
     group: 'repairs',
     label: 'Repairs & Maintenance',
     pfKeys:   ['repair','maintenance','repairs & maintenance','repairs and maintenance','maint'],
-    stmtKeys: ['repair','maintenance','maint'],
+    // 'pest','locksmith','rekey','drain clean','make read' catch Buildium flat-list budget rows
+    // (Pest Control, Locksmith Service, Rekey Unit, Drain Cleaning, Make readies) that don't
+    // contain 'repair' or 'maintenance' but clearly belong to the repairs group.
+    stmtKeys: ['repair','maintenance','maint','pest','locksmith','rekey','drain clean','make read'],
     isIncome: false,
   },
   {
@@ -3233,7 +3236,7 @@ const MATCH_KEYWORDS = [
   {keys:['asset management','asset mgmt'], group:'asset_mgmt'},
   {keys:['property management','management fee','mgmt fee'], group:'mgmt_fee'},
   {keys:['landscap','lawn','grounds','snow'], group:'landscaping'},
-  {keys:['repair','maintenance','maint'], group:'repairs'},
+  {keys:['repair','maintenance','maint','pest','locksmith','rekey','drain clean','make read'], group:'repairs'},
   {keys:['admin','marketing','advertising'], group:'admin'},
   {keys:['hoa','homeowners association','association dues'], group:'hoa'},
   {keys:['rental income','total rental income','rent income','gross rent'], group:'rental_income'},
@@ -5092,10 +5095,13 @@ function renderBenchmarkTab() {
                || (hasBG && r.isNetIncome   ? bestRow(bg.rows.filter(x=>x.isNetIncome))   : null)
                || bgMap[r.label.toLowerCase()]
                || null;
-    // Fallback: if no budget row found by label, use keyword-classified group total
-    // (handles flat-list budgets like PGO/Buildium that have no subtotal rows)
-    const bgRowGroup = !bgRow ? getStmtMatchGroup(r.label) : null;
-    const bgAnnual = bgRow ? bgRow.total
+    // For statement subtotals, prefer bgGroupTotals (keyword aggregate) over the single leaf
+    // that happens to share the subtotal's cleaned label — avoids undercount on flat budgets.
+    // For leaf rows with no bgRow match, fall back to bgGroupTotals as before.
+    const bgRowGroup = getStmtMatchGroup(r.label);
+    const bgAnnual = (r.isSubtotal && bgRowGroup && bgGroupTotals[bgRowGroup])
+                   ? bgGroupTotals[bgRowGroup]
+                   : bgRow ? bgRow.total
                    : (bgRowGroup && bgGroupTotals[bgRowGroup]) ? bgGroupTotals[bgRowGroup]
                    : null;
 
@@ -5469,15 +5475,31 @@ function renderBenchmarkTab() {
     // Budget lookup — sum individual mapped rows; fall back to keyword-classified group total
     let bgAnnualLI = null;
     if(hasBG) {
+      // If statement labels are subtotals (aggregating many leaf rows), a flat budget may only
+      // have leaf rows whose labels match the subtotal name — missing all the other sub-items.
+      // In that case, bgGroupTotals (keyword-classified aggregate over ALL budget leaf rows)
+      // gives a more complete budget figure than the name-based lookup alone.
+      const anyStmtSubtotal = stmtLabels.some(lbl => {
+        const r = stmtLookup[lbl];
+        return r && r.isSubtotal;
+      });
+
       let bgSum = 0, anyFound = false;
       stmtLabels.forEach(lbl => {
         const bgRow = bgMap[lbl.toLowerCase()];
         if(bgRow && bgRow.total) { bgSum += bgRow.total; anyFound = true; }
       });
-      if(anyFound) {
+      if(anyStmtSubtotal && bgGroupTotals[item.group]) {
+        // Statement uses section subtotals — use keyword-classified budget group total for
+        // completeness (captures all budget leaf rows for this group, regardless of label).
+        // This handles flat-list budgets (e.g. Buildium/PGO) where individual items like
+        // "Appliance Repairs", "Locksmith Service", etc. live as separate rows rather than
+        // under a single "Repairs" subtotal that would match the statement subtotal label.
+        bgAnnualLI = bgGroupTotals[item.group];
+      } else if(anyFound) {
         bgAnnualLI = bgSum;
       } else if(bgGroupTotals[item.group]) {
-        // Budget has no subtotal row matching the statement label — sum individual line items
+        // Budget has no label matching any statement label — sum individual line items
         // that keyword-match this group (handles PGO/Buildium flat-list budgets)
         bgAnnualLI = bgGroupTotals[item.group];
       }
@@ -6870,6 +6892,18 @@ function computeFlags(propId) {
     });
   }
 
+  // Budget group totals by keyword — same logic as in the benchmark tab.
+  // Used as a fallback when statement subtotals don't directly match budget flat-list labels.
+  const bgGroupTotals = {};
+  if(bg) {
+    bg.rows.forEach(r => {
+      if(r.isCategory || r.isSubtotal || r.isTotal || r.isNOI || r.isNetIncome) return;
+      if(r.isDebtService || r.isAssetMgmt || r.isCapex) return;
+      const grp = getStmtMatchGroup(r.label);
+      if(grp) bgGroupTotals[grp] = (bgGroupTotals[grp] || 0) + (r.total || 0);
+    });
+  }
+
   function getMappedLabels(group) {
     const v = mapping[group];
     if(!v) return [];
@@ -6889,13 +6923,25 @@ function computeFlags(propId) {
   function resolveBudgetMonth(item, stmtLabels) {
     let budgetMonth = null;
     if(bg) {
+      // Same subtotal-aware logic as pfLineItemRow: if stmtLabels are subtotals, the budget
+      // group total (keyword-classified) is more complete than a name-based leaf lookup.
+      const anyStmtSubtotal = stmtLabels.some(lbl => {
+        const r = stmtLookup[lbl];
+        return r && r.isSubtotal;
+      });
       let bgSum = 0, anyFound = false;
       stmtLabels.forEach(lbl => {
         const bgRow = bgMap[lbl.toLowerCase()];
         // Only count rows with a non-zero budget; zero means unbudgeted, fall through to proforma
         if(bgRow && bgRow.total) { bgSum += bgRow.total; anyFound = true; }
       });
-      if(anyFound) budgetMonth = bgSum / 12;
+      if(anyStmtSubtotal && bgGroupTotals[item.group]) {
+        budgetMonth = bgGroupTotals[item.group] / 12;
+      } else if(anyFound) {
+        budgetMonth = bgSum / 12;
+      } else if(bgGroupTotals[item.group]) {
+        budgetMonth = bgGroupTotals[item.group] / 12;
+      }
     }
     if(budgetMonth === null && pf) {
       const pfCandidates = pf.rows.filter(r => item.pfKeys.some(k => r.label.toLowerCase().includes(k)));
