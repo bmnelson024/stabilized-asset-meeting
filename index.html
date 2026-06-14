@@ -2246,31 +2246,46 @@ function normalizePrincipalSign(rows) {
 
 function parseRentRoll(ws, system) {
   const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
-  // Extract as-of date from metadata rows before the header
+  // Extract as-of date from metadata rows before the header.
+  // Priority: "As of:" / "Date Range:" / embedded "As of MM/DD/YYYY" are authoritative
+  // period-end dates and stop the scan.  "Exported On:" is a fallback (the file creation
+  // date, not the rent roll period) — keep scanning past it so a later "As of:" row can
+  // override it (old AppFolio format has "Exported On" on row 1 and "As of:" on row 5).
   let asOfDate = null;
+  let foundPeriodDate = false;
   for(let i = 0; i < Math.min(12, data.length); i++) {
     const row = data[i];
     if(!row) continue;
-    // Check all cells in the row — date may appear in any column
     for(let col = 0; col < Math.min(row.length, 4); col++) {
       const cell = (row[col]||'').toString().trim();
       if(!cell) continue;
-      // "Exported On: 05/21/2026 03:43 PM"
+      // "Exported On: 04/11/2025 11:15 AM" — fallback only; don't stop scanning
       const expMatch = cell.match(/^exported on[:\s]+(\d{1,2}\/\d{1,2}\/\d{4})/i);
-      if(expMatch) { asOfDate = parseRentRollDate(expMatch[1]) || asOfDate; }
-      // "Date Range: May 2025" or "As of: 04/30/2025" at start of cell
+      if(expMatch && !foundPeriodDate) { asOfDate = parseRentRollDate(expMatch[1]) || asOfDate; }
+      // "As of: 02/28/2025" or "Date Range: May 2025" — authoritative period date
       const drMatch = cell.match(/^(?:date range|as of)[:\s]+(.+)/i);
-      if(drMatch) { asOfDate = parseRentRollDate(drMatch[1].trim()) || asOfDate; }
-      // "As of MM/DD/YYYY" anywhere in cell — handles Buildium multi-line header like
-      // "Rent Roll\nAs of 5/31/2026, Property Name, Current leases"
+      if(drMatch) { const d = parseRentRollDate(drMatch[1].trim()); if(d) { asOfDate = d; foundPeriodDate = true; } }
+      // "As of MM/DD/YYYY" anywhere — Buildium multi-line cell "Rent Roll\nAs of 5/31/2026, …"
       const anyAsOf = cell.match(/\bas\s+of\s+(\d{1,2}\/\d{1,2}\/\d{4})/i);
-      if(anyAsOf) { asOfDate = parseRentRollDate(anyAsOf[1]) || asOfDate; }
+      if(anyAsOf) { const d = parseRentRollDate(anyAsOf[1]); if(d) { asOfDate = d; foundPeriodDate = true; } }
     }
-    // "As of" match gives a real period date — stop scanning once found to avoid
-    // a later "Exported On" row overwriting it with today's date
-    if(asOfDate) break;
+    // Stop only once an authoritative period date is found (not just "Exported On")
+    if(foundPeriodDate) break;
   }
-  const parsed = system === 'appfolio' ? parseAppfolioRentRoll(data) : parseBuildiumRentRoll(data);
+  let parsed;
+  if(system === 'appfolio') {
+    parsed = parseAppfolioRentRoll(data);
+  } else {
+    // Try Buildium format first; fall back to AppFolio-format parser for historical files
+    // uploaded before the property switched PM systems (e.g., pre-Sep 2025 Bancroft files
+    // that were exported in AppFolio format with 'BD/BA' column headers and a Status column
+    // rather than the Buildium 'Bed/Bath' layout).
+    try {
+      parsed = parseBuildiumRentRoll(data);
+    } catch(e) {
+      parsed = parseAppfolioRentRoll(data);
+    }
+  }
   if(asOfDate) parsed.asOfDate = asOfDate;
   return parsed;
 }
