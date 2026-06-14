@@ -3013,7 +3013,9 @@ function parseAppfolioRentRoll(data) {
 function parseBuildiumRentRoll(data) {
   let headerRow = -1;
   for(let i=0;i<data.length;i++){
-    if(data[i] && data[i][0]==='Unit' && data[i][4]==='Bed/Bath') { headerRow=i; break; }
+    // Use .some() instead of data[i][4]==='Bed/Bath' — the exact column position of 'Bed/Bath'
+    // can shift if the export was generated with different column settings across different months.
+    if(data[i] && data[i][0]==='Unit' && data[i].some(c=>(c||'').toString().trim()==='Bed/Bath')) { headerRow=i; break; }
   }
   if(headerRow<0) throw new Error('Could not find rent roll header row in Buildium file.');
 
