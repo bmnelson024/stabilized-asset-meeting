@@ -9273,11 +9273,17 @@ function portfolioPropRow(p, pm, isOpen) {
       const lc = r.label.toLowerCase();
       return AMF_KEYS.some(k => lc.includes(k));
     });
-    const curDS  = dsRows.reduce((sum, r)  => sum + Math.abs(r.values[portfolioMi] || 0), 0);
-    const curAMF = amfRows.reduce((sum, r) => sum + Math.abs(r.values[portfolioMi] || 0), 0);
-    const efcf = currentMonthNoi - curDS - curAMF;
+    const capexRows = stmt.rows.filter(r => {
+      if(r.isCategory || r.isTotal) return false;
+      const lc = r.label.toLowerCase();
+      return lc.includes('capex') || lc.includes('capital expenditure') || lc.includes('capital improvement');
+    });
+    const curDS    = dsRows.reduce((sum, r)    => sum + Math.abs(r.values[portfolioMi] || 0), 0);
+    const curAMF   = amfRows.reduce((sum, r)   => sum + Math.abs(r.values[portfolioMi] || 0), 0);
+    const curCapex = capexRows.reduce((sum, r) => sum + Math.abs(r.values[portfolioMi] || 0), 0);
+    const efcf = currentMonthNoi - curDS - curAMF - curCapex;
     const color = efcf >= 0 ? 'var(--green)' : 'var(--red)';
-    const tip = `NOI ${fmt(currentMonthNoi)} − DS ${fmt(curDS)}${curAMF ? ` − AMF ${fmt(curAMF)}` : ''}`;
+    const tip = `NOI ${fmt(currentMonthNoi)} − DS ${fmt(curDS)}${curAMF ? ` − AMF ${fmt(curAMF)}` : ''}${curCapex ? ` − Capex ${fmt(curCapex)}` : ''}`;
     return `<span style="color:${color};font-weight:500;cursor:default" title="${tip}">${efcf < 0 ? '(' : ''}${fmt(Math.abs(efcf))}${efcf < 0 ? ')' : ''}</span>`;
   })();
 
