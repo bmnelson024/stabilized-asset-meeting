@@ -2078,10 +2078,13 @@ function parseTrialBalance(ws) {
   }
   if(headerRow < 0) throw new Error('Could not find column headers in Trial Balance report.');
 
-  // Find the operating account row — try 1150, then 1050, then any row whose name contains "operating account"
+  // Find the operating account row — try known GL prefixes, then fall back to name matching
   let cash = null;
   let matchedGL = null;
-  const OPERATING_GL_PREFIXES = ['1150', '1050'];
+  // Known GL prefixes for operating/primary bank accounts across property managers:
+  //   1150 / 1050 — standard AppFolio operating accounts
+  //   0-11000     — RPME (BG Flats, Champion Villas, Doral) "Primary Bank Account"
+  const OPERATING_GL_PREFIXES = ['1150', '1050', '0-11000'];
 
   // Pass 1: known GL code prefixes
   for(let i = headerRow + 1; i < data.length && cash === null; i++) {
@@ -2093,27 +2096,27 @@ function parseTrialBalance(ws) {
     if(OPERATING_GL_PREFIXES.some(prefix => glStr.startsWith(prefix))) {
       const raw = row[endCol];
       cash = (raw !== null && raw !== undefined) ? (parseFloat(raw) || 0) : 0;
-      matchedGL = glStr.split(/[\s:–-]/)[0]; // just the numeric portion
+      matchedGL = glStr.split(/[\s:]/)[0]; // split on space/colon only — preserves hyphenated codes like 0-11000
       break; // first match wins — don't let sub-accounts override the parent
     }
   }
 
-  // Pass 2: fallback — account name contains "operating account"
+  // Pass 2: fallback — account name contains "operating account" or "primary bank account"
   if(cash === null) {
     for(let i = headerRow + 1; i < data.length; i++) {
       const row = data[i];
       if(!row) continue;
       const gl = row[glCol];
-      if(gl && gl.toString().toLowerCase().includes('operating account')) {
+      if(gl && (gl.toString().toLowerCase().includes('operating account') || gl.toString().toLowerCase().includes('primary bank account'))) {
         const raw = row[endCol];
         cash = (raw !== null && raw !== undefined) ? (parseFloat(raw) || 0) : 0;
-        matchedGL = gl.toString().trim().split(/[\s:–-]/)[0];
+        matchedGL = gl.toString().trim().split(/[\s:]/)[0];
         break;
       }
     }
   }
 
-  if(cash === null) throw new Error('Operating Account GL (1150 or 1050) not found in this Trial Balance. Check that this is a "Trial Balance by Property" export.');
+  if(cash === null) throw new Error('Operating Account GL (1150, 1050, or 0-11000) not found in this Trial Balance. Check that this is a "Trial Balance by Property" export.');
 
   return { cash, dateRange, matchedGL: matchedGL || '1150', system: 'trial_balance' };
 }
@@ -3267,7 +3270,7 @@ const PF_LINE_ITEMS = [
     group: 'rental_income',
     label: 'Total Rental Income',
     pfKeys:   ['total rental income','rental income','gross rental income','gross rent'],
-    stmtKeys: ['rental income','gross rent','rent income','total rent'],
+    stmtKeys: ['rental income','gross rent','rent income','total rent','gross potential rent','gain to lease','concession','vacancy','discount'],
     isIncome: true,
   },
   {
@@ -5663,7 +5666,14 @@ function renderBenchmarkTab() {
       let bgSum = 0, anyFound = false;
       stmtLabels.forEach(lbl => {
         const bgRow = bgMap[lbl.toLowerCase()];
-        if(bgRow && bgRow.total) { bgSum += bgRow.total; anyFound = true; }
+        if(bgRow && bgRow.total) {
+          // If bgMap returned a subtotal promoted from a different keyword group, skip it —
+          // it means the budget leaf row was rolled up into a parent subtotal that spans
+          // multiple line items (e.g. "Utilities Reimbursement" promoted to
+          // "Total Rent - Residential"). Fall through to bgGroupTotals instead.
+          if(bgRow.isSubtotal && getStmtMatchGroup(bgRow.label) !== item.group) return;
+          bgSum += bgRow.total; anyFound = true;
+        }
       });
       if(anyStmtSubtotal && bgGroupTotals[item.group]) {
         // Statement uses section subtotals — use keyword-classified budget group total for
@@ -8199,7 +8209,7 @@ function renderCashReviewTab() {
   const cbPendingHtml = (cb.pending !== undefined && cb.pending !== null && cb.pending !== 0)
     ? `<div style="font-size:11px;color:var(--text3);margin-top:4px">${fmt(cb.pending)} pending · net <strong style="color:var(--text2)">${fmt(cb.cash + cb.pending)}</strong></div>`
     : '';
-  const cbSourceLabel = cb.system === 'trial_balance' ? 'AppFolio Trial Balance · GL 1150'
+  const cbSourceLabel = cb.system === 'trial_balance' ? `AppFolio Trial Balance · GL ${cb.matchedGL || '1150'}`
     : cb.system === 'buildium_cash_balance' ? 'Buildium Bank Account Balance' : '';
 
   const cashHero = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 20px;margin-bottom:14px">
