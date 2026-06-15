@@ -298,7 +298,7 @@
         <table class="portfolio-table" id="portfolio-table">
           <thead>
             <tr>
-              <th>Property</th><th>System</th><th>Status</th><th>Occupancy</th>
+              <th>Property</th><th>Status</th><th>Occupancy</th><th>Cash Balance</th>
               <th>Total income / mo</th><th>Total expense / mo</th><th>NOI / mo</th>
               <th>Trend</th><th>Exp ratio</th><th>DSCR</th><th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
             </tr>
@@ -2692,6 +2692,7 @@ function parseBuildiumCapex(ws) {
   const TURNOVER_RE = /make.?read|turnover|turn[\s-]over|unit\s*prep|cleaning.*unit|unit.*cleaning/i;
 
   function categorize(acct) {
+    if(/mortgage\s*escrow/i.test(acct)) return 'other'; // escrow reserve ≠ capital improvement
     if(TURNOVER_RE.test(acct)) return 'turnover';
     if(CAPEX_RE.test(acct))    return 'capex';
     return 'other';
@@ -2755,11 +2756,13 @@ function parseBuildiumCapex(ws) {
     // Blank trailing row
     if(col0 === null || col0 === '') continue;
 
-    // Account section header: string, no amount in col 5, col 1-4 all null
-    if(typeof col0 === 'string' && col5 == null
-       && row[1] == null && row[2] == null && row[3] == null) {
+    // Account section header: string in col 0, no amount in col 5, and col 0 is not a parseable date.
+    // We intentionally do NOT require col 1-3 to be null — Buildium sometimes places an account
+    // number or code in those columns for sub-account headers (e.g. "Capital Improvements - Appliance"),
+    // which caused them to be silently skipped and all transactions lumped under the parent account.
+    if(typeof col0 === 'string' && (col5 == null || col5 === '') && !parseDate(col0)) {
       const lc = col0.trim().toLowerCase();
-      if(lc === 'expenses' || lc === 'income') continue; // top-level section labels
+      if(lc === 'expenses' || lc === 'income' || lc === 'date') continue; // top-level / column-header rows
       currentAccount  = col0.trim();
       currentCategory = categorize(currentAccount);
       if(!byAccount[currentAccount]) {
@@ -7483,7 +7486,7 @@ function unsuppressFlag(propId, group) {
   renderPortfolioFlags();
 }
 
-function setFlagStatus(propId, group, status) {
+function setFlagStatus(propId, group, status, month) {
   if(!propData[propId]) propData[propId] = {};
   if(!propData[propId].flagReviews) propData[propId].flagReviews = {};
   if(status === 'unreviewed') {
@@ -7491,6 +7494,7 @@ function setFlagStatus(propId, group, status) {
   } else {
     if(!propData[propId].flagReviews[group]) propData[propId].flagReviews[group] = {};
     propData[propId].flagReviews[group].status = status;
+    if(month) propData[propId].flagReviews[group].month = month;
   }
   save();
   renderFlagsTab();
@@ -8046,9 +8050,9 @@ function renderFlagsTab() {
   const flagNotes   = d.flagNotes   || {};
   const pid = currentPropId;
 
-  const unreviewedCount = flags.filter(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; return !flagReviews[g]; }).length;
-  const todoCount       = flags.filter(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; return flagReviews[g]?.status==='todo'; }).length;
-  const reviewedCount   = flags.filter(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; return flagReviews[g]?.status==='reviewed'; }).length;
+  const unreviewedCount = flags.filter(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; const r=flagReviews[g]; return !r || r.month!==selMonth; }).length;
+  const todoCount       = flags.filter(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; const r=flagReviews[g]; return r && r.month===selMonth && r.status==='todo'; }).length;
+  const reviewedCount   = flags.filter(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; const r=flagReviews[g]; return r && r.month===selMonth && r.status==='reviewed'; }).length;
   updateFlagsBadge(unreviewedCount);
 
   // Month selector
@@ -8107,7 +8111,8 @@ function renderFlagsTab() {
     const varPctStr   = (Math.abs(f.varPct) * 100).toFixed(1) + '%';
     const eg          = group.replace(/'/g, "\\'");
     const el2         = f.label.replace(/'/g, "\\'");
-    const status      = flagReviews[group]?.status || 'unreviewed';
+    const _rev = flagReviews[group];
+    const status = (_rev && _rev.month === selMonth) ? (_rev.status || 'unreviewed') : 'unreviewed';
 
     // Heuristic annotation
     const heuristic = getFlagHeuristic(f, d, stmt, monthIdx);
@@ -8151,7 +8156,7 @@ function renderFlagsTab() {
       <div style="border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:10px;overflow:hidden">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 12px;background:color-mix(in srgb,var(--green) 8%,transparent)">
           <span style="font-size:11px;font-weight:600;color:var(--green)">✓ Reviewed</span>
-          <button onclick="setFlagStatus('${pid}','${eg}','unreviewed')" style="${btnStyle('var(--border)')}; color:var(--text3)">Undo</button>
+          <button onclick="setFlagStatus('${pid}','${eg}','unreviewed','${selMonth}')" style="${btnStyle('var(--border)')}; color:var(--text3)">Undo</button>
         </div>
         ${dataTable(true)}
         ${heuristicHtml}
@@ -8175,7 +8180,7 @@ function renderFlagsTab() {
             style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none;margin-bottom:8px"/>
           <div style="display:flex;gap:8px;justify-content:flex-end">
             <button id="flag-cu-${pid}-${group}" onclick="copyFlagClickUpTask('${pid}','${eg}','${el2}','${varSign}${varDStr}','${varSign}${varPctStr}')" style="${btnStyle('#ffa040')}">📋 Copy ClickUp task</button>
-            <button onclick="setFlagStatus('${pid}','${eg}','reviewed')" style="${btnStyle('var(--green)')}">✓ Mark reviewed</button>
+            <button onclick="setFlagStatus('${pid}','${eg}','reviewed','${selMonth}')" style="${btnStyle('var(--green)')}">✓ Mark reviewed</button>
           </div>
         </div>
       </div>`;
@@ -8193,8 +8198,8 @@ function renderFlagsTab() {
             style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none;margin-bottom:8px"/>
           <div style="display:flex;gap:8px;justify-content:flex-end">
             <button onclick="suppressFlag('${pid}','${eg}')" style="${dismissBtnStyle}" title="Dismiss this flag permanently">✕ Dismiss</button>
-            <button onclick="setFlagStatus('${pid}','${eg}','reviewed')" style="${btnStyle('var(--green)')}">✓ Reviewed</button>
-            <button onclick="setFlagStatus('${pid}','${eg}','todo')" style="${btnStyle('#ffa040')}">→ To-Do</button>
+            <button onclick="setFlagStatus('${pid}','${eg}','reviewed','${selMonth}')" style="${btnStyle('var(--green)')}">✓ Reviewed</button>
+            <button onclick="setFlagStatus('${pid}','${eg}','todo','${selMonth}')" style="${btnStyle('#ffa040')}">→ To-Do</button>
           </div>
         </div>
       </div>`;
@@ -9213,9 +9218,15 @@ function portfolioPropRow(p, pm, isOpen) {
   })();
   return `<tr class="ptbl-prop-row${isOpen ? '' : ' hidden'}" data-pm="${escHtml(pm)}" data-propid="${p.id}" onclick="selectProp('${p.id}')">
     <td><strong>${escHtml(p.name)}</strong>${staleBadge}${reviewedBadge}${subLine?` <span style="color:var(--text3);font-weight:400;font-size:11px">${subLine}</span>`:''}</td>
-    <td>${p.system==='buildium'?'Buildium':'Appfolio'}</td>
     <td>${statusBadge}</td>
     <td>${occHTML}</td>
+    <td>${(() => {
+      const cb = d.cashbalance;
+      if(!cb || cb.cash === null || cb.cash === undefined) return '—';
+      const color = cb.cash >= 0 ? 'var(--green)' : 'var(--red)';
+      const dateLabel = cb.dateRange ? `<br><span style="font-size:10px;color:var(--text3)">as of ${cb.dateRange}</span>` : '';
+      return `<span style="color:${color};font-weight:500">${fmt(cb.cash)}</span>${dateLabel}`;
+    })()}</td>
     <td>${currentMonthIncome!==null?fmt(currentMonthIncome):'—'}</td>
     <td>${currentMonthExpense!==null?fmt(currentMonthExpense):'—'}</td>
     <td>${(() => {
@@ -9317,15 +9328,15 @@ function renderPortfolioFlags() {
   });
 
   const allResults = propsWithData.map(p => {
-    const { flags } = computeFlags(p.id);
+    const { flags, selMonth: sm } = computeFlags(p.id);
     const flagReviews = (propData[p.id] || {}).flagReviews || {};
     const unreviewedCount = flags.filter(f => {
       const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label;
-      return !flagReviews[g];
+      const r = flagReviews[g]; return !r || r.month !== sm;
     }).length;
     const todoCount = flags.filter(f => {
       const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label;
-      return flagReviews[g]?.status==='todo';
+      const r = flagReviews[g]; return r && r.month === sm && r.status==='todo';
     }).length;
     return { unreviewedCount, todoCount };
   });
@@ -9362,7 +9373,8 @@ function renderPortfolioFlags() {
     const flagNotes   = (propData[p.id] || {}).flagNotes   || {};
     const annotated = flags.map(f => {
       const group  = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group || f.label;
-      const status = flagReviews[group]?.status || 'unreviewed';
+      const rev    = flagReviews[group];
+      const status = (rev && rev.month === selMonth) ? (rev.status || 'unreviewed') : 'unreviewed';
       const note   = flagNotes[group] || '';
       return { ...f, group, status, note };
     });
