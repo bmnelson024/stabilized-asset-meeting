@@ -3060,8 +3060,10 @@ function parseBuildiumRentRoll(data) {
     if(!row||!row[0]) continue;
     const unitNum = row[0].toString().trim();
     if(!unitNum) continue;
-    if(unitNum.toLowerCase().includes('total') || unitNum.toLowerCase().includes('grand')) break;
-    if(unitNum.toLowerCase() === 'unit') continue;
+    const _ulc = unitNum.toLowerCase();
+    if(_ulc.startsWith('total for')) continue; // property-level subtotal in multi-property export — skip and continue
+    if(_ulc.includes('total') || _ulc.includes('grand') || _ulc.startsWith('summary')) break;
+    if(_ulc === 'unit') continue;
     const bdba = row[_bdbaCol] ? row[_bdbaCol].toString().trim() : '';
     if(!bdba) continue;
     const tenants = row[_tenantsCol] ? row[_tenantsCol].toString().trim() : '';
