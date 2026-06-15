@@ -770,9 +770,11 @@ async function clearPropFile(propId, key) {
   if(!d) return;
   delete d[key];
   delete d[key + '_filename'];
-  // Clear secondary keys for specific file types
-  if(key === 'statement') { delete d.pfMapping; }
-  if(key === 'proforma')  { delete d.pfMapping; }
+  // Clear pfMapping only when BOTH statement and proforma are gone — clearing one file while
+  // the other is still present should preserve the mapping the user configured
+  if(key === 'statement' || key === 'proforma') {
+    if(!d.statement && !d.proforma) delete d.pfMapping;
+  }
   await save(propId);
   const p = properties.find(x => x.id === propId);
   if(currentPropId === propId && p) {
@@ -1065,10 +1067,10 @@ function filterPortfolio(val) {
   const groupRows = tbody.querySelectorAll('.ptbl-group-row');
   const propRows = tbody.querySelectorAll('.ptbl-prop-row');
   if(!q) {
-    // Restore group-based visibility — treat undefined as closed
+    // Restore group-based visibility — undefined means never toggled → treat as open
     propRows.forEach(row => {
       const pm = row.getAttribute('data-pm');
-      row.classList.toggle('hidden', !groupOpenState[pm]);
+      row.classList.toggle('hidden', groupOpenState[pm] === false);
       row.style.display = '';
     });
     groupRows.forEach(row => row.style.display = '');
@@ -2538,10 +2540,11 @@ function parseBuildiumDelinquency(ws) {
   const unitCol   = headers.indexOf('unit');
   const nameCol   = headers.indexOf('tenant');
   const totalCol  = headers.findIndex(h => h === 'total');
-  const d0_30Col  = headers.findIndex(h => h.includes('0-30'));
-  const d31_60Col = headers.findIndex(h => h.includes('31-60'));
-  const d61_90Col = headers.findIndex(h => h.includes('61-90'));
-  const d91Col    = headers.findIndex(h => h.includes('91'));
+  // Strip spaces before matching — Buildium sometimes exports "0 - 30" instead of "0-30"
+  const d0_30Col  = headers.findIndex(h => h.replace(/\s/g,'').includes('0-30'));
+  const d31_60Col = headers.findIndex(h => h.replace(/\s/g,'').includes('31-60'));
+  const d61_90Col = headers.findIndex(h => h.replace(/\s/g,'').includes('61-90'));
+  const d91Col    = headers.findIndex(h => h.replace(/\s/g,'').includes('91+') || h.replace(/\s/g,'').includes('91days'));
 
   const units = [];
   let totalAR = 0, aging0_30 = 0, aging30Plus = 0;
@@ -2861,7 +2864,7 @@ function parseBuildiumCapex(ws) {
     if(val instanceof Date) {
       d = val;
     } else if(typeof val === 'number' && val > 40000) {
-      d = new Date(Math.round((val - 25569) * 86400 * 1000));
+      d = new Date(Math.round((val - 25569) * 86400 * 1000) + 43200000);
     } else {
       const s = val.toString().trim();
       // Already ISO
@@ -2898,7 +2901,7 @@ function parseBuildiumCapex(ws) {
     // We intentionally do NOT require col 1-3 to be null — Buildium sometimes places an account
     // number or code in those columns for sub-account headers (e.g. "Capital Improvements - Appliance"),
     // which caused them to be silently skipped and all transactions lumped under the parent account.
-    if(typeof col0 === 'string' && (col5 == null || col5 === '') && !parseDate(col0)) {
+    if(typeof col0 === 'string' && (col5 == null || col5 === '' || col5 === 0) && !parseDate(col0)) {
       const lc = col0.trim().toLowerCase();
       if(lc === 'expenses' || lc === 'income' || lc === 'date') continue; // top-level / column-header rows
       currentAccount  = col0.trim();
@@ -3093,8 +3096,9 @@ function parseMoveInOutReport(ws) {
 function parseRentRollDate(val) {
   if(val === null || val === undefined || val === '') return null;
   // Excel serial number (number > 1000)
+  // Add 12hr offset so UTC midnight doesn't roll back one day in US timezones (UTC-5 to UTC-8)
   if(typeof val === 'number' && val > 1000) {
-    const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+    const d = new Date(Math.round((val - 25569) * 86400 * 1000) + 43200000);
     if(!isNaN(d)) return d.toISOString().slice(0,10);
   }
   const s = val.toString().trim();
@@ -3962,7 +3966,10 @@ function parseProformaCsv(text, purchaseDate) {
   const yearRowCells = data[yearRow] || [];
   const year1ColIdx = yearRowCells.findIndex(c => c && c.toString().trim().toUpperCase() === 'YEAR 1');
   if(year1ColIdx < 0) throw new Error('Could not locate YEAR 1 column in CSV proforma header row.');
-  const targetCol = year1ColIdx + (pfYear - 1);
+  const targetColRaw = year1ColIdx + (pfYear - 1);
+  // Cap to last column so out-of-range years silently use the last available year instead of returning 0
+  const maxDataCol = (data[yearRow] || []).length - 1;
+  const targetCol  = Math.min(targetColRaw, maxDataCol);
 
   // Parse value helper — strip commas, parens for negatives
   function parseVal(s) {
@@ -6058,11 +6065,21 @@ function renderRentRollTab() {
     // 30+ aging: red if majority of AR is old, yellow if significant
     const a30Color = dq.aging30Plus > 2000 ? 'var(--red)' : dq.aging30Plus > 500 ? '#ffa040' : 'var(--green)';
 
+    // Build rent lookup from rent roll: unit number (normalized) → actualRent
+    const rrRentByUnit = {};
+    if(rr && rr.units) {
+      rr.units.forEach(u => {
+        const key = (u.unitNum||'').toString().trim().toLowerCase();
+        if(key) rrRentByUnit[key] = u.actualRent || 0;
+      });
+    }
+
     const unitRows = dq.units
       .slice()
       .sort((a,b) => b.amountReceivable - a.amountReceivable)
       .map(u => {
-        const uRent = u.actualRent || 0;
+        const unitKey = (u.unit||'').toString().trim().toLowerCase();
+        const uRent = rrRentByUnit[unitKey] || 0;
         const uArPct = uRent > 0 ? (u.amountReceivable / uRent * 100) : null;
         const arUColor = uArPct !== null
           ? (uArPct > 5 ? 'var(--red)' : uArPct > 3 ? '#ffa040' : 'var(--text2)')
@@ -6574,11 +6591,12 @@ function renderRentProgressionTab() {
   const totalCurActual  = allOccupied.reduce((s,u) => s + u.actualRent, 0);
   const avgCurActualAll = allOccupied.length ? totalCurActual / allOccupied.length : null;
 
-  const totalAcqActual  = allWithAcqActual.reduce((s,u) => s + acqUnits[u.unitNum].actualRent, 0);
+  // Use the same population (occupied units with acq data) for both averages so the growth % is apples-to-apples
+  const totalAcqActual    = allOccupiedWithAcq.reduce((s,u) => s + acqUnits[u.unitNum].actualRent, 0);
   const totalCurActualAcq = allOccupiedWithAcq.reduce((s,u) => s + u.actualRent, 0);
-  const avgAcqActualAll = allWithAcqActual.length ? totalAcqActual / allWithAcqActual.length : null;
-  const avgCurActualAcq = allOccupiedWithAcq.length ? totalCurActualAcq / allOccupiedWithAcq.length : null;
-  const actGrowthAll    = avgAcqActualAll && avgCurActualAcq !== null
+  const avgAcqActualAll   = allOccupiedWithAcq.length ? totalAcqActual / allOccupiedWithAcq.length : null;
+  const avgCurActualAcq   = allOccupiedWithAcq.length ? totalCurActualAcq / allOccupiedWithAcq.length : null;
+  const actGrowthAll      = avgAcqActualAll && avgCurActualAcq !== null
     ? (avgCurActualAcq - avgAcqActualAll) / avgAcqActualAll * 100 : null;
 
   // ── Proforma rent comparison ───────────────────────────────────────────────
@@ -7006,6 +7024,19 @@ function renderPropertyValuationTab() {
 //   3. Second pass: for any leaf whose label only resolves to itself and is covered by a
 //      parent subtotal (different name), upgrade the entry to the subtotal so that proforma
 //      mappings pointing to the leaf label return the section total.
+// buildStmtLookup: build a case-sensitive lookup of statement rows by label.
+//
+// IMPORTANT DIFFERENCE from the inline buildLookup in renderBenchmarkTab:
+//   buildLookup (proforma/budget lookups) — uses lowercase keys and includes a
+//     leaf-to-subtotal second pass so a statement label like "Property Insurance"
+//     resolves to the "Total for Insurance" subtotal when budget data is section-level.
+//   buildStmtLookup (statement lookups) — uses original-case keys and intentionally
+//     omits the leaf-upgrade pass. Reason: when individual line items each have their
+//     own pfMapping entry (e.g. Water, Garbage, Electricity all mapped separately),
+//     upgrading them to their subtotal would make them all resolve to the same row
+//     and produce incorrect results. The "Total for X" → "X" alias in the first pass
+//     is sufficient for the subtotal-resolution use cases that matter here.
+//   DO NOT merge these two functions — they serve different callers with different needs.
 function buildStmtLookup(stmt) {
   const lookup = {};
   stmt.rows.forEach(r => {
@@ -7021,12 +7052,43 @@ function buildStmtLookup(stmt) {
       }
     }
   });
-  // NOTE: No leaf-to-subtotal second pass here. The subtotal-preference logic in the first pass
-  // above (r.isSubtotal takes priority) combined with the "Total for X" → "X" alias registration
-  // is sufficient to make lookup["Utility Income"] etc. resolve to the correct subtotal row.
-  // A blanket leaf-upgrade pass would cause individual expense items (Water, Garbage, Electricity)
-  // that are each mapped in pfMapping to incorrectly resolve to their group subtotal.
   return lookup;
+}
+
+// ─── STATEMENT ROW UTILITIES ─────────────────────────────────────────────────
+// Canonical debt-service / AMF row extractors used by portfolio, benchmark, and cash-review tabs.
+// Centralised here to prevent the four former inline copies from diverging.
+
+const _DS_KEYS = [
+  'mortgage interest','mortgage principal','mortgage payable','mortgages payable',
+  'interest expense','principal','loan interest','debt service','loan payment',
+  'principal & interest','p & i','total debt service'
+];
+const _AMF_KEYS = ['asset management','asset mgmt'];
+
+// getDSRows: returns debt-service leaf rows from a parsed statement.
+// Prefers the explicit isDebtService flag; falls back to _DS_KEYS label matching.
+// Excludes isCategory and isSubtotal rows to avoid double-counting.
+function getDSRows(stmt) {
+  if(!stmt || !stmt.rows) return [];
+  return stmt.rows.filter(r => {
+    if(r.isCategory) return false;
+    const lc = r.label.toLowerCase();
+    if(r.isDebtService && !r.isSubtotal) return true;
+    if(r.isSubtotal) return false; // prevent "total debt service" label match from double-counting
+    return _DS_KEYS.some(k => lc === k || lc.startsWith(k + ' ') || lc.endsWith(' ' + k) || lc.includes(' ' + k + ' '));
+  });
+}
+
+// getAMFRows: returns asset management fee rows from a parsed statement.
+// Allows subtotals because Buildium stores AMF as "Total for Asset Management Fee" (isSubtotal:true).
+function getAMFRows(stmt) {
+  if(!stmt || !stmt.rows) return [];
+  return stmt.rows.filter(r => {
+    if(r.isCategory || r.isTotal) return false;
+    const lc = r.label.toLowerCase();
+    return _AMF_KEYS.some(k => lc.includes(k));
+  });
 }
 
 // ─── FLAGS TAB ────────────────────────────────────────────────────────────────
@@ -7164,7 +7226,9 @@ function computeFlags(propId) {
     if(budgetMonth === null || budgetMonth === 0) return;
     const varD   = actual - budgetMonth; // negative = underperforming
     const varPct = varD / Math.abs(budgetMonth);
-    // Flag if under budget by ≥15% AND ≥$500 monthly shortfall
+    // Flag individual income lines: ≥15% under budget AND ≥$500 shortfall.
+    // Higher % threshold (15%) than the total-income check (8%) because individual lines are
+    // smaller and noise is higher — a small % miss on one line isn't meaningful on its own.
     if(varD <= -500 && varPct <= -0.15) {
       flags.push({ label: item.label, group: item.group, stmtLabels, actual, budget: budgetMonth, varD, varPct, isIncome: true });
     }
@@ -7190,6 +7254,8 @@ function computeFlags(propId) {
       if(budgetMonth !== null && budgetMonth > 0) {
         const varD   = actual - budgetMonth;
         const varPct = varD / Math.abs(budgetMonth);
+        // Flag total income at a lower % threshold (8%) than individual lines (15%) — even a small
+        // % shortfall on total income represents meaningful dollars across the whole property.
         if(varD <= -500 && varPct <= -0.08) {
           flags.push({ label: 'Total Income', group: 'total_income', stmtLabels: [totalIncRow.label], actual, budget: budgetMonth, varD, varPct, isIncome: true, isTotalIncome: true });
         }
@@ -7787,13 +7853,9 @@ function renderCashReviewTab() {
   }
 
   // ── Derive Debt Service/month — prefer T-6 actuals from statement ─────────
-  // Use label-matching (same as benchmark tab) because AppFolio statement rows
-  // do NOT carry an isDebtService property — only proforma/budget rows do.
-  const CR_DS_KEYS = ['mortgage interest','mortgage principal','mortgage payable','mortgages payable','interest expense','principal','loan interest','debt service','loan payment'];
-  const crIsDS = r => { const lc = r.label.toLowerCase(); return CR_DS_KEYS.some(k => lc.includes(k)); };
   let dsMonthly = null, dsSource = '';
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
-    const dsRows = stmt.rows.filter(r => crIsDS(r) && !r.isCategory && !r.isTotal && !r.isSubtotal);
+    const dsRows = getDSRows(stmt);
     if(dsRows.length) {
       const crMiDS = getPrevMonthIdx(stmt.months, currentPropId);
       const n = Math.min(6, crMiDS + 1);
@@ -7814,12 +7876,9 @@ function renderCashReviewTab() {
   }
 
   // ── Derive AMF/month — prefer T-6 actuals from statement ─────────────────
-  // Same label-based approach — isAssetMgmt property is not set on statement rows.
-  const CR_AMF_KEYS = ['asset management','asset mgmt'];
-  const crIsAMF = r => { const lc = r.label.toLowerCase(); return CR_AMF_KEYS.some(k => lc.includes(k)); };
   let amfMonthly = null, amfSource = '';
   if(stmt && stmt.rows && stmt.months && stmt.months.length) {
-    const amfRows = stmt.rows.filter(r => crIsAMF(r) && !r.isCategory && !r.isTotal && !r.isSubtotal);
+    const amfRows = getAMFRows(stmt);
     if(amfRows.length) {
       const crMiAMF = getPrevMonthIdx(stmt.months, currentPropId);
       const n = Math.min(6, crMiAMF + 1);
@@ -7971,7 +8030,7 @@ function renderCashReviewTab() {
     const active = effectiveNOISrc === 'budget';
     noiChips.push(`<button style="${active ? chipActive : chipInactive}" onclick="setCashReviewNOI('${currentPropId}','budget')">Budget: ${fmt(bgNoiMonthly)}/mo</button>`);
   }
-  if(pfNoiMonthly !== null && bgNoiMonthly === null) {
+  if(pfNoiMonthly !== null) {
     const active = effectiveNOISrc === 'proforma';
     noiChips.push(`<button style="${active ? chipActive : chipInactive}" onclick="setCashReviewNOI('${currentPropId}','proforma')">Proforma: ${fmt(pfNoiMonthly)}/mo</button>`);
   }
@@ -8298,8 +8357,11 @@ function renderFlagsTab() {
     const savedNote   = flagNotes[group] || '';
     const varDStr     = fmtAbs(f.varD);
     const varPctStr   = (Math.abs(f.varPct) * 100).toFixed(1) + '%';
-    const eg          = group.replace(/'/g, "\\'");
-    const el2         = f.label.replace(/'/g, "\\'");
+    // escAttr: safe for use inside single-quoted JS args within a double-quoted HTML onclick attr.
+    // Escapes backslashes first, then single quotes (JS string), then HTML special chars.
+    const escAttr = s => s.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const eg  = escAttr(group);
+    const el2 = escAttr(f.label);
     const _rev = flagReviews[group];
     const status = (_rev && _rev.month === selMonth) ? (_rev.status || 'unreviewed') : 'unreviewed';
 
@@ -8460,10 +8522,15 @@ function getFlagHeuristic(flag, d, stmt, monthIdx) {
     };
   }
 
+  // Normalize to magnitudes for ratio/threshold comparisons — AppFolio stores expenses as
+  // negatives, Buildium as positives; abs() ensures comparisons work consistently regardless.
+  const absActual  = Math.abs(actual);
+  const absPrior   = priorAvg !== null ? Math.abs(priorAvg) : null;
+
   // ── 2. Double draft ────────────────────────────────────────────────────────
   // Expense is approximately 2× the prior-period average
-  if(!isIncome && priorAvg !== null && priorAvg > 100) {
-    const ratio = actual / priorAvg;
+  if(!isIncome && absPrior !== null && absPrior > 100) {
+    const ratio = absActual / absPrior;
     if(ratio >= 1.75 && ratio <= 2.35) {
       return {
         icon: '💡',
@@ -8477,7 +8544,7 @@ function getFlagHeuristic(flag, d, stmt, monthIdx) {
   const utilityGroups = new Set(['water','electric','garbage']);
   const isWinter = /^(Dec|Jan|Feb)/i.test(monthLabel);
   const isSummer = /^(Jun|Jul|Aug)/i.test(monthLabel);
-  if(utilityGroups.has(group) && priorAvg !== null && actual > priorAvg * 1.15) {
+  if(utilityGroups.has(group) && absPrior !== null && absActual > absPrior * 1.15) {
     if(isWinter) return {
       icon: '❄',
       color: 'var(--text2)',
@@ -8492,13 +8559,13 @@ function getFlagHeuristic(flag, d, stmt, monthIdx) {
 
   // ── 4. One-time spike ─────────────────────────────────────────────────────
   // Single month substantially higher than the prior trend (but not double-draft territory)
-  if(!isIncome && priorAvg !== null && priorAvg > 50 && actual > priorAvg * 1.4) {
+  if(!isIncome && absPrior !== null && absPrior > 50 && absActual > absPrior * 1.4) {
     // Check if prior months were relatively stable (low variance)
     const priorVariance = priorSlice.length > 1
-      ? priorSlice.reduce((s,v) => s + Math.pow(v - priorAvg, 2), 0) / priorSlice.length
+      ? priorSlice.reduce((s,v) => s + Math.pow(Math.abs(v) - absPrior, 2), 0) / priorSlice.length
       : 0;
     const priorStdDev = Math.sqrt(priorVariance);
-    if(priorStdDev < priorAvg * 0.3) { // prior months were stable
+    if(priorStdDev < absPrior * 0.3) { // prior months were stable
       return {
         icon: '📌',
         color: 'var(--text2)',
@@ -8645,10 +8712,19 @@ function renderCapexTab() {
   const dailyRentLoss       = avgOccupiedRent > 0 ? avgOccupiedRent / 30 : 0;
   const vacancyCostPerTurn  = dailyRentLoss * avgDaysVacant;
   const totalCostPerTurn    = makeReadyCost + vacancyCostPerTurn;
-  // Estimate annual turns: leases expiring in 90-day window × ~4 to annualise (4 quarters)
-  const annualTurnsEst = (rr && (expiring60.length + expiring90.length) > 0)
-    ? Math.round((expiring60.length + expiring90.length) * 4)
-    : null;
+  // Prefer GL-based turn count (unique units with turnover spend) when capex data is available;
+  // fall back to lease-expiration × 4 estimate only when no GL detail exists.
+  let glTurnsEst = null;
+  if(capexDetail && capexDetail.byUnit) {
+    const unitsWithTurnover = Object.values(capexDetail.byUnit).filter(u => (u.turnover || 0) > 0);
+    if(unitsWithTurnover.length > 0) glTurnsEst = unitsWithTurnover.length;
+  }
+  const annualTurnsEst = glTurnsEst !== null
+    ? glTurnsEst
+    : (rr && (expiring60.length + expiring90.length) > 0)
+      ? Math.round((expiring60.length + expiring90.length) * 4)
+      : null;
+  const turnsSource = glTurnsEst !== null ? 'GL (unique units w/ turnover spend)' : '90-day lease window × 4 (est.)';
   const annualTurnDrag      = annualTurnsEst !== null ? annualTurnsEst * totalCostPerTurn : null;
   const annualRentRevenue   = totalMonthlyRent * 12;
   const turnDragPct         = annualRentRevenue > 0 && annualTurnDrag !== null
@@ -8823,7 +8899,7 @@ function renderCapexTab() {
   html += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding-top:14px;border-top:1px solid var(--border)">`;
   html += econ('Vacancy cost / turn', rr && avgOccupiedRent>0 ? fmt(vacancyCostPerTurn) : '—', `${avgDaysVacant}d × ${dailyRentDisplay}`, 'var(--amber)');
   html += econ('Total cost / turn', fmt(totalCostPerTurn), 'make-ready + vacancy loss', totalCostPerTurn > 3000 ? 'var(--red)' : 'var(--amber)');
-  html += econ('Est. annual turns', annualTurnsEst !== null ? annualTurnsEst.toString() : (rr ? '—' : 'upload rent roll'), rr?'90-day window × 4 (seasonal est.)':'', 'var(--text)');
+  html += econ('Est. annual turns', annualTurnsEst !== null ? annualTurnsEst.toString() : (rr ? '—' : 'upload rent roll'), annualTurnsEst !== null ? turnsSource : '', 'var(--text)');
   html += econ('Annual turn drag', annualTurnDrag !== null ? fmt(annualTurnDrag) : '—', turnDragPct !== null ? `${turnDragPct.toFixed(1)}% of annual rent rev` : '', annualTurnDrag > 0 ? 'var(--red)' : 'var(--text3)');
   html += `</div>`;
 
@@ -9229,13 +9305,13 @@ function addNote(type) {
   if(!text) { alert('Please type a note first.'); return; }
   notes.push({propId:currentPropId, type, text, ts:Date.now() * 1000 + (_noteCounter++ % 1000)});
   document.getElementById('note-input').value='';
-  save(); // fire-and-forget (notes are in meta)
+  save(); // fire-and-forget — save() shows showSaveError() toast on failure
   renderNotesTab();
 }
 
 function deleteNote(ts) {
   notes = notes.filter(n => n.ts !== ts);
-  save(); // fire-and-forget
+  save(); // fire-and-forget — save() shows showSaveError() toast on failure
   renderNotesTab();
 }
 
@@ -9250,21 +9326,18 @@ function updateDetailBadge() {
 }
 
 // ─── PORTFOLIO VIEW ───────────────────────────────────────────────────────────
-// Returns staleness info based on last month in the uploaded statement
-// monthsOld: how many months behind today the most recent statement month is
-// level: 'fresh' (0-1mo), 'aging' (2mo), 'stale' (3+mo), null if no data
+// Returns staleness info based on last month in the uploaded statement.
+// monthsOld: how many months behind the EXPECTED data month the statement is
+// level: 'fresh' (0mo), 'aging' (1mo), 'stale' (2+mo), null if no data
+// Uses getExpectedDataMonth() (not wall-clock new Date()) so the reconciliation
+// lag is respected — a statement for April uploaded in early June is NOT stale.
 function getDataStaleness(propId) {
   const stmt = (propData[propId] || {}).statement;
   if(!stmt || !stmt.months || !stmt.months.length) return null;
   const lastMonth = stmt.months[stmt.months.length - 1];
-  const parts = lastMonth.split(' ');
-  if(parts.length !== 2) return null;
-  const mi = MONTH_NAMES.indexOf(parts[0]);
-  const yr = parseInt(parts[1]);
-  if(mi < 0 || isNaN(yr)) return null;
-  const now = new Date();
-  const monthsOld = (now.getFullYear() - yr) * 12 + (now.getMonth() - mi);
-  const level = monthsOld >= 3 ? 'stale' : monthsOld >= 2 ? 'aging' : 'fresh';
+  const monthsOld = getStmtStaleMonths(stmt);
+  if(monthsOld === null) return null;
+  const level = monthsOld >= 2 ? 'stale' : monthsOld >= 1 ? 'aging' : 'fresh';
   return { lastMonth, monthsOld, level };
 }
 
@@ -9387,17 +9460,7 @@ function portfolioPropRow(p, pm, isOpen) {
     const noiRow = stmt.rows.find(r => r.isNOI);
     if(!noiRow) return '—';
     const portfolioMi = getPrevMonthIdx(stmt.months, p.id);
-    const DS_KEYS = ['mortgage interest','mortgage principal','mortgage payable','mortgages payable',
-                     'interest expense','principal','loan interest','debt service','loan payment',
-                     'principal & interest','p & i','total debt service'];
-    const dsRows = stmt.rows.filter(r => {
-      if(r.isCategory) return false; // category header rows have no values
-      const lc = r.label.toLowerCase();
-      // Explicit flag (set by AppFolio post-processor) — but exclude subtotals to avoid
-      // double-counting when both line items and a "Total Debt Service" subtotal exist
-      if(r.isDebtService && !r.isSubtotal) return true;
-      return DS_KEYS.some(k => lc === k || lc.startsWith(k + ' ') || lc.endsWith(' ' + k) || lc.includes(' ' + k + ' '));
-    });
+    const dsRows = getDSRows(stmt);
     if(!dsRows.length) return '—';
     const curNOI = noiRow.values[portfolioMi] || 0;
     const curDS  = dsRows.reduce((sum, r) => sum + (r.values[portfolioMi] || 0), 0);
@@ -9413,21 +9476,8 @@ function portfolioPropRow(p, pm, isOpen) {
   const efcfHTML = (() => {
     if(!stmt || currentMonthNoi === null) return '—';
     const portfolioMi = getPrevMonthIdx(stmt.months, p.id);
-    const DS_KEYS = ['mortgage interest','mortgage principal','mortgage payable','mortgages payable',
-                     'interest expense','principal','loan interest','debt service','loan payment',
-                     'principal & interest','p & i','total debt service'];
-    const dsRows = stmt.rows.filter(r => {
-      if(r.isCategory) return false;
-      const lc = r.label.toLowerCase();
-      if(r.isDebtService && !r.isSubtotal) return true;
-      return DS_KEYS.some(k => lc === k || lc.startsWith(k + ' ') || lc.endsWith(' ' + k) || lc.includes(' ' + k + ' '));
-    });
-    const AMF_KEYS = ['asset management','asset mgmt'];
-    const amfRows = stmt.rows.filter(r => {
-      if(r.isCategory || r.isTotal) return false; // allow subtotals — Buildium stores AMF as "Total for Asset Management Fee" (isSubtotal:true)
-      const lc = r.label.toLowerCase();
-      return AMF_KEYS.some(k => lc.includes(k));
-    });
+    const dsRows  = getDSRows(stmt);
+    const amfRows = getAMFRows(stmt);
     const capexRows = stmt.rows.filter(r => {
       if(r.isCategory || r.isTotal) return false;
       const lc = r.label.toLowerCase();
@@ -9867,8 +9917,9 @@ function exportFlags() {
     flags.forEach(f => {
       const group = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group || f.label;
       const note = flagNotes[group] || '';
-      // For income flags, positive varPct means over budget (good); negative means under (bad).
-      // For expense flags, positive varPct means over budget (bad). Sign always reflects direction.
+      // Income flags are only generated for underperformance (varPct is always negative here).
+      // Expense flags are only generated for overages (varPct is always positive here).
+      // The '+'/'-' prefix reflects the direction from the caller's perspective (over/under budget).
       const varSign = f.varPct >= 0 ? '+' : '−';
       lines.push(`  ${f.isIncome ? '↓ INCOME' : '↑ EXPENSE'} ${f.label}: $${Math.round(Math.abs(f.actual)).toLocaleString()} actual vs $${Math.round(Math.abs(f.budget)).toLocaleString()} budget (${varSign}${Math.abs(f.varPct*100).toFixed(1)}%)`);
       if(note) lines.push(`  → ${note}`);
