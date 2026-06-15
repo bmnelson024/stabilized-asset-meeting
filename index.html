@@ -5536,7 +5536,7 @@ function renderBenchmarkTab() {
     cells += `<td>${fmt(t3Avg)}</td><td>${fmt(t6Avg)}</td><td>${fmt(t12Avg)}</td>`;
     // Trend — compute for real rows; suppress for budget-only synthetic rows
     let capexTrendHtml = `<span style="color:var(--text3);font-size:11px">—</span>`;
-    if(!rows[0]?._synthetic && monthIdx >= 3) {
+    if(!rows[0]?._synthetic && monthIdx >= 1) {
       const prevAvg = rows.reduce((s,r) => {
         const sl = r.values.slice(Math.max(0, monthIdx - 5), Math.max(0, monthIdx - 2));
         return s + (sl.length ? sl.reduce((a,b)=>a+b,0)/sl.length : 0);
@@ -5610,7 +5610,7 @@ function renderBenchmarkTab() {
     subtotalCells += `<td style="font-weight:500">${fmt(totalT12)}</td>`;
     // Trend for Total Debt Service subtotal
     let dsTrendHtml = `<span style="color:var(--text3);font-size:11px">—</span>`;
-    if(monthIdx >= 3) {
+    if(monthIdx >= 1) {
       const dsDelta = totalT3 - totalPrevAvg;
       if(Math.abs(dsDelta) > 0.01) {
         const goingUp = dsDelta > 0;
@@ -5883,6 +5883,10 @@ function renderBenchmarkTab() {
       <div class="bench-wrap"><table class="bench-table">
       <thead><tr>${ytdCols.map((c,i)=>`<th${i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead><tbody>`;
 
+    function ytdBestBg(pred) {
+      const m = bg ? bg.rows.filter(pred) : [];
+      return m.find(r=>r.total) || m[m.length-1] || null;
+    }
     stmt.rows.forEach(r=>{
       if(r.isCategory) return;
       const lc = r.label.toLowerCase();
@@ -5895,10 +5899,6 @@ function renderBenchmarkTab() {
       const vg = v => isExp ? v <= 0 : v >= 0;
 
       // Budget YTD — prorate annual budget by months elapsed
-      function ytdBestBg(pred) {
-        const m = bg ? bg.rows.filter(pred) : [];
-        return m.find(r=>r.total) || m[m.length-1] || null;
-      }
       let bgAnnual = null;
       if(hasBG) {
         const bgRow = bgMap[lc]
@@ -5922,6 +5922,12 @@ function renderBenchmarkTab() {
           const pfInc = bestRow(pf.rows.filter(x=>x.isTotalIncome));
           const pfExp = bestRow(pf.rows.filter(x=>x.isTotalExpense));
           if(pfInc && pfExp) pfAnnual = pfInc.total - pfExp.total;
+        }
+        // Mirror the rowCells AMF correction: if AMF is embedded in proforma opex,
+        // subtract it from Total Expense and add it back to NOI so YTD is apples-to-apples
+        if(pfAmfInOpex && pfAnnual !== null) {
+          if(r.isTotalExpense) pfAnnual = pfAnnual - pfAmfAnnual;
+          if(r.isNOI)          pfAnnual = pfAnnual + pfAmfAnnual;
         }
       }
       const pfYTD = pfAnnual !== null ? pfAnnual * monthsInYTD / 12 : null;
@@ -7714,7 +7720,7 @@ function saveFlagNote(propId, group, text) {
   if(!propData[propId].flagNotes) propData[propId].flagNotes = {};
   if(text) propData[propId].flagNotes[group] = text;
   else delete propData[propId].flagNotes[group];
-  save();
+  save(propId);
   renderPortfolio();
   // Flash saved confirmation on the input
   const input = document.getElementById(`flagnote-${propId}-${group}`);
@@ -7728,7 +7734,7 @@ function saveFlagNote(propId, group, text) {
 function clearAllFlagNotes(propId) {
   if(!propData[propId]) return;
   propData[propId].flagNotes = {};
-  save();
+  save(propId);
   renderFlagsTab();
   renderPortfolio();
 }
@@ -7739,14 +7745,14 @@ function suppressFlag(propId, group) {
   propData[propId].flagSuppressed[group] = true;
   // Clear any review state so it doesn't persist confusingly
   if(propData[propId].flagReviews) delete propData[propId].flagReviews[group];
-  save();
+  save(propId);
   renderFlagsTab();
   renderPortfolioFlags();
 }
 
 function unsuppressFlag(propId, group) {
   if(propData[propId]?.flagSuppressed) delete propData[propId].flagSuppressed[group];
-  save();
+  save(propId);
   renderFlagsTab();
   renderPortfolioFlags();
 }
@@ -7761,7 +7767,7 @@ function setFlagStatus(propId, group, status, month) {
     propData[propId].flagReviews[group].status = status;
     if(month) propData[propId].flagReviews[group].month = month;
   }
-  save();
+  save(propId);
   renderFlagsTab();
   renderPortfolioFlags(); // keep portfolio view in sync
 }
@@ -7788,7 +7794,7 @@ function pushFlagNoteToNotes(propId, group, flagLabel, varDStr, varPctStr) {
   const text = (propData[propId]?.flagNotes?.[group] || '').trim();
   const noteText = `${flagLabel}: ${varDStr} over budget (+${varPctStr}) — ${text || '(no explanation added)'}`;
   notes.push({propId, type:'concern', text:noteText, ts:Date.now() * 1000 + (_noteCounter++ % 1000)});
-  save();
+  save(propId);
   renderNotesTab();
   // Brief confirmation on the button
   const btn = document.getElementById(`flag-push-${propId}-${group}`);
@@ -9515,7 +9521,7 @@ function portfolioPropRow(p, pm, isOpen) {
     if(!curDS) return '—';
     const dscr = curNOI / curDS;
     const color = dscr >= 1.25 ? 'var(--green)' : dscr >= 1.0 ? '#ffa040' : 'var(--red)';
-    const tip = `${stmt.months[portfolioMi]} · NOI: ${fmt(curNOI)} · Debt Service: ${fmt(curDS)}`;
+    const tip = `${escHtml(stmt.months[portfolioMi])} · NOI: ${fmt(curNOI)} · Debt Service: ${fmt(curDS)}`;
     return `<span style="color:${color};font-weight:500;cursor:default" title="${tip}">${dscr.toFixed(2)}x</span>`;
   })();
   // EFCF (Effective Cash Flow): current-month NOI − Debt Service − AMF
