@@ -5296,7 +5296,11 @@ function renderBenchmarkTab() {
     const t6Slice = r.values.slice(Math.max(0, mi - 5), mi + 1);
     const t6Avg   = t6Slice.reduce((a,b)=>a+b,0) / (t6Slice.length || 1);
 
-    let cells = `<td>${r._synthetic ? fmt(actual)+' <span style="font-size:10px;color:var(--text3)">(est)</span>' : fmt(actual)}</td>`;
+    const actualFmtStr = r._synthetic ? fmt(actual)+' <span style="font-size:10px;color:var(--text3)">(est)</span>' : fmt(actual);
+    const actualColored = r._colorBySign && actual < 0
+      ? `<span style="color:var(--red)">${actualFmtStr}</span>`
+      : actualFmtStr;
+    let cells = `<td>${actualColored}</td>`;
     // Budget columns — suppressed for AMF only (DS rows now show budget when available)
     if(hasBG) {
       if(isAMF) {
@@ -5818,6 +5822,7 @@ function renderBenchmarkTab() {
       isDebtService: false, isAssetMgmt: false, isCategory: false, isSubtotal: false,
       isExpenseLine: false, isIncomeLine: false, level: 0,
       values: efcfValues, total: efcfValues.reduce((a,b)=>a+b,0),
+      _colorBySign: true, // color actual cell red when negative
     };
     const efcfLabel = hasLOC
       ? `Effective Cash Flow <span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px;background:rgba(74,144,217,0.15);color:#7ec8f7;margin-left:4px;vertical-align:middle">LOC</span>`
@@ -7076,8 +7081,9 @@ function buildStmtLookup(stmt) {
 
 const _DS_KEYS = [
   'mortgage interest','mortgage principal','mortgage payable','mortgages payable',
-  'interest expense','principal','loan interest','debt service','loan payment',
-  'principal & interest','p & i','total debt service'
+  'interest expense','interest exp','principal','loan interest','debt service','loan payment',
+  'principal & interest','p & i','total debt service',
+  'loan - mortgage', // RPME (BG Flats, Champion Villas, Doral) principal payment row
 ];
 const _AMF_KEYS = ['asset management','asset mgmt'];
 
