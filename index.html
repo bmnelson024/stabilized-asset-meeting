@@ -299,7 +299,7 @@
           <thead>
             <tr>
               <th>Property</th><th>Status</th><th>Occupancy</th><th>Cash Balance</th>
-              <th>Total income / mo</th><th>Total expense / mo</th><th>NOI / mo</th>
+              <th>Total income / mo</th><th>Total expense / mo</th><th>NOI / mo</th><th>EFCF / mo</th>
               <th>Trend</th><th>Exp ratio</th><th>DSCR</th><th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
             </tr>
           </thead>
@@ -5401,12 +5401,16 @@ function renderBenchmarkTab() {
   function debtDetailRows(rows, key) {
     if(!rows.length) return '';
     const isOpen = !!benchOpenState[currentPropId+'|'+key];
-    let out = rows.map(r => `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
-      <td style="padding-left:28px">${r.label}</td>${rowCells(r, monthIdx)}
-    </tr>`).join('');
 
-    // Only add subtotal if there are 2+ rows (single row doesn't need totaling)
-    if(rows.length < 2) return out;
+    // When there are 2+ rows (e.g. Mortgage Interest + Mortgage Principal) skip the
+    // individual breakout lines — budgets and proformas rarely carry that split, so
+    // the comparison is meaningless. Jump straight to the Total Debt Service subtotal.
+    if(rows.length < 2) {
+      return rows.map(r => `<tr class="bench-detail-row bdr-${key} ${isOpen?'open':''}">
+        <td style="padding-left:28px">${r.label}</td>${rowCells(r, monthIdx)}
+      </tr>`).join('');
+    }
+    let out = '';
 
     // Sum actual for selected month; T-3, T-6, T-12 anchored to monthIdx
     const totalActual   = rows.reduce((s,r) => s + r.values[monthIdx], 0);
@@ -7969,6 +7973,35 @@ function renderCashReviewTab() {
     </div>
   </div>`;
 
+  // ── Current cash hero ─────────────────────────────────────────────────────
+  const cbHeroColor = cb.cash >= 0 ? 'var(--green)' : 'var(--red)';
+  // Derive a clean "as of" label — Buildium gives a single date, Trial Balance gives a range
+  let cbAsOfLabel = '';
+  if(cb.dateRange) {
+    // Try end-of-range first: "MM/DD/YYYY - MM/DD/YYYY" → take the second date
+    const rangeEnd = cb.dateRange.match(/(\d{1,2}\/\d{1,2}\/\d{4})\s*$/);
+    cbAsOfLabel = rangeEnd ? rangeEnd[1] : cb.dateRange;
+  }
+  const cbPendingHtml = (cb.pending !== undefined && cb.pending !== null && cb.pending !== 0)
+    ? `<div style="font-size:11px;color:var(--text3);margin-top:4px">${fmt(cb.pending)} pending · net <strong style="color:var(--text2)">${fmt(cb.cash + cb.pending)}</strong></div>`
+    : '';
+  const cbSourceLabel = cb.system === 'trial_balance' ? 'AppFolio Trial Balance · GL 1150'
+    : cb.system === 'buildium_cash_balance' ? 'Buildium Bank Account Balance' : '';
+
+  const cashHero = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 20px;margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:160px">
+        <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">Current Cash Balance</div>
+        <div style="font-size:32px;font-weight:700;color:${cbHeroColor};line-height:1">${fmt(cb.cash)}</div>
+        ${cbAsOfLabel ? `<div style="font-size:11px;color:var(--text3);margin-top:5px">as of ${cbAsOfLabel}</div>` : ''}
+        ${cbPendingHtml}
+      </div>
+      ${cbSourceLabel ? `<div style="text-align:right;align-self:flex-start;padding-top:2px">
+        <div style="font-size:10px;color:var(--text3)">${cbSourceLabel}</div>
+      </div>` : ''}
+    </div>
+  </div>`;
+
   // ── Alerts ────────────────────────────────────────────────────────────────
   const warnHtml = warnings.length ? `<div style="background:var(--amber-bg,#fff8e6);border:1px solid var(--amber,#ffa040);border-radius:var(--radius-lg);padding:9px 14px;font-size:12px;color:var(--text2);margin-bottom:12px">
     <strong style="color:var(--amber)">⚠ Missing data:</strong> ${warnings.join(' ')}
@@ -8001,6 +8034,7 @@ function renderCashReviewTab() {
   }).join('');
 
   el.innerHTML = `
+    ${cashHero}
     ${warnHtml}${alertHtml}
     ${noiSelectorHtml}
     <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.05em;font-size:11px">Fixed costs</div>
@@ -8362,14 +8396,24 @@ function setCapexSetting(propId, key, val) {
 // direction 'before' → latest snapshot on or before targetDate (pre-turn rent)
 // direction 'after'  → earliest snapshot on or after targetDate (post-turn rent)
 // Skips vacant units so we don't accidentally use $0 as the pre-turn rent.
+function normalizeUnitNum(s) {
+  // Strip leading zeros, hyphens, spaces, and "unit"/"apt"/"#" prefixes so
+  // "101", "01", "1-01", "Unit 101", "#101" all compare equal.
+  return String(s || '').toLowerCase()
+    .replace(/^(unit|apt\.?|#)\s*/i, '')
+    .replace(/[-\s]/g, '')
+    .replace(/^0+(\d)/, '$1'); // strip leading zeros
+}
+
 function getRentFromHistory(unitNum, targetDate, history, direction) {
   if(!history || !history.length || !targetDate) return null;
+  const norm = normalizeUnitNum(unitNum);
   const sorted = [...history].sort((a,b) => (a.asOfDate||'').localeCompare(b.asOfDate||''));
   const candidates = direction === 'before'
     ? sorted.filter(h => (h.asOfDate||'') <= targetDate).reverse()
     : sorted.filter(h => (h.asOfDate||'') >= targetDate);
   for(const snap of candidates) {
-    const u = (snap.units||[]).find(x => x.unitNum === unitNum);
+    const u = (snap.units||[]).find(x => normalizeUnitNum(x.unitNum) === norm);
     if(u && !u.isVacant && (u.actualRent||0) > 0) return { rent: u.actualRent, asOf: snap.asOfDate };
   }
   return null;
@@ -8764,6 +8808,24 @@ function renderCapexTab() {
 
     // ── Per-unit breakdown ───────────────────────────────────────────────────
     const unitEntries = Object.entries(filteredByUnit).sort((a,b) => b[1].total - a[1].total);
+
+    // Diagnostic: show why unit data is absent when transactions exist but no units extracted
+    if(unitEntries.length === 0 && filteredTxns.length > 0) {
+      const txnsWithUnit    = filteredTxns.filter(t => t.unit).length;
+      const sampleName      = filteredTxns.find(t => t.payee)?.payee || '';
+      const sampleDesc      = filteredTxns.find(t => t.description)?.description || '';
+      const noUnitMsg = txnsWithUnit === 0
+        ? `No unit numbers found in any of the ${filteredTxns.length} transactions. The parser looks for the vendor Name field starting with <em>"Unit 101 - Vendor"</em> or a description containing <em>"unit 203"</em> or <em>"apt 203"</em>.${sampleName ? ` Sample Name field: <strong>"${escHtml(sampleName)}"</strong>` : ''}${sampleDesc ? ` · Sample Description: <strong>"${escHtml(sampleDesc)}"</strong>` : ''} — if units are referenced differently, let us know and we'll add support.`
+        : `${txnsWithUnit} of ${filteredTxns.length} transactions have unit numbers. The per-unit and ROI sections will appear once at least one transaction is matched.`;
+      html += `<div style="background:var(--bg2);border:1px dashed var(--border2);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:14px;display:flex;align-items:flex-start;gap:12px">
+        <div style="font-size:20px;flex-shrink:0">📋</div>
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:4px">Per-unit &amp; ROI analysis unavailable</div>
+          <div style="font-size:11px;color:var(--text3);line-height:1.6">${noUnitMsg}</div>
+        </div>
+      </div>`;
+    }
+
     if(unitEntries.length > 0) {
       // Cross-reference with rent roll if available
       const rrUnitMap = {};
@@ -9190,6 +9252,35 @@ function portfolioPropRow(p, pm, isOpen) {
     const tip = `${stmt.months[portfolioMi]} · NOI: ${fmt(curNOI)} · Debt Service: ${fmt(curDS)}`;
     return `<span style="color:${color};font-weight:500;cursor:default" title="${tip}">${dscr.toFixed(2)}x</span>`;
   })();
+  // EFCF (Effective Cash Flow): current-month NOI − Debt Service − AMF
+  // Uses Math.abs() on DS/AMF to handle sign differences (AppFolio stores expenses negative,
+  // Buildium stores them positive) — same approach as renderCashReviewTab.
+  const efcfHTML = (() => {
+    if(!stmt || currentMonthNoi === null) return '—';
+    const portfolioMi = getPrevMonthIdx(stmt.months, p.id);
+    const DS_KEYS = ['mortgage interest','mortgage principal','mortgage payable','mortgages payable',
+                     'interest expense','principal','loan interest','debt service','loan payment',
+                     'principal & interest','p & i','total debt service'];
+    const dsRows = stmt.rows.filter(r => {
+      if(r.isCategory) return false;
+      const lc = r.label.toLowerCase();
+      if(r.isDebtService && !r.isSubtotal) return true;
+      return DS_KEYS.some(k => lc === k || lc.startsWith(k + ' ') || lc.endsWith(' ' + k) || lc.includes(' ' + k + ' '));
+    });
+    const AMF_KEYS = ['asset management','asset mgmt'];
+    const amfRows = stmt.rows.filter(r => {
+      if(r.isCategory || r.isTotal || r.isSubtotal) return false;
+      const lc = r.label.toLowerCase();
+      return AMF_KEYS.some(k => lc.includes(k));
+    });
+    const curDS  = dsRows.reduce((sum, r)  => sum + Math.abs(r.values[portfolioMi] || 0), 0);
+    const curAMF = amfRows.reduce((sum, r) => sum + Math.abs(r.values[portfolioMi] || 0), 0);
+    const efcf = currentMonthNoi - curDS - curAMF;
+    const color = efcf >= 0 ? 'var(--green)' : 'var(--red)';
+    const tip = `NOI ${fmt(currentMonthNoi)} − DS ${fmt(curDS)}${curAMF ? ` − AMF ${fmt(curAMF)}` : ''}`;
+    return `<span style="color:${color};font-weight:500;cursor:default" title="${tip}">${efcf < 0 ? '(' : ''}${fmt(Math.abs(efcf))}${efcf < 0 ? ')' : ''}</span>`;
+  })();
+
   const statusBadge = dot==='dot-none'?'<span class="badge badge-neutral">No data</span>':
     dot==='dot-ok'?'<span class="badge badge-ok">On track</span>':
     dot==='dot-warn'?'<span class="badge badge-warn">Watch</span>':
@@ -9237,6 +9328,7 @@ function portfolioPropRow(p, pm, isOpen) {
       const arStr = '$' + Math.round(dqD.totalAR).toLocaleString();
       return `${noiStr}<br><span style="font-size:10px;color:${arColor}" title="AR balance as of ${dqD.asOfDate||'?'}">AR ${arStr}</span>`;
     })()}</td>
+    <td>${efcfHTML}</td>
     <td style="padding:4px 10px">${sparklineHTML}</td>
     <td>${(() => {
       if(currentMonthIncome === null || !currentMonthIncome) return '—';
@@ -9517,7 +9609,7 @@ function renderPortfolio() {
     if(!propList.length) return '';
     const groups = buildPmGroups(propList);
     const allPms = [...GROUP_ORDER, ...Object.keys(groups).filter(k=>!GROUP_ORDER.includes(k))];
-    let html = `<tr><td colspan="14" style="padding:8px 12px 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text2);background:var(--bg);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:2">${sectionLabel} <span style="font-weight:400;color:var(--text3)">(${propList.length})</span></td></tr>`;
+    let html = `<tr><td colspan="15" style="padding:8px 12px 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text2);background:var(--bg);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:2">${sectionLabel} <span style="font-weight:400;color:var(--text3)">(${propList.length})</span></td></tr>`;
     allPms.forEach(pm => {
       const props = groups[pm];
       if(!props || !props.length) return;
@@ -9537,7 +9629,7 @@ function renderPortfolio() {
         return `<span class="${pct>=0?'val-pos':'val-neg'}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
       })() : '—';
       html += `<tr class="ptbl-group-row" data-pm="${escHtml(stateKey)}" onclick="togglePortfolioGroup('${escHtml(stateKey)}')">
-        <td colspan="14">
+        <td colspan="15">
           <span class="ptbl-chevron ${isOpen?'open':''}" id="bch-${escHtml(stateKey)}">▶</span>
           <span class="prop-dot ${summaryDotClass}" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle"></span>
           ${pm}
@@ -9552,7 +9644,7 @@ function renderPortfolio() {
   }
 
   let tbody = renderSection(stabProps, 'Stabilized', 'stab') + renderSection(nonStabProps, 'Non-Stabilized', 'ns');
-  if(!properties.length) tbody=`<tr><td colspan="14" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
+  if(!properties.length) tbody=`<tr><td colspan="15" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
   document.getElementById('portfolio-tbody').innerHTML=tbody;
   document.getElementById('pk-loaded').textContent=loaded;
   document.getElementById('pk-ok').textContent=ok;
