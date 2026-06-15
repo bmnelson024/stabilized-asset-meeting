@@ -2381,10 +2381,13 @@ function normalizePrincipalSign(rows) {
     const isPrincipalOnly = lc.includes('principal') && !lc.includes('interest');
     // "Mortgage Payable" in AppFolio Liability section = mortgage principal payment
     const isMortgagePayable = lc === 'mortgage payable' || lc === 'mortgages payable';
+    // "Loan - Mortgage" in RPME (BG Flats, Champion Villas, Doral) = principal payment
+    // reported as a negative liability reduction — flip to positive for debt service math
+    const isLoanMortgage = lc.includes('loan') && lc.includes('mortgage') && !lc.includes('interest');
     // Capital Expenditures also lives in "Other Items" as a negative outflow
     const isCapexLine = lc === 'capital expenditures' || lc === 'capital expenditure'
                      || lc.includes('capex');
-    if((isPrincipalOnly || isMortgagePayable || isCapexLine) && r.total < 0) {
+    if((isPrincipalOnly || isMortgagePayable || isLoanMortgage || isCapexLine) && r.total < 0) {
       r.values = r.values.map(v => -v);
       r.total  = -r.total;
       r._signFlipped = true;
@@ -3365,7 +3368,7 @@ const PF_LINE_ITEMS = [
     group: 'mortgage',
     label: 'Monthly Mortgage',
     pfKeys:   ['mortgage','loan payment','debt service','monthly mortgage'],
-    stmtKeys: ['mortgage','loan payment','debt service'],
+    stmtKeys: ['mortgage','loan payment','debt service','interest exp'],
     isIncome: false,
     isDebtService: true,
   },
@@ -5037,7 +5040,9 @@ function renderBenchmarkTab() {
 
   // ── Classify statement rows into four buckets ──────────────────────────────
   // Debt service labels (below NOI in income statement)
-  const DEBT_SERVICE_KEYS = ['mortgage interest','mortgage principal','mortgage payable','mortgages payable','interest expense','principal','loan interest','debt service','loan payment'];
+  // 'interest exp' catches RPME's "Interest Exp" (abbreviated form of interest expense)
+  // 'loan - mort' catches RPME's "Loan - Mortgage" (principal payment below NOI)
+  const DEBT_SERVICE_KEYS = ['mortgage interest','mortgage principal','mortgage payable','mortgages payable','interest expense','interest exp','principal','loan interest','debt service','loan payment','loan - mort'];
   const isDebtService = r => {
     const lc = r.label.toLowerCase();
     return DEBT_SERVICE_KEYS.some(k => lc.includes(k));
