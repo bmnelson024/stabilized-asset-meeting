@@ -299,8 +299,8 @@
           <thead>
             <tr>
               <th>Property</th><th>Status</th><th>Occupancy</th><th>Cash Balance</th>
-              <th>Total income / mo</th><th>Total expense / mo</th><th>NOI / mo</th><th>EFCF / mo</th>
-              <th>Trend</th><th>Exp ratio</th><th>DSCR</th><th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
+              <th>Total Income</th><th>Total Expense</th><th>NOI</th><th>EFCF</th>
+              <th>T-12 NOI</th><th>Exp ratio</th><th>DSCR</th><th>NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
             </tr>
           </thead>
           <tbody id="portfolio-tbody"></tbody>
@@ -9269,7 +9269,7 @@ function portfolioPropRow(p, pm, isOpen) {
     });
     const AMF_KEYS = ['asset management','asset mgmt'];
     const amfRows = stmt.rows.filter(r => {
-      if(r.isCategory || r.isTotal || r.isSubtotal) return false;
+      if(r.isCategory || r.isTotal) return false; // allow subtotals — Buildium stores AMF as "Total for Asset Management Fee" (isSubtotal:true)
       const lc = r.label.toLowerCase();
       return AMF_KEYS.some(k => lc.includes(k));
     });
