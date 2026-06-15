@@ -371,6 +371,7 @@
             <div id="acq-unit-editor" style="margin-top:12px"></div>
           </div>
         </div>
+        <div class="upload-section" id="loc-settings"></div>
       </div>
 
       <!-- PROFORMA TAB -->
@@ -1077,6 +1078,30 @@ function switchTab(name) {
 function openAddProperty() { document.getElementById('modal-add').classList.add('open'); document.getElementById('modal-name').focus(); }
 function closeModal() { document.getElementById('modal-add').classList.remove('open'); }
 
+// ─── LINE OF CREDIT SETTINGS ──────────────────────────────────────────────────
+function togglePropertyLOC(propId, checked) {
+  const prop = properties.find(x => x.id === propId);
+  if(!prop) return;
+  prop.hasLOC = checked;
+  const balRow = document.getElementById('loc-balance-row-' + propId);
+  if(balRow) balRow.style.display = checked ? 'flex' : 'none';
+  save(); // persists updated properties array
+  renderBenchmarkTab();
+  renderPortfolio();
+}
+
+function saveLOCBalance(propId, rawVal) {
+  const prop = properties.find(x => x.id === propId);
+  if(!prop) return;
+  const num = parseFloat((rawVal || '').replace(/[^0-9.]/g, '')) || null;
+  prop.locBalance = num;
+  // Update display value to formatted number
+  const inp = document.getElementById('loc-balance-' + propId);
+  if(inp && num) inp.value = num.toLocaleString();
+  save();
+  renderBenchmarkTab();
+}
+
 function addProperty() {
   const name = document.getElementById('modal-name').value.trim();
   if(!name) return alert('Please enter a property name.');
@@ -1244,6 +1269,30 @@ function renderUploadTab(p) {
     </div>`;
   })();
   document.getElementById('benchmark-upload-grid').innerHTML = benchmarks.map(f=>uploadSlot(f,d,p.id,'benchmark')).join('');
+
+  // LOC settings
+  const locSettingsEl = document.getElementById('loc-settings');
+  if(locSettingsEl) {
+    const hasLOC  = !!p.hasLOC;
+    const locBal  = p.locBalance ? Number(p.locBalance).toLocaleString() : '';
+    locSettingsEl.innerHTML = `
+      <div class="upload-section-title">Property Settings</div>
+      <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text1);user-select:none">
+          <input type="checkbox" id="loc-toggle-${p.id}" ${hasLOC ? 'checked' : ''}
+            onchange="togglePropertyLOC('${p.id}', this.checked)"
+            style="width:15px;height:15px;cursor:pointer;accent-color:var(--blue,#4a90d9)">
+          Has Capex Line of Credit
+        </label>
+        <div id="loc-balance-row-${p.id}" style="display:${hasLOC ? 'flex' : 'none'};align-items:center;gap:8px;font-size:13px">
+          <span style="color:var(--text2)">Current balance:</span>
+          <input type="text" id="loc-balance-${p.id}" value="${locBal}"
+            placeholder="e.g. 500,000"
+            onblur="saveLOCBalance('${p.id}', this.value)"
+            style="width:130px;padding:4px 8px;background:var(--bg3);border:1px solid var(--border2);border-radius:5px;color:var(--text1);font-size:13px;font-family:inherit">
+        </div>
+      </div>`;
+  }
 
   // Escrow warning
   const escrowEl = document.getElementById('escrow-warning');
@@ -5643,11 +5692,14 @@ function renderBenchmarkTab() {
   if(anchorNOI)     html += summaryRow(anchorNOI,     'noi',     'row-noi',   effectiveAmfSubs.length>0||effectiveCapexSubs.length>0||effectiveDebtSubs.length>0, 'Net Operating Income') + amfDetailRows(effectiveAmfSubs,'noi') + capexDetailRows(effectiveCapexSubs,'noi') + debtDetailRows(effectiveDebtSubs,'noi');
 
   // Effective Cash Flow = NOI - AMF - Capex - Debt Service (computed, not read from statement)
+  // When property has a Capex LOC, capex is debt-financed — exclude it from EFCF.
+  // Capex detail rows still render under NOI for reference; they just don't reduce EFCF.
   if(anchorNOI) {
     const nMonths = anchorNOI.values.length;
     const sumValues = rows => rows.reduce((s,r) => s.map((v,i) => v + (r.values[i]||0)), Array(nMonths).fill(0));
+    const hasLOC = !!(p && p.hasLOC);
     const efcfValues = anchorNOI.values.map((v,i) =>
-      v - sumValues(effectiveAmfSubs)[i] - sumValues(effectiveCapexSubs)[i] - sumValues(effectiveDebtSubs)[i]
+      v - sumValues(effectiveAmfSubs)[i] - (hasLOC ? 0 : sumValues(effectiveCapexSubs)[i]) - sumValues(effectiveDebtSubs)[i]
     );
     const efcfRow = {
       label: 'Effective Cash Flow', isNetIncome: true,
@@ -5656,7 +5708,10 @@ function renderBenchmarkTab() {
       isExpenseLine: false, isIncomeLine: false, level: 0,
       values: efcfValues, total: efcfValues.reduce((a,b)=>a+b,0),
     };
-    html += summaryRow(efcfRow, 'net', 'row-net', false, 'Effective Cash Flow');
+    const efcfLabel = hasLOC
+      ? `Effective Cash Flow <span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px;background:rgba(74,144,217,0.15);color:#7ec8f7;margin-left:4px;vertical-align:middle">LOC</span>`
+      : 'Effective Cash Flow';
+    html += summaryRow(efcfRow, 'net', 'row-net', false, efcfLabel);
   }
 
   html += `</tbody></table></div></div>`;
@@ -9280,12 +9335,14 @@ function portfolioPropRow(p, pm, isOpen) {
       const lc = r.label.toLowerCase();
       return lc.includes('capex') || lc.includes('capital expenditure') || lc.includes('capital improvement');
     });
-    const curDS    = dsRows.reduce((sum, r)    => sum + Math.abs(r.values[portfolioMi] || 0), 0);
-    const curAMF   = amfRows.reduce((sum, r)   => sum + Math.abs(r.values[portfolioMi] || 0), 0);
-    const curCapex = capexRows.reduce((sum, r) => sum + Math.abs(r.values[portfolioMi] || 0), 0);
+    const curDS      = dsRows.reduce((sum, r)    => sum + Math.abs(r.values[portfolioMi] || 0), 0);
+    const curAMF     = amfRows.reduce((sum, r)   => sum + Math.abs(r.values[portfolioMi] || 0), 0);
+    const stmtCapex  = capexRows.reduce((sum, r) => sum + Math.abs(r.values[portfolioMi] || 0), 0);
+    // When the property has a Capex LOC, capex is debt-financed — exclude from EFCF
+    const curCapex   = p.hasLOC ? 0 : stmtCapex;
     const efcf = currentMonthNoi - curDS - curAMF - curCapex;
     const color = efcf >= 0 ? 'var(--green)' : 'var(--red)';
-    const tip = `NOI ${fmt(currentMonthNoi)} − DS ${fmt(curDS)}${curAMF ? ` − AMF ${fmt(curAMF)}` : ''}${curCapex ? ` − Capex ${fmt(curCapex)}` : ''}`;
+    const tip = `NOI ${fmt(currentMonthNoi)} − DS ${fmt(curDS)}${curAMF ? ` − AMF ${fmt(curAMF)}` : ''}${stmtCapex ? (p.hasLOC ? ` · Capex ${fmt(stmtCapex)} LOC-funded` : ` − Capex ${fmt(stmtCapex)}`) : ''}`;
     return `<span style="color:${color};font-weight:500;cursor:default" title="${tip}">${efcf < 0 ? '(' : ''}${fmt(Math.abs(efcf))}${efcf < 0 ? ')' : ''}</span>`;
   })();
 
