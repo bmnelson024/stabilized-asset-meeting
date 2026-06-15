@@ -3452,6 +3452,19 @@ function maybeAutoMatch(propId, prop) {
   }
 }
 
+// Force-regenerate the pfMapping for the given property with the current stmtKeys.
+// Clears the stored mapping so maybeAutoMatch's "only run once" guard is bypassed.
+async function rerunAutoMatch(propId) {
+  const pd = propData[propId];
+  if(!pd || !pd.statement) return;
+  const p = properties.find(x => x.id === propId);
+  delete pd.pfMapping; // clear stored mapping so maybeAutoMatch will re-run
+  maybeAutoMatch(propId, p);
+  await save(propId);
+  renderBenchmarkTab();
+  renderFlagsTab();
+}
+
 function autoMatchProformaToStatement(pfRows, stmtRows, system) {
   // For Buildium properties use the hard-coded default mapping
   if(system === 'buildium') {
@@ -7200,7 +7213,13 @@ function computeFlags(propId) {
       stmtLabels.forEach(lbl => {
         const bgRow = bgMap[lbl.toLowerCase()];
         // Only count rows with a non-zero budget; zero means unbudgeted, fall through to proforma
-        if(bgRow && bgRow.total) { bgSum += bgRow.total; anyFound = true; }
+        if(bgRow && bgRow.total) {
+          // Same guard as pfLineItemRow: if bgMap returned a promoted subtotal that belongs to
+          // a different keyword group (e.g. "Utilities Reimbursement" → "Total Rent - Residential"),
+          // skip it — the bgGroupTotals path is more accurate for that item.
+          if(bgRow.isSubtotal && getStmtMatchGroup(bgRow.label) !== item.group) return;
+          bgSum += bgRow.total; anyFound = true;
+        }
       });
       if(anyStmtSubtotal && bgGroupTotals[item.group]) {
         budgetMonth = bgGroupTotals[item.group] / 12;
@@ -8324,14 +8343,22 @@ function renderFlagsTab() {
   const reviewedCount   = flags.filter(f => { const g = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label; const r=flagReviews[g]; return r && r.month===selMonth && r.status==='reviewed'; }).length;
   updateFlagsBadge(unreviewedCount);
 
-  // Month selector
+  // Month selector + Re-run Mapping button
   const stmt = d.statement;
+  // Show "Re-run Mapping" when there's a statement to re-analyze (clears stale pfMapping
+  // so the auto-match picks up any stmtKey changes made since the last upload).
+  const rerunBtn = d.statement ? `<button onclick="rerunAutoMatch('${pid}')"
+      title="Re-analyze how statement rows map to proforma line items — useful after code updates or when flags look stale"
+      style="font-size:11px;background:none;border:1px solid var(--border);border-radius:var(--radius);color:var(--text2);padding:3px 8px;cursor:pointer;font-family:inherit;margin-left:auto;white-space:nowrap">
+      ↺ Re-run mapping
+    </button>` : '';
   const monthSel = stmt ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:14px">
     <span style="font-size:12px;color:var(--text2)">Viewing:</span>
     <select onchange="setMonthOverride('${pid}',this.value)"
       style="font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:3px 8px;color:var(--text);font-family:inherit;cursor:pointer">
       ${stmt.months.map((m,i)=>`<option value="${i}"${i===getPrevMonthIdx(stmt.months,pid)?' selected':''}>${m}</option>`).join('')}
     </select>
+    ${rerunBtn}
   </div>` : '';
 
   if(!flags.length) {
