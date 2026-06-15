@@ -259,6 +259,11 @@
     <button class="btn" onclick="openAddProperty()">+ Add property</button>
     <button class="btn" onclick="downloadAllStatements()" title="Download all parsed T-12 income statements as a single Excel workbook">↓ All T-12s</button>
     <button class="btn btn-primary" onclick="exportNotes()">Export notes</button>
+    <button class="btn" onclick="exportBackup()" title="Download a full JSON backup of all properties and data">↓ Backup</button>
+    <label class="btn" title="Restore all data from a SAM backup file" style="cursor:pointer;margin:0">
+      ↑ Restore
+      <input type="file" accept=".json" style="display:none" onchange="restoreBackup(this.files[0]);this.value=''">
+    </label>
     <button class="btn" onclick="signOut()" style="color:var(--text3)">Sign out</button>
   </div>
 </div>
@@ -842,6 +847,90 @@ function showSaveError() {
   toast.style.display = 'block';
   clearTimeout(toast._timer);
   toast._timer = setTimeout(() => { toast.style.display = 'none'; }, 4000);
+}
+
+// ─── BACKUP / RESTORE ─────────────────────────────────────────────────────────
+
+function exportBackup() {
+  const backup = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    properties,
+    notes,
+    groupOpenState,
+    propData,
+  };
+  const json = JSON.stringify(backup);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const dt   = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `SAM-backup-${dt}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function restoreBackup(file) {
+  if(!file) return;
+  let backup;
+  try {
+    const text = await file.text();
+    backup = JSON.parse(text);
+  } catch(e) {
+    alert('Could not read backup file — make sure it is a valid SAM backup JSON.');
+    return;
+  }
+  if(!backup.properties || !backup.propData) {
+    alert('This file does not appear to be a valid SAM backup (missing properties or propData).');
+    return;
+  }
+  const exportedAt = backup.exportedAt
+    ? new Date(backup.exportedAt).toLocaleString()
+    : 'unknown date';
+  const propCount = Object.keys(backup.propData).length;
+  if(!confirm(`Restore backup from ${exportedAt}?\n\n${backup.properties.length} properties · ${propCount} property data sets\n\nThis will overwrite all current data and cannot be undone.`)) return;
+
+  // Restore in-memory state
+  properties    = backup.properties;
+  notes         = backup.notes         || [];
+  groupOpenState= backup.groupOpenState|| {};
+  propData      = backup.propData      || {};
+
+  // Re-run the same normalizations that loadFromSupabase applies
+  properties.forEach(p => {
+    const pd = propData[p.id];
+    if(!pd || !pd.statement) return;
+    if(pd.statement.rows) normalizePrincipalSign(pd.statement.rows);
+    const system = p.system || pd.statement.system || '';
+    if(system === 'buildium') maybeAutoMatch(p.id, p);
+  });
+
+  // Push everything back to Supabase
+  setSaveStatus('saving');
+  try {
+    // Meta
+    await sbRest('POST', 'sam_meta', [
+      { key: 'properties',  value: properties    },
+      { key: 'notes',       value: notes         },
+      { key: 'groups',      value: groupOpenState },
+    ], UPSERT_HEADERS);
+    // All propData
+    const rows = Object.entries(propData).map(([prop_id, data]) => ({ prop_id, data }));
+    if(rows.length) await sbRest('POST', 'sam_propdata', rows, UPSERT_HEADERS);
+    setSaveStatus('saved');
+    // Re-render from scratch
+    currentPropId = null;
+    showView('portfolio');
+    renderPortfolio();
+    alert('Backup restored successfully.');
+  } catch(err) {
+    console.error('Restore failed:', err);
+    setSaveStatus('error');
+    alert('Restore failed — check your connection and try again. Your data in Supabase was not fully overwritten.');
+  }
 }
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
@@ -9380,7 +9469,20 @@ function portfolioPropRow(p, pm, isOpen) {
       const cb = d.cashbalance;
       if(!cb || cb.cash === null || cb.cash === undefined) return '—';
       const color = cb.cash >= 0 ? 'var(--green)' : 'var(--red)';
-      const dateLabel = cb.dateRange ? `<br><span style="font-size:10px;color:var(--text3)">as of ${cb.dateRange}</span>` : '';
+      // For Trial Balance (AppFolio), dateRange is a full range like "01/01/2025 - 05/31/2025" — show only the end date.
+      // For Buildium, dateRange is already a single date like "4/30/2026".
+      let cbDateLabel = '';
+      if(cb.dateRange) {
+        const endMatch = cb.dateRange.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s*$/);
+        let pretty = cb.dateRange;
+        if(endMatch) {
+          // Parse M/D/YYYY components directly to avoid locale/timezone issues
+          const d2 = new Date(parseInt(endMatch[3]), parseInt(endMatch[1])-1, parseInt(endMatch[2]));
+          if(!isNaN(d2)) pretty = d2.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+        }
+        cbDateLabel = `<br><span style="font-size:10px;color:var(--text3)">as of ${pretty}</span>`;
+      }
+      const dateLabel = cbDateLabel;
       return `<span style="color:${color};font-weight:500">${fmt(cb.cash)}</span>${dateLabel}`;
     })()}</td>
     <td>${currentMonthIncome!==null?fmt(currentMonthIncome):'—'}</td>
