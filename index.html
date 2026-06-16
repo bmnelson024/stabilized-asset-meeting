@@ -3320,6 +3320,7 @@ const PF_LINE_ITEMS = [
     label: 'Rental Property Insurance',
     pfKeys:   ['insurance','rental property insurance','property insurance'],
     stmtKeys: ['insurance'],
+    stmtExclude: ['income', 'claim'], // prevent "Insurance Claim Income" matching expense group
     isIncome: false,
   },
   {
@@ -3427,7 +3428,13 @@ const MATCH_KEYWORDS = [
 function getStmtMatchGroup(label) {
   const lc = label.toLowerCase();
   for(const item of PF_LINE_ITEMS) {
-    if(item.stmtKeys.some(k => lc.includes(k))) return item.group;
+    if(item.stmtKeys.some(k => lc.includes(k))) {
+      // If the entry declares exclusion terms, skip rows whose label matches any of them.
+      // e.g. stmtExclude:['income','claim'] prevents "Insurance Claim Income" from being
+      // classified into the expense-side insurance group.
+      if(item.stmtExclude && item.stmtExclude.some(e => lc.includes(e))) continue;
+      return item.group;
+    }
   }
   for(const {keys, group} of MATCH_KEYWORDS) {
     if(keys.some(k=>lc.includes(k))) return group;
@@ -3480,7 +3487,7 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system) {
       tax:           lc => lc.includes('property tax') || lc.includes('real estate tax')
                         || lc.includes('mortgage escrow')
                         || (lc.includes('escrow') && lc.includes('tax')),
-      insurance:     lc => (lc.includes('insurance') && !lc.includes('mortgage insurance') && !lc.includes('mip') && !lc.includes('pmi'))
+      insurance:     lc => (lc.includes('insurance') && !lc.includes('mortgage insurance') && !lc.includes('mip') && !lc.includes('pmi') && !lc.includes('income') && !lc.includes('claim'))
                         || (lc.includes('escrow') && (lc.includes('insur') || lc.includes('haz'))),
       repairs:       lc => lc.includes('repair') || lc.includes('maintenance') || lc.includes('make ready')
                         || lc.includes('make-ready') || lc.includes('pest') || lc.includes('locksmith')
