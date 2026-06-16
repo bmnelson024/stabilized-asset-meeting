@@ -5493,7 +5493,7 @@ function renderBenchmarkTab() {
 
   let html = stalenessBanner + cashCardHtml + monthSelectorHtml + escrowBanner + `<div class="bench-section">
     <div class="bench-title">Month vs benchmarks — ${selMonth}</div>
-    <div class="bench-wrap" style="width:fit-content;max-width:100%"><table class="bench-table" style="width:auto">
+    <div class="bench-wrap"><table class="bench-table">
     <thead><tr>${cols.map((c,i)=>`<th${c==='Trend'?' style="text-align:center;width:48px;padding:8px 4px"':i>0?' style="text-align:right"':''}>${c}</th>`).join('')}</tr></thead>
     <tbody>`;
 
@@ -7772,22 +7772,62 @@ function setFlagStatus(propId, group, status, month) {
   renderPortfolioFlags(); // keep portfolio view in sync
 }
 
-function copyFlagClickUpTask(propId, group, label, varDStr, varPctStr) {
+// Direct ClickUp task creation — list: Monthly PM Questions (901414351914)
+const CLICKUP_FLAG_LIST_ID = '901414351914';
+
+async function createFlagClickUpTask(propId, group, label, varDStr, varPctStr) {
+  const btn = document.getElementById(`flag-cu-${propId}-${group}`);
+
+  // Get or prompt for API token (stored in localStorage so user only enters it once)
+  let token = localStorage.getItem('sam_clickup_token');
+  if(!token) {
+    token = prompt('Enter your ClickUp Personal API Token.\n\nFind it at: ClickUp → Settings → Apps → API Token\n\nThis is saved locally and only used to create tasks.');
+    if(!token) return;
+    localStorage.setItem('sam_clickup_token', token.trim());
+    token = token.trim();
+  }
+
   const p = properties.find(x => x.id === propId);
   const propName = p ? p.name : 'Unknown Property';
   const note = (propData[propId]?.flagNotes?.[group] || '').trim();
   const taskName = `${propName} — ${label}`;
-  const details = `${label} is ${varDStr} over budget (+${varPctStr}).${note ? '\n\n' + note : ''}`;
-  const msg = `Create ClickUp task in Monthly PM Questions from Financial Reviews:\nTask: ${taskName}\nDetails: ${details}`;
-  navigator.clipboard.writeText(msg).then(() => {
-    const btn = document.getElementById(`flag-cu-${propId}-${group}`);
-    if(btn) {
-      const origHtml = btn.innerHTML;
-      btn.textContent = '✓ Copied — paste in chat';
-      btn.style.background = 'var(--green)'; btn.style.color = '#fff'; btn.style.borderColor = 'var(--green)';
-      setTimeout(() => { if(btn) { btn.innerHTML = origHtml; btn.style.background=''; btn.style.color=''; btn.style.borderColor=''; } }, 3000);
+  const description = `${label} is ${varDStr} over budget (${varPctStr}).\n\nProperty: ${propName}${note ? '\n\nNotes: ' + note : ''}`;
+
+  if(btn) { btn.textContent = 'Creating…'; btn.disabled = true; }
+
+  try {
+    const res = await fetch(`https://api.clickup.com/api/v2/list/${CLICKUP_FLAG_LIST_ID}/task`, {
+      method: 'POST',
+      headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: taskName, description })
+    });
+
+    if(!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      // If auth failure, clear the stored token so user can re-enter
+      if(res.status === 401 || res.status === 403) {
+        localStorage.removeItem('sam_clickup_token');
+        throw new Error('Invalid API token — it has been cleared. Click again to re-enter.');
+      }
+      throw new Error(err.err || `HTTP ${res.status}`);
     }
-  }).catch(() => { prompt('Copy this and paste in chat to create the ClickUp task:', msg); });
+
+    const data = await res.json();
+    const taskUrl = data.url || `https://app.clickup.com/t/${data.id}`;
+    if(btn) {
+      btn.textContent = '✓ Task created';
+      btn.disabled = false;
+      btn.style.background = 'var(--green)'; btn.style.color = '#fff'; btn.style.borderColor = 'var(--green)';
+      btn.onclick = () => window.open(taskUrl, '_blank');
+      btn.title = taskUrl;
+      setTimeout(() => {
+        if(btn) { btn.textContent = '✓ Created — click to open'; }
+      }, 100);
+    }
+  } catch(err) {
+    if(btn) { btn.textContent = '➕ ClickUp task'; btn.disabled = false; btn.style.background=''; btn.style.color=''; btn.style.borderColor=''; }
+    alert('ClickUp error: ' + err.message);
+  }
 }
 
 function pushFlagNoteToNotes(propId, group, flagLabel, varDStr, varPctStr) {
@@ -7802,6 +7842,13 @@ function pushFlagNoteToNotes(propId, group, flagLabel, varDStr, varPctStr) {
 }
 
 // ─── CASH REVIEW TAB ──────────────────────────────────────────────────────────
+function setCashReviewAP(propId, val) {
+  const v = parseFloat(val);
+  propData[propId].crApOverride = isNaN(v) || v < 0 ? 0 : v;
+  save(propId);
+  renderCashReviewTab();
+}
+
 function setCashReviewCapex(propId, val) {
   if(!propData[propId]) propData[propId] = {};
   const num = parseFloat(val);
@@ -7944,6 +7991,11 @@ function renderCashReviewTab() {
     if(pfAMF.length) { amfMonthly = pfAMF.reduce((s,r) => s + r.total, 0) / 12; amfSource = 'Proforma'; }
   }
 
+  // ── Accounts Payable — auto-detected from trial balance, or manually entered ─
+  const hasAPOverride = d.crApOverride !== undefined && d.crApOverride !== null;
+  const effectiveAP = hasAPOverride ? d.crApOverride : 0;
+  const effectiveCash = cb.cash - effectiveAP;
+
   // ── Pre-capex FCF (the "fixed cost" floor) ────────────────────────────────
   const preCapexFCF = (noiMonthly || 0) - (dsMonthly || 0) - (amfMonthly || 0);
 
@@ -7996,12 +8048,12 @@ function renderCashReviewTab() {
     const m = cb.dateRange.match(/(\d{1,2})\/\d{1,2}\/(\d{4})/);
     if(m) startDate = new Date(parseInt(m[2]), parseInt(m[1])-1, 1);
   }
-  let runningCash = cb.cash;
+  let runningCash = effectiveCash;
   for(let i = 0; i < PROJ_MONTHS; i++) {
     const d2 = new Date(startDate.getFullYear(), startDate.getMonth() + i + 1, 1);
     const label = d2.toLocaleDateString('en-US', {month:'short', year:'numeric'});
     runningCash += netMonthly;
-    projection.push({ label, cash: runningCash, preCapex: cb.cash + preCapexFCF * (i+1) });
+    projection.push({ label, cash: runningCash, preCapex: effectiveCash + preCapexFCF * (i+1) });
   }
 
   // ── Alerts ────────────────────────────────────────────────────────────────
@@ -8013,17 +8065,17 @@ function renderCashReviewTab() {
   const minProjected = Math.min(...projection.map(x => x.cash));
   const maxProjected = Math.max(...projection.map(x => x.cash));
   const injectionNeeded = minProjected < 0;
-  const distOpportunity = !injectionNeeded && maxProjected > cb.cash * 1.5 && maxProjected > 50000;
+  const distOpportunity = !injectionNeeded && effectiveCash > 0 && maxProjected > effectiveCash * 1.5 && maxProjected > 50000;
 
   // ── SVG Chart ─────────────────────────────────────────────────────────────
-  const allValues = [cb.cash, ...projection.map(x => x.cash), ...projection.map(x => x.preCapex)];
+  const allValues = [effectiveCash, ...projection.map(x => x.cash), ...projection.map(x => x.preCapex)];
   const chartMin = Math.min(0, ...allValues);
   const chartMax = Math.max(0, ...allValues);
   const chartRange = chartMax - chartMin || 1;
   const W = 640, H = 180, PAD_L = 70, PAD_R = 16, PAD_T = 12, PAD_B = 32;
   const cW = W - PAD_L - PAD_R, cH = H - PAD_T - PAD_B;
-  const pts    = [cb.cash, ...projection.map(x => x.cash)];
-  const ptsPre = [cb.cash, ...projection.map(x => x.preCapex)];
+  const pts    = [effectiveCash, ...projection.map(x => x.cash)];
+  const ptsPre = [effectiveCash, ...projection.map(x => x.preCapex)];
   const labels = ['Now', ...projection.map(x => x.label)];
   const xStep  = cW / (pts.length - 1);
   const yPx    = v => PAD_T + cH - ((v - chartMin) / chartRange) * cH;
@@ -8135,7 +8187,7 @@ function renderCashReviewTab() {
 
   // Runway (uses reserve as floor if set)
   const cashReserve = d.crCashReserve || 0;
-  const cashAboveReserve = cb.cash - cashReserve;
+  const cashAboveReserve = effectiveCash - cashReserve;
   let runwayDisplay = '', runwayColor = 'var(--text2)', runwayNote = '';
   if(netMonthly < 0 && cashAboveReserve > 0) {
     const months = Math.floor(cashAboveReserve / Math.abs(netMonthly));
@@ -8165,6 +8217,34 @@ function renderCashReviewTab() {
       <div class="kpi-label">Cash runway</div>
       <div style="font-size:15px;font-weight:600;color:${runwayColor}">${runwayDisplay}</div>
       <div style="font-size:10px;color:var(--text3);margin-top:2px">${runwayNote}</div>
+    </div>
+  </div>`;
+
+  // ── Accounts Payable editor ───────────────────────────────────────────────
+  const apInputVal = hasAPOverride ? d.crApOverride.toFixed(0) : '';
+  const apEditor = `<div style="background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:180px">
+        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:2px">Accounts Payable</div>
+        <div style="font-size:11px;color:var(--text3)">Deducted from available cash and projection starting balance</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:13px;color:var(--text2)">$</span>
+        <input type="number" min="0" value="${apInputVal}" placeholder="0"
+          id="cr-ap-input-${currentPropId}"
+          style="width:130px;padding:6px 10px;border:1px solid var(--border2);border-radius:var(--radius);font-size:14px;font-weight:600;background:var(--bg2);color:var(--text);font-family:inherit;outline:none;text-align:right"
+          onchange="setCashReviewAP('${currentPropId}',this.value)"
+          onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'">
+        ${hasAPOverride ? `<button onclick="delete propData['${currentPropId}'].crApOverride;save('${currentPropId}');renderCashReviewTab()"
+          style="font-size:11px;padding:4px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);color:var(--text3);cursor:pointer;font-family:inherit">
+          Clear
+        </button>` : ''}
+      </div>
+      ${effectiveAP > 0 ? `<div style="text-align:right;min-width:140px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:2px">Available cash</div>
+        <div style="font-size:18px;font-weight:700;color:${effectiveCash>=0?'var(--green)':'var(--red)'}">${fmt(effectiveCash)}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">After AP deduction</div>
+      </div>` : ''}
     </div>
   </div>`;
 
@@ -8248,6 +8328,10 @@ function renderCashReviewTab() {
   const cbSourceLabel = cb.system === 'trial_balance' ? `AppFolio Trial Balance · GL ${cb.matchedGL || '1150'}`
     : cb.system === 'buildium_cash_balance' ? 'Buildium Bank Account Balance' : '';
 
+  const apDeductHtml = effectiveAP > 0
+    ? `<div style="font-size:11px;color:var(--text3);margin-top:5px">(${fmt(effectiveAP)}) accounts payable · net <strong style="color:var(--text2);font-size:13px">${fmt(effectiveCash)}</strong></div>`
+    : '';
+  const cbHeroColor2 = effectiveCash >= 0 ? 'var(--green)' : 'var(--red)';
   const cashHero = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 20px;margin-bottom:14px">
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
       <div style="flex:1;min-width:160px">
@@ -8255,6 +8339,7 @@ function renderCashReviewTab() {
         <div style="font-size:32px;font-weight:700;color:${cbHeroColor};line-height:1">${fmt(cb.cash)}</div>
         ${cbAsOfLabel ? `<div style="font-size:11px;color:var(--text3);margin-top:5px">as of ${cbAsOfLabel}</div>` : ''}
         ${cbPendingHtml}
+        ${apDeductHtml}
       </div>
       ${cbSourceLabel ? `<div style="text-align:right;align-self:flex-start;padding-top:2px">
         <div style="font-size:10px;color:var(--text3)">${cbSourceLabel}</div>
@@ -8280,14 +8365,14 @@ function renderCashReviewTab() {
   const hasReserve = cashReserve > 0;
   const tableRows = projection.map(row => {
     const cashCls = row.cash < 0 ? 'style="color:var(--red);font-weight:600"' : row.cash > cb.cash ? 'style="color:var(--green)"' : '';
-    const vsCls = row.cash >= cb.cash ? 'val-pos' : 'val-neg';
+    const vsCls = row.cash >= effectiveCash ? 'val-pos' : 'val-neg';
     const distrib = row.cash - cashReserve;
     const distribCls = distrib < 0 ? 'style="color:var(--red);font-weight:600"' : 'style="color:var(--green)"';
     const distribCell = hasReserve ? `<td ${distribCls}>${distrib >= 0 ? '' : '('}${fmt(Math.abs(distrib))}${distrib < 0 ? ')' : ''}</td>` : '';
     return `<tr>
       <td>${row.label}</td>
       <td ${cashCls}>${fmt(row.cash)}</td>
-      <td class="${vsCls}">${row.cash >= cb.cash?'+':''}${fmt(row.cash - cb.cash)}</td>
+      <td class="${vsCls}">${row.cash >= effectiveCash?'+':''}${fmt(row.cash - effectiveCash)}</td>
       <td style="color:var(--text3)">${fmt(row.preCapex)}</td>
       ${distribCell}
     </tr>`;
@@ -8301,6 +8386,7 @@ function renderCashReviewTab() {
     ${fixedCards}
     ${insightCards}
     <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Reserve</div>
+    ${apEditor}
     ${reserveEditor}
     <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Capex assumption</div>
     ${capexEditor}
@@ -8484,7 +8570,7 @@ function renderFlagsTab() {
             onkeydown="if(event.key==='Enter'){this.blur()}"
             style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none;margin-bottom:8px"/>
           <div style="display:flex;gap:8px;justify-content:flex-end">
-            <button id="flag-cu-${pid}-${group}" onclick="copyFlagClickUpTask('${pid}','${eg}','${el2}','${varSign}${varDStr}','${varSign}${varPctStr}')" style="${btnStyle('#ffa040')}">📋 Copy ClickUp task</button>
+            <button id="flag-cu-${pid}-${group}" onclick="createFlagClickUpTask('${pid}','${eg}','${el2}','${varSign}${varDStr}','${varSign}${varPctStr}')" style="${btnStyle('#ffa040')}">➕ ClickUp task</button>
             <button onclick="setFlagStatus('${pid}','${eg}','reviewed','${selMonth}')" style="${btnStyle('var(--green)')}">✓ Mark reviewed</button>
           </div>
         </div>
