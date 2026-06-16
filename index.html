@@ -9713,15 +9713,33 @@ function portfolioPropRow(p, pm, isOpen) {
     <td>${varHTML}</td>
     <td>${t12VsPfHTML}</td>
     <td>${(() => {
-      const { flags } = computeFlags(p.id);
+      const { flags, selMonth: sm } = computeFlags(p.id);
       if(!flags.length) return '—';
-      const flagNotes = (propData[p.id]||{}).flagNotes || {};
-      const notedCount = flags.filter(f => {
-        const grp = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group||f.label;
-        return !!flagNotes[grp];
-      }).length;
-      const noteIndicator = notedCount ? ` <span style="font-size:10px;color:var(--text3)" title="${notedCount} with explanation">✎${notedCount}</span>` : '';
-      return `<span class="badge badge-flag" style="cursor:pointer" onclick="event.stopPropagation();selectProp('${p.id}','flags')" title="View expense flags">${flags.length} flag${flags.length>1?'s':''}</span>${noteIndicator}`;
+      const flagReviews = (propData[p.id]||{}).flagReviews || {};
+      const flagNotes   = (propData[p.id]||{}).flagNotes   || {};
+      const annotated = flags.map(f => {
+        const grp = PF_LINE_ITEMS.find(i=>i.label===f.label)?.group || f.label;
+        const rev = flagReviews[grp];
+        const status = (rev && rev.month === sm) ? (rev.status || 'unreviewed') : 'unreviewed';
+        return { grp, status, hasNote: !!flagNotes[grp] };
+      });
+      const unreviewedCount = annotated.filter(f => f.status === 'unreviewed').length;
+      const todoCount       = annotated.filter(f => f.status === 'todo').length;
+      const notedCount      = annotated.filter(f => f.hasNote).length;
+      const noteIndicator   = notedCount ? ` <span style="font-size:10px;color:var(--text3)" title="${notedCount} with explanation">✎${notedCount}</span>` : '';
+      const onclick = `event.stopPropagation();selectProp('${p.id}','flags')`;
+      if(unreviewedCount === 0 && todoCount === 0) {
+        // All reviewed — green
+        return `<span class="badge badge-ok" style="cursor:pointer" onclick="${onclick}" title="All flags reviewed for ${sm}">${flags.length} flag${flags.length>1?'s':''} ✓</span>${noteIndicator}`;
+      } else if(unreviewedCount === 0) {
+        // No unreviewed, but has to-dos — amber
+        return `<span class="badge badge-warn" style="cursor:pointer" onclick="${onclick}" title="${todoCount} flag${todoCount>1?'s':''} marked to-do">${todoCount} to-do</span>${noteIndicator}`;
+      } else {
+        // Has unreviewed — red; show progress if some are already reviewed
+        const reviewed = flags.length - unreviewedCount - todoCount;
+        const label = reviewed > 0 ? `${unreviewedCount} of ${flags.length} flags` : `${flags.length} flag${flags.length>1?'s':''}`;
+        return `<span class="badge badge-flag" style="cursor:pointer" onclick="${onclick}" title="${unreviewedCount} unreviewed">${label}</span>${noteIndicator}`;
+      }
     })()}</td>
     <td>${propNoteCount?`<span class="badge badge-neutral">${propNoteCount} note${propNoteCount>1?'s':''}</span>`:'—'}</td>
   </tr>`;
