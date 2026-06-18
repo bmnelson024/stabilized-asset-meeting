@@ -2352,6 +2352,18 @@ function parseAppfolio(ws) {
   // Only flip when the total is negative — avoids touching properties that report it correctly.
   normalizePrincipalSign(rows);
 
+  // Stamp isDebtService / isAssetMgmt on AppFolio rows so any code path that reads
+  // these flags directly (e.g. getDSRows, getAMFRows, budget parsers) works correctly.
+  const DS_INLINE = ['mortgage','debt service','loan payment','interest exp','principal',
+                     'p & i','property loan','loan - mortgage'];
+  rows.forEach(r => {
+    if(r.isCategory) return;
+    const lc = r.label.toLowerCase();
+    if(!r.isDebtService && DS_INLINE.some(k => lc.includes(k)) &&
+       !lc.includes('escrow') && !lc.includes('management')) r.isDebtService = true;
+    if(!r.isAssetMgmt && (lc.includes('asset management') || lc.includes('asset mgmt'))) r.isAssetMgmt = true;
+  });
+
   return {months, rows, propertyName, period, system:'appfolio'};
 }
 
@@ -5240,14 +5252,14 @@ function renderBenchmarkTab() {
   // Debt service labels (below NOI in income statement)
   // 'interest exp' catches RPME's "Interest Exp" (abbreviated form of interest expense)
   // 'loan - mort' catches RPME's "Loan - Mortgage" (principal payment below NOI)
-  const DEBT_SERVICE_KEYS = ['mortgage interest','mortgage principal','mortgage payable','mortgages payable','interest expense','interest exp','principal','loan interest','debt service','loan payment','loan - mort'];
+  const DEBT_SERVICE_KEYS = ['mortgage interest','mortgage principal','mortgage payable','mortgages payable','interest expense','interest exp','principal','loan interest','debt service','loan payment','loan - mort','property loan'];
   const isDebtService = r => {
     const lc = r.label.toLowerCase();
     return DEBT_SERVICE_KEYS.some(k => lc.includes(k));
   };
 
-  // Asset management fee detection
-  const isAssetMgmtFee = r => r.isAssetMgmt || r.label.toLowerCase().includes('asset management');
+  // Asset management fee detection — match both full 'asset management' and abbreviated 'asset mgmt'
+  const isAssetMgmtFee = r => r.isAssetMgmt || r.label.toLowerCase().includes('asset management') || r.label.toLowerCase().includes('asset mgmt');
 
   // Find the four anchor rows from the statement
   const anchorIncome  = stmt.rows.find(r => r.isTotalIncome);
@@ -7287,7 +7299,8 @@ const _DS_KEYS = [
   'mortgage interest','mortgage principal','mortgage payable','mortgages payable',
   'interest expense','interest exp','principal','loan interest','debt service','loan payment',
   'principal & interest','p & i','total debt service',
-  'loan - mortgage', // RPME (BG Flats, Champion Villas, Doral) principal payment row
+  'loan - mortgage',  // RPME (BG Flats, Champion Villas, Doral) principal payment row
+  'property loan',    // Bender/AppFolio statements (The Whitney)
 ];
 const _AMF_KEYS = ['asset management','asset mgmt'];
 
