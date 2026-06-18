@@ -7991,6 +7991,57 @@ async function createFlagClickUpTask(propId, group, label, varDStr, varPctStr) {
   }
 }
 
+async function createDQFlagClickUpTask(propId, group, label, detail) {
+  const btn = document.getElementById(`flag-cu-${propId}-${group}`);
+
+  let token = localStorage.getItem('sam_clickup_token');
+  if(!token) {
+    token = prompt('Enter your ClickUp Personal API Token.\n\nFind it at: ClickUp → Settings → Apps → API Token\n\nThis is saved locally and only used to create tasks.');
+    if(!token) return;
+    localStorage.setItem('sam_clickup_token', token.trim());
+    token = token.trim();
+  }
+
+  const p = properties.find(x => x.id === propId);
+  const propName = p ? p.name : 'Unknown Property';
+  const note = (propData[propId]?.flagNotes?.[group] || '').trim();
+  const taskName = `${propName} — ${label}`;
+  const description = `${detail}\n\nProperty: ${propName}${note ? '\n\nNotes: ' + note : ''}`;
+
+  if(btn) { btn.textContent = 'Creating…'; btn.disabled = true; }
+
+  try {
+    const res = await fetch(`https://api.clickup.com/api/v2/list/${CLICKUP_FLAG_LIST_ID}/task`, {
+      method: 'POST',
+      headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: taskName, description })
+    });
+
+    if(!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if(res.status === 401 || res.status === 403) {
+        localStorage.removeItem('sam_clickup_token');
+        throw new Error('Invalid API token — it has been cleared. Click again to re-enter.');
+      }
+      throw new Error(err.err || `HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    const taskUrl = data.url || `https://app.clickup.com/t/${data.id}`;
+    if(btn) {
+      btn.textContent = '✓ Task created';
+      btn.disabled = false;
+      btn.style.background = 'var(--green)'; btn.style.color = '#fff'; btn.style.borderColor = 'var(--green)';
+      btn.onclick = () => window.open(taskUrl, '_blank');
+      btn.title = taskUrl;
+      setTimeout(() => { if(btn) btn.textContent = '✓ Created — click to open'; }, 100);
+    }
+  } catch(err) {
+    if(btn) { btn.textContent = '➕ ClickUp task'; btn.disabled = false; btn.style.background=''; btn.style.color=''; btn.style.borderColor=''; }
+    alert('ClickUp error: ' + err.message);
+  }
+}
+
 function pushFlagNoteToNotes(propId, group, flagLabel, varDStr, varPctStr) {
   const text = (propData[propId]?.flagNotes?.[group] || '').trim();
   const noteText = `${flagLabel}: ${varDStr} over budget (+${varPctStr}) — ${text || '(no explanation added)'}`;
@@ -8725,6 +8776,7 @@ function renderFlagsTab() {
         </div>`;
 
       } else if(status === 'todo') {
+        const edet = escAttr(f.detail);
         html += `
         <div style="border:1px solid #ffa040;border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden">
           <div style="padding:6px 14px;background:color-mix(in srgb,#ffa040 10%,transparent);display:flex;align-items:center;justify-content:space-between">
@@ -8742,12 +8794,14 @@ function renderFlagsTab() {
               onkeydown="if(event.key==='Enter'){this.blur()}"
               style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none;margin-bottom:8px"/>
             <div style="display:flex;gap:8px;justify-content:flex-end">
+              <button id="flag-cu-${pid}-${eg}" onclick="createDQFlagClickUpTask('${pid}','${eg}','${escAttr(f.label)}','${edet}')" style="${btnStyle2('#ffa040')}">➕ ClickUp task</button>
               <button onclick="setFlagStatus('${pid}','${eg}','reviewed','${selMonth}')" style="${btnStyle2('var(--green)')}">✓ Reviewed</button>
             </div>
           </div>
         </div>`;
 
       } else {
+        const edet = escAttr(f.detail);
         html += `
         <div style="border:1px solid #ffa040;border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden">
           <div style="padding:10px 14px;display:flex;align-items:flex-start;gap:10px">
@@ -8762,6 +8816,7 @@ function renderFlagsTab() {
               style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;font-size:12px;color:var(--text);font-family:inherit;outline:none;margin-bottom:8px"/>
             <div style="display:flex;gap:8px;justify-content:flex-end">
               <button onclick="suppressFlag('${pid}','${eg}')" style="${disBtnStyle}" title="Dismiss permanently">✕ Dismiss</button>
+              <button id="flag-cu-${pid}-${eg}" onclick="createDQFlagClickUpTask('${pid}','${eg}','${escAttr(f.label)}','${edet}')" style="${btnStyle2('#ffa040')}">➕ ClickUp task</button>
               <button onclick="setFlagStatus('${pid}','${eg}','todo','${selMonth}')" style="${btnStyle2('#ffa040')}">→ To-Do</button>
               <button onclick="setFlagStatus('${pid}','${eg}','reviewed','${selMonth}')" style="${btnStyle2('var(--green)')}">✓ Reviewed</button>
             </div>
