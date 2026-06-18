@@ -85,6 +85,12 @@
   .portfolio-table th.col-noi-budget{background:#383839;border-left:1px solid var(--border2);border-right:1px solid var(--border2)}
   .portfolio-table td.col-noi-budget{background:#2a2a2c;border-left:1px solid var(--border);border-right:1px solid var(--border)}
   .portfolio-table tr:hover td.col-noi-budget{background:#333335}
+  .portfolio-table th.psortable{cursor:pointer;user-select:none}
+  .portfolio-table th.psortable:hover{background:#333335}
+  .portfolio-table th.col-noi-budget.psortable:hover{background:#404042}
+  .portfolio-table th.psort-active{color:var(--text)}
+  .psort-ind{font-size:9px;margin-left:3px;color:var(--text3);opacity:0}
+  .portfolio-table th.psort-active .psort-ind{opacity:1;color:var(--text2)}
   .ptbl-group-row td{background:var(--bg3);padding:7px 12px;font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:0.05em;cursor:pointer;border-bottom:1px solid var(--border);position:sticky;top:38px;z-index:1}
   .ptbl-group-row:hover td{background:var(--bg2)}
   .ptbl-group-row td .ptbl-chevron{display:inline-block;font-size:10px;margin-right:6px;transition:transform .15s;color:var(--text3)}
@@ -306,9 +312,21 @@
         <table class="portfolio-table" id="portfolio-table">
           <thead>
             <tr>
-              <th>Property</th><th>Status</th><th>Occupancy</th><th>Cash Balance</th>
-              <th>Total Income</th><th>Total Expense</th><th>NOI</th><th>EFCF</th>
-              <th>T-12 NOI</th><th>Exp ratio</th><th>DSCR</th><th class="col-noi-budget">NOI vs Budget</th><th>T12 NOI vs PF</th><th>Flags</th><th>Notes</th>
+              <th class="psortable" id="psh-name" onclick="sortPortfolioBy('name')">Property<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-status" onclick="sortPortfolioBy('status')">Status<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-occ" onclick="sortPortfolioBy('occ')">Occupancy<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-cash" onclick="sortPortfolioBy('cash')">Cash Balance<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-income" onclick="sortPortfolioBy('income')">Total Income<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-expense" onclick="sortPortfolioBy('expense')">Total Expense<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-noi" onclick="sortPortfolioBy('noi')">NOI<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-efcf" onclick="sortPortfolioBy('efcf')">EFCF<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-trend" onclick="sortPortfolioBy('trend')">T-12 NOI<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-expratio" onclick="sortPortfolioBy('expratio')">Exp ratio<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-dscr" onclick="sortPortfolioBy('dscr')">DSCR<span class="psort-ind"></span></th>
+              <th class="col-noi-budget psortable" id="psh-budget_var" onclick="sortPortfolioBy('budget_var')">NOI vs Budget<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-pf_var" onclick="sortPortfolioBy('pf_var')">T12 NOI vs PF<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-flags" onclick="sortPortfolioBy('flags')">Flags<span class="psort-ind"></span></th>
+              <th>Notes</th>
             </tr>
           </thead>
           <tbody id="portfolio-tbody"></tbody>
@@ -1062,6 +1080,130 @@ async function loadAndRender() {
 }
 
 // ─── PORTFOLIO SEARCH ─────────────────────────────────────────────────────────
+// ── Portfolio table sort ───────────────────────────────────────────────────────
+let portfolioSort = { col: null, dir: 1 }; // dir: 1=asc, -1=desc
+
+function getPortfolioSortValue(propId, col) {
+  const d = propData[propId] || {};
+  const stmt = d.statement;
+  const mi = stmt ? getPrevMonthIdx(stmt.months, propId) : -1;
+
+  if(col === 'name') {
+    const p = properties.find(x => x.id === propId);
+    return (p ? p.name : '').toLowerCase();
+  }
+  if(col === 'status') {
+    const dot = getStatusDot(propId);
+    return { dot_ok:0, dot_warn:1, dot_flag:2, dot_none:3 }[dot] ?? 3;
+  }
+  if(col === 'occ') {
+    const rr = d.rentroll || d.acqrentroll;
+    if(!rr || !rr.units) return null;
+    const valid = rr.units.filter(u => !(u.unitType==='Unknown' && u.marketRent===0 && u.actualRent===0));
+    return valid.length ? valid.filter(u=>!u.isVacant).length / valid.length * 100 : null;
+  }
+  if(col === 'cash') {
+    const cb = d.cashbalance;
+    return (cb && cb.cash !== null && cb.cash !== undefined) ? cb.cash : null;
+  }
+  if(col === 'income') {
+    const r = stmt && stmt.rows.find(r=>r.isTotalIncome);
+    return (r && mi >= 0) ? (r.values[mi] ?? null) : null;
+  }
+  if(col === 'expense') {
+    const r = stmt && stmt.rows.find(r=>r.isTotalExpense);
+    return (r && mi >= 0) ? Math.abs(r.values[mi] ?? 0) : null;
+  }
+  if(col === 'noi') {
+    const r = stmt && stmt.rows.find(r=>r.isNOI);
+    return (r && mi >= 0) ? (r.values[mi] ?? null) : null;
+  }
+  if(col === 'efcf') {
+    if(!stmt || mi < 0) return null;
+    const noiRow = stmt.rows.find(r=>r.isNOI);
+    if(!noiRow) return null;
+    const noi = noiRow.values[mi] || 0;
+    const dsRows  = getDSRows(stmt);
+    const amfRows = getAMFRows(stmt);
+    const p = properties.find(x=>x.id===propId);
+    const curDS  = dsRows.reduce((s,r)  => s + Math.abs(r.values[mi]||0), 0);
+    const curAMF = amfRows.reduce((s,r) => s + Math.abs(r.values[mi]||0), 0);
+    const stmtCapex = (p && p.hasLOC) ? 0 : stmt.rows
+      .filter(r => !r.isCategory && !r.isTotal && (r.label.toLowerCase().includes('capex') || r.label.toLowerCase().includes('capital exp') || r.label.toLowerCase().includes('capital imp')))
+      .reduce((s,r) => s + Math.abs(r.values[mi]||0), 0);
+    return noi - curDS - curAMF - stmtCapex;
+  }
+  if(col === 'trend') {
+    const r = stmt && stmt.rows.find(r=>r.isNOI);
+    if(!r) return null;
+    const months = r.values.filter(v=>v!==0).length || 1;
+    return r.values.reduce((a,b)=>a+b,0) / months;
+  }
+  if(col === 'expratio') {
+    if(!stmt || mi < 0) return null;
+    const incRow = stmt.rows.find(r=>r.isTotalIncome);
+    const expRow = stmt.rows.find(r=>r.isTotalExpense);
+    if(!incRow || !expRow || !incRow.values[mi]) return null;
+    return Math.abs(expRow.values[mi]) / Math.abs(incRow.values[mi]) * 100;
+  }
+  if(col === 'dscr') {
+    if(!stmt || mi < 0) return null;
+    const noiRow = stmt.rows.find(r=>r.isNOI);
+    if(!noiRow) return null;
+    const dsRows = getDSRows(stmt);
+    if(!dsRows.length) return null;
+    const curDS = dsRows.reduce((s,r)=>s+(r.values[mi]||0),0);
+    if(!curDS) return null;
+    return (noiRow.values[mi]||0) / curDS;
+  }
+  if(col === 'budget_var') {
+    const budgetNoi = getKeyMetric(propId, 'budget_noi');
+    if(!budgetNoi || !stmt || mi < 0) return null;
+    const noiRow = stmt.rows.find(r=>r.isNOI);
+    if(!noiRow) return null;
+    const budgetMonthly = budgetNoi / 12;
+    if(!budgetMonthly) return null;
+    return ((noiRow.values[mi]??0) - budgetMonthly) / Math.abs(budgetMonthly) * 100;
+  }
+  if(col === 'pf_var') {
+    const pfNoi = getKeyMetric(propId, 'proforma_noi');
+    if(!pfNoi || !stmt) return null;
+    const noiRow = stmt.rows.find(r=>r.isNOI);
+    if(!noiRow) return null;
+    const months = noiRow.values.filter(v=>v!==0).length || 1;
+    const annNoi = noiRow.values.reduce((a,b)=>a+b,0) / months;
+    const pfMonthly = pfNoi / 12;
+    if(!pfMonthly) return null;
+    return (annNoi - pfMonthly) / Math.abs(pfMonthly) * 100;
+  }
+  if(col === 'flags') {
+    return computeFlags(propId).flags.length;
+  }
+  return null;
+}
+
+function sortPortfolioBy(col) {
+  if(portfolioSort.col === col) {
+    portfolioSort.dir = -portfolioSort.dir;
+  } else {
+    portfolioSort.col = col;
+    portfolioSort.dir = 1; // default: descending for numbers (best first), asc for name/status
+  }
+  renderPortfolio();
+}
+
+function updatePortfolioSortHeaders() {
+  const SORT_COLS = ['name','status','occ','cash','income','expense','noi','efcf','trend','expratio','dscr','budget_var','pf_var','flags'];
+  SORT_COLS.forEach(col => {
+    const th = document.getElementById('psh-' + col);
+    if(!th) return;
+    const isActive = portfolioSort.col === col;
+    th.classList.toggle('psort-active', isActive);
+    const ind = th.querySelector('.psort-ind');
+    if(ind) ind.textContent = isActive ? (portfolioSort.dir === 1 ? ' ▲' : ' ▼') : '';
+  });
+}
+
 function filterPortfolio(val) {
   const tbody = document.getElementById('portfolio-tbody');
   if(!tbody) return;
@@ -10101,7 +10243,18 @@ function renderPortfolio() {
           ${isOpen && groupNoteCount ? `<span style="font-weight:400;margin-left:16px;text-transform:none;letter-spacing:0"><span class="badge badge-neutral">${groupNoteCount} note${groupNoteCount>1?'s':''}</span></span>` : ''}
         </td>
       </tr>`;
-      props.forEach(p => { html += portfolioPropRow(p, stateKey, isOpen); });
+      const sortedProps = portfolioSort.col
+        ? [...props].sort((a, b) => {
+            const va = getPortfolioSortValue(a.id, portfolioSort.col);
+            const vb = getPortfolioSortValue(b.id, portfolioSort.col);
+            if(va === null && vb === null) return 0;
+            if(va === null) return 1;  // nulls always to bottom
+            if(vb === null) return -1;
+            if(typeof va === 'string') return portfolioSort.dir * va.localeCompare(vb);
+            return portfolioSort.dir * (va - vb);
+          })
+        : props;
+      sortedProps.forEach(p => { html += portfolioPropRow(p, stateKey, isOpen); });
     });
     return html;
   }
@@ -10130,6 +10283,7 @@ function renderPortfolio() {
   const afp = properties.filter(p=>p.system==='appfolio').length;
   document.getElementById('portfolio-sub').textContent=`${properties.length} properties · ${bld} Buildium · ${afp} Appfolio · ${loaded} with data loaded`;
   renderPortfolioFlags(); // updates tile counts only (screen render happens on showView)
+  updatePortfolioSortHeaders();
 }
 
 // ─── EXPORT NOTES ─────────────────────────────────────────────────────────────
