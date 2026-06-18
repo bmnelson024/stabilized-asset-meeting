@@ -2534,10 +2534,13 @@ function normalizePrincipalSign(rows) {
     // "Loan - Mortgage" in RPME (BG Flats, Champion Villas, Doral) = principal payment
     // reported as a negative liability reduction — flip to positive for debt service math
     const isLoanMortgage = lc.includes('loan') && lc.includes('mortgage') && !lc.includes('interest');
+    // "Property Loan" in Bender/AppFolio statements = debt service (principal+interest combined)
+    // reported as a negative outflow — flip to positive for debt service math
+    const isPropertyLoan = lc.includes('property loan');
     // Capital Expenditures also lives in "Other Items" as a negative outflow
     const isCapexLine = lc === 'capital expenditures' || lc === 'capital expenditure'
                      || lc.includes('capex');
-    if((isPrincipalOnly || isMortgagePayable || isLoanMortgage || isCapexLine) && r.total < 0) {
+    if((isPrincipalOnly || isMortgagePayable || isLoanMortgage || isPropertyLoan || isCapexLine) && r.total < 0) {
       r.values = r.values.map(v => -v);
       r.total  = -r.total;
       r._signFlipped = true;
@@ -2763,16 +2766,20 @@ function parseCapexReport(ws) {
   }
 
   // ── Find header row dynamically ───────────────────────────────────────────
-  // AppFolio GL exports can have different column orders depending on the report.
-  // Look for a row containing "GL Account" and "Date" as header labels.
+  // AppFolio GL exports come in two flavours:
+  //   A) "GL Account" style — columns include "GL Account" and "Date"
+  //   B) "Property" style  — columns are Property | Date | Payee/Payer | Type | … | Unit | Description
+  //                          GL account name appears as a section header in col A ("NNNN - Name")
   let hdrIdx = -1, unitCol = -1, glCol = -1, dateCol = -1;
   let debitCol = -1, creditCol = -1, payeeCol = -1, descCol = -1;
   for(let i = 0; i < Math.min(20, data.length); i++) {
     const row = data[i];
     if(!row) continue;
     const cells = row.map(c => (c !== null && c !== undefined) ? c.toString().trim().toLowerCase() : '');
-    const glIdx   = cells.findIndex(c => c === 'gl account');
-    const dateIdx = cells.findIndex(c => c === 'date');
+    const glIdx      = cells.findIndex(c => c === 'gl account');
+    const dateIdx    = cells.findIndex(c => c === 'date');
+    const propIdx    = cells.findIndex(c => c === 'property');
+    // Format A: explicit GL Account column
     if(glIdx >= 0 && dateIdx >= 0) {
       hdrIdx    = i;
       unitCol   = cells.findIndex(c => c === 'unit');
@@ -2782,6 +2789,18 @@ function parseCapexReport(ws) {
       creditCol = cells.findIndex(c => c === 'credit');
       payeeCol  = cells.findIndex(c => c.includes('payee') || c.includes('payer'));
       descCol   = cells.findIndex(c => c === 'description');
+      break;
+    }
+    // Format B: Property + Date header (GL name comes from section headers in col A)
+    if(propIdx >= 0 && dateIdx >= 0) {
+      hdrIdx    = i;
+      glCol     = -1; // GL account comes from section header, not a per-row column
+      dateCol   = dateIdx;
+      debitCol  = cells.findIndex(c => c === 'debit');
+      creditCol = cells.findIndex(c => c === 'credit');
+      payeeCol  = cells.findIndex(c => c.includes('payee') || c.includes('payer'));
+      descCol   = cells.findIndex(c => c === 'description');
+      unitCol   = cells.findIndex(c => c === 'unit');
       break;
     }
   }
@@ -3519,7 +3538,7 @@ const PF_LINE_ITEMS = [
     group: 'mortgage',
     label: 'Monthly Mortgage',
     pfKeys:   ['mortgage','loan payment','debt service','monthly mortgage'],
-    stmtKeys: ['mortgage','loan payment','debt service','interest exp'],
+    stmtKeys: ['mortgage','loan payment','debt service','interest exp','property loan'],
     isIncome: false,
     isDebtService: true,
   },
@@ -3567,7 +3586,7 @@ const MATCH_KEYWORDS = [
   {keys:['hoa','homeowners association','association dues'], group:'hoa'},
   {keys:['rental income','total rental income','rent income','gross rent'], group:'rental_income'},
   {keys:['utility reimbursement','utility reimb','rubs'], group:'utility_reimb'},
-  {keys:['mortgage','loan payment','debt service'], group:'mortgage'},
+  {keys:['mortgage','loan payment','debt service','property loan'], group:'mortgage'},
   {keys:['vacancy','credit loss'],        group:'vacancy'},
   {keys:['pet'],                          group:'pet'},
   {keys:['laundry'],                      group:'laundry'},
