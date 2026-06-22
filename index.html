@@ -2767,7 +2767,7 @@ function parseCapexReport(ws) {
   if(!data || data.length < 2) throw new Error('Capex file appears empty.');
 
   // ── Extract metadata ──────────────────────────────────────────────────────
-  let reportTitle = '', dateRange = '', propertyName = '';
+  let reportTitle = '', dateRange = '', propertyName = '', lastEditedRange = '';
   for(let i = 0; i < Math.min(12, data.length); i++) {
     const row = data[i];
     if(!row) continue;
@@ -2775,6 +2775,7 @@ function parseCapexReport(ws) {
     if(i === 0 && cell) reportTitle = cell;
     if(cell.toLowerCase().startsWith('date range:')) dateRange = cell.replace(/^date range:\s*/i,'').trim();
     if(cell.toLowerCase().startsWith('properties:')) propertyName = cell.replace(/^properties:\s*/i,'').trim();
+    if(cell.toLowerCase().startsWith('last edited range:')) lastEditedRange = cell;
   }
 
   // ── Find header row dynamically ───────────────────────────────────────────
@@ -2783,7 +2784,7 @@ function parseCapexReport(ws) {
   //   B) "Property" style  — columns are Property | Date | Payee/Payer | Type | … | Unit | Description
   //                          GL account name appears as a section header in col A ("NNNN - Name")
   let hdrIdx = -1, unitCol = -1, glCol = -1, dateCol = -1;
-  let debitCol = -1, creditCol = -1, payeeCol = -1, descCol = -1;
+  let debitCol = -1, creditCol = -1, payeeCol = -1, descCol = -1, balanceCol = -1;
   for(let i = 0; i < Math.min(20, data.length); i++) {
     const row = data[i];
     if(!row) continue;
@@ -2791,28 +2792,31 @@ function parseCapexReport(ws) {
     const glIdx      = cells.findIndex(c => c === 'gl account');
     const dateIdx    = cells.findIndex(c => c === 'date');
     const propIdx    = cells.findIndex(c => c === 'property');
+    const balIdx     = cells.findIndex(c => c === 'balance');
     // Format A: explicit GL Account column
     if(glIdx >= 0 && dateIdx >= 0) {
-      hdrIdx    = i;
-      unitCol   = cells.findIndex(c => c === 'unit');
-      glCol     = glIdx;
-      dateCol   = dateIdx;
-      debitCol  = cells.findIndex(c => c === 'debit');
-      creditCol = cells.findIndex(c => c === 'credit');
-      payeeCol  = cells.findIndex(c => c.includes('payee') || c.includes('payer'));
-      descCol   = cells.findIndex(c => c === 'description');
+      hdrIdx      = i;
+      unitCol     = cells.findIndex(c => c === 'unit');
+      glCol       = glIdx;
+      dateCol     = dateIdx;
+      debitCol    = cells.findIndex(c => c === 'debit');
+      creditCol   = cells.findIndex(c => c === 'credit');
+      payeeCol    = cells.findIndex(c => c.includes('payee') || c.includes('payer'));
+      descCol     = cells.findIndex(c => c === 'description');
+      balanceCol  = balIdx;
       break;
     }
-    // Format B: Property + Date header (GL name comes from section headers in col A)
+    // Format B/C: Property + Date header (GL name comes from section headers in col A)
     if(propIdx >= 0 && dateIdx >= 0) {
-      hdrIdx    = i;
-      glCol     = -1; // GL account comes from section header, not a per-row column
-      dateCol   = dateIdx;
-      debitCol  = cells.findIndex(c => c === 'debit');
-      creditCol = cells.findIndex(c => c === 'credit');
-      payeeCol  = cells.findIndex(c => c.includes('payee') || c.includes('payer'));
-      descCol   = cells.findIndex(c => c === 'description');
-      unitCol   = cells.findIndex(c => c === 'unit');
+      hdrIdx      = i;
+      glCol       = -1; // GL account comes from section header, not a per-row column
+      dateCol     = dateIdx;
+      debitCol    = cells.findIndex(c => c === 'debit');
+      creditCol   = cells.findIndex(c => c === 'credit');
+      payeeCol    = cells.findIndex(c => c.includes('payee') || c.includes('payer'));
+      descCol     = cells.findIndex(c => c === 'description');
+      unitCol     = cells.findIndex(c => c === 'unit');
+      balanceCol  = balIdx;
       break;
     }
   }
@@ -2820,13 +2824,15 @@ function parseCapexReport(ws) {
   // ── AppFolio General Ledger detection ─────────────────────────────────────
   // Section headers: "NNNN - Account Name" in col A, no value in the GL Account column.
   // Transaction rows: col A = property name, GL Account col = current account, Date col = date.
-  const GL_ACCT_RE = /^(\d{4,5})\s*[-–]\s*(.+)/;
+  const GL_ACCT_RE = /^(\d{4,5}(?:\.\d+)?)\s*[-–]\s*(.+)/;
   const SKIP_RE    = /^(starting balance|net change|ending balance)/i;
   // Skip bank/cash accounts entirely — they are ledger pass-throughs, not spend
   const EXCLUDE_RE = /operating account|bank account|cash account/i;
 
   const transactions = [];
   let currentAccount = null, currentAccountNum = null, skipSection = false;
+  // Format C: balance-only export — collect starting balances per GL account
+  const balanceByAccount = {};
 
   const startRow = hdrIdx >= 0 ? hdrIdx + 1 : 0;
   for(let i = startRow; i < data.length; i++) {
@@ -2834,6 +2840,13 @@ function parseCapexReport(ws) {
     if(!row) continue;
 
     const colA = (row[0] !== null && row[0] !== undefined) ? row[0].toString().trim() : '';
+
+    // Format C: capture Starting Balance before the generic SKIP_RE check
+    if(/^starting balance$/i.test(colA) && currentAccount && !skipSection) {
+      const bCol = balanceCol >= 0 ? balanceCol : 8;
+      const bal  = parseFloat(row[bCol]) || 0;
+      if(bal !== 0) balanceByAccount[currentAccount] = { bal, accountNum: currentAccountNum };
+    }
 
     // Skip totals / meta rows
     if(SKIP_RE.test(colA)) continue;
@@ -2894,6 +2907,39 @@ function parseCapexReport(ws) {
 
     transactions.push({ date: txDate, account: currentAccount, accountNum: currentAccountNum,
       categoryType, payee, description, unit, amount });
+  }
+
+  // ── Format C: balance-only GL export (no individual transaction rows) ────
+  // Detected when the report has GL account sections but zero dateable transactions.
+  // The Starting Balance per account = T12 cumulative spend.
+  // Synthesize one transaction per account dated to the end of the T12 period.
+  if(transactions.length === 0 && Object.keys(balanceByAccount).length > 0) {
+    // Parse T12 end date from "Last Edited Range: MM/DD/YYYY to MM/DD/YYYY (Trailing 12 Months)"
+    const editMatch = lastEditedRange.match(/to\s+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+    const t12EndDate = editMatch ? parseRentRollDate(editMatch[1]) : null;
+    const synDate = t12EndDate || new Date().toISOString().split('T')[0];
+    Object.entries(balanceByAccount).forEach(([account, { bal, accountNum }]) => {
+      const acctName = account.toLowerCase();
+      const acctNum  = parseInt(accountNum, 10);
+      let categoryType;
+      if(acctName.includes('turnover') || acctName.includes('turn over') ||
+         acctName.includes('turn-over') || acctName.includes('make ready') ||
+         acctName.includes('unit turn')) {
+        categoryType = 'turnover';
+      } else if(acctName.includes('capital expenditure') || acctName.includes('capital expense') ||
+                acctName.includes('capital improvement') || acctName.includes('capex') ||
+                acctName.includes('renovation') || acctName.includes('improvement') ||
+                acctName.includes('remodel') || acctName.includes('replacement reserve')) {
+        categoryType = 'capex';
+      } else {
+        categoryType = acctNum >= 7000 ? 'capex' : acctNum >= 5000 ? 'turnover' : 'other';
+      }
+      transactions.push({
+        date: synDate, account, accountNum,
+        categoryType, payee: '', description: '(T12 balance)', unit: '', amount: bal,
+        _balanceOnly: true,
+      });
+    });
   }
 
   if(transactions.length === 0) {
@@ -3564,6 +3610,26 @@ const PF_LINE_ITEMS = [
   },
 ];
 
+// ─── PER-MANAGEMENT-COMPANY STATEMENT KEYWORD OVERRIDES ───────────────────────
+// Some property managers label things differently enough that a group's statement
+// keywords should differ for their statements only. Keyed by management company
+// (matches PM_MAP / p.pm values). For a group listed here, the keyword list below
+// REPLACES that group's default stmtKeys when classifying that PM's statements.
+//
+// Kouri: "Admin & Marketing" should capture marketing/advertising PLUS Technology
+// Fees and Vendor Markups. Management Fees are intentionally NOT included — they are
+// matched earlier by the Property Management Fees group and stay on their own line.
+const MGMT_STMT_KEY_OVERRIDES = {
+  Kouri: {
+    admin: ['admin', 'marketing', 'advertising', 'technology fee', 'vendor markup'],
+  },
+};
+
+// Resolve a property's management company the same way the portfolio view does.
+function getPropMgmt(prop) {
+  return (prop && (prop.pm || PM_MAP[prop.name])) || 'Other';
+}
+
 // ─── BUILDIUM DEFAULT MAPPING ─────────────────────────────────────────────────
 // Hard-coded from 321 Townhomes — applies to all Buildium properties automatically.
 // Values are arrays of statement row labels that get summed for each canonical item.
@@ -3606,10 +3672,14 @@ const MATCH_KEYWORDS = [
   {keys:['late fee'],                     group:'late_fee'},
 ];
 
-function getStmtMatchGroup(label) {
+function getStmtMatchGroup(label, mgmt) {
   const lc = label.toLowerCase();
+  // Per-management-company keyword overrides (e.g. Kouri's Admin & Marketing). When an
+  // override exists for this PM + group, its keyword list replaces the group's default.
+  const overrides = (mgmt && MGMT_STMT_KEY_OVERRIDES[mgmt]) || null;
   for(const item of PF_LINE_ITEMS) {
-    if(item.stmtKeys.some(k => lc.includes(k))) {
+    const keys = (overrides && overrides[item.group]) || item.stmtKeys;
+    if(keys.some(k => lc.includes(k))) {
       // If the entry declares exclusion terms, skip rows whose label matches any of them.
       // e.g. stmtExclude:['income','claim'] prevents "Insurance Claim Income" from being
       // classified into the expense-side insurance group.
@@ -3634,7 +3704,7 @@ function maybeAutoMatch(propId, prop) {
   // For AppFolio: only run if no mapping exists yet, to preserve manual user customizations.
   if(isBuildium || !pd.pfMapping) {
     pd.pfMapping = autoMatchProformaToStatement(
-      (pd.proforma || {rows:[]}).rows, pd.statement.rows, system
+      (pd.proforma || {rows:[]}).rows, pd.statement.rows, system, getPropMgmt(prop)
     );
     window._mappingCollapsed = false;
   }
@@ -3662,7 +3732,7 @@ async function rerunAutoMatch(propId) {
   renderFlagsTab();
 }
 
-function autoMatchProformaToStatement(pfRows, stmtRows, system) {
+function autoMatchProformaToStatement(pfRows, stmtRows, system, mgmt) {
   // For Buildium properties use the hard-coded default mapping
   if(system === 'buildium') {
     // Verify each default label actually exists in this statement; drop any that don't
@@ -3726,13 +3796,25 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system) {
   // This ensures e.g. "Total REPAIRS/SERVICES" (primary key 'repair' + subtotal = 3pts) beats
   // "Total COMMON AREA MAINTENANCE" (secondary key 'maintenance' + subtotal = 2pts) for repairs.
   const matches = {};
+  const mgmtOverrides = (mgmt && MGMT_STMT_KEY_OVERRIDES[mgmt]) || {};
   PF_LINE_ITEMS.filter(item => !item.isComputed).forEach(item => {
+    // Groups with a per-management-company override (e.g. Kouri 'admin') are built by
+    // SUMMING all matching leaf rows rather than picking one "best" row — there is no
+    // single subtotal that covers Advertising + Technology Fees + Vendor Markups, so we
+    // collect each leaf (excluding subtotals/totals, which would double-count).
+    if(mgmtOverrides[item.group]) {
+      const leaves = stmtRows.filter(r =>
+        !r.isCategory && !r.isSubtotal && !r.isTotal &&
+        getStmtMatchGroup(r.label, mgmt) === item.group);
+      if(leaves.length) matches[item.group] = leaves.map(r => r.label);
+      return;
+    }
     let best = null;
     let bestScore = -1;
     const primaryKey = item.stmtKeys[0] || '';
     stmtRows.forEach(stmtRow => {
       if(stmtRow.isCategory) return;
-      const stmtGroup = getStmtMatchGroup(stmtRow.label);
+      const stmtGroup = getStmtMatchGroup(stmtRow.label, mgmt);
       if(stmtGroup === item.group) {
         const lc = stmtRow.label.toLowerCase();
         const isPrimary = primaryKey && lc.includes(primaryKey);
@@ -4760,7 +4842,7 @@ function renderMappingEditor(propId) {
 
   // Auto-match if no mapping saved yet
   if(!d.pfMapping) {
-    propData[propId].pfMapping = autoMatchProformaToStatement(pf.rows, stmt.rows, p?.system);
+    propData[propId].pfMapping = autoMatchProformaToStatement(pf.rows, stmt.rows, p?.system, getPropMgmt(p));
     save(propId); // fire-and-forget
   }
   const mapping = d.pfMapping || {};
@@ -4905,7 +4987,7 @@ function resetPfMapping(propId) {
   if(!d.proforma || !d.statement) return;
   // Re-run auto-match and rebuild group-keyed mapping
   const _prop = properties.find(x=>x.id===propId);
-  const rawMatches = autoMatchProformaToStatement(d.proforma.rows, d.statement.rows, _prop?.system);
+  const rawMatches = autoMatchProformaToStatement(d.proforma.rows, d.statement.rows, _prop?.system, getPropMgmt(_prop));
   propData[propId].pfMapping = rawMatches;
   save(propId); // fire-and-forget
   renderMappingEditor(propId);
@@ -5239,7 +5321,7 @@ function renderBenchmarkTab() {
     bg.rows.forEach(r => {
       if(r.isCategory || r.isSubtotal || r.isTotal || r.isNOI || r.isNetIncome) return;
       if(r.isDebtService || r.isAssetMgmt || r.isCapex) return; // handled separately
-      const grp = getStmtMatchGroup(r.label);
+      const grp = getStmtMatchGroup(r.label, getPropMgmt(p));
       if(grp) bgGroupTotals[grp] = (bgGroupTotals[grp] || 0) + (r.total || 0);
     });
   }
@@ -7383,7 +7465,7 @@ function computeFlags(propId) {
     bg.rows.forEach(r => {
       if(r.isCategory || r.isSubtotal || r.isTotal || r.isNOI || r.isNetIncome) return;
       if(r.isDebtService || r.isAssetMgmt || r.isCapex) return;
-      const grp = getStmtMatchGroup(r.label);
+      const grp = getStmtMatchGroup(r.label, getPropMgmt(p));
       if(grp) bgGroupTotals[grp] = (bgGroupTotals[grp] || 0) + (r.total || 0);
     });
   }
