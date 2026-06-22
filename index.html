@@ -3623,6 +3623,15 @@ const MGMT_STMT_KEY_OVERRIDES = {
   Kouri: {
     admin: ['admin', 'marketing', 'advertising', 'technology fee', 'vendor markup'],
   },
+  RPME: {
+    // RPME "Admin & Marketing" = the Marketing line + Legal & Professional + Office Supplies.
+    // 'legal & professional' uses the ampersand so the below-NOI corporate line
+    // "Partnership- Legal and Professional" (spelled with 'and') is NOT pulled in.
+    // RPME files everything else (utilities, insurance) under an ADMINISTRATIVE EXPENSES
+    // section; these keys deliberately exclude that subtotal. Management Fees stay on their
+    // own Property Management Fees line.
+    admin: ['marketing', 'legal & professional', 'office supplies'],
+  },
 };
 
 // Resolve a property's management company the same way the portfolio view does.
@@ -3688,6 +3697,10 @@ function getStmtMatchGroup(label, mgmt) {
     }
   }
   for(const {keys, group} of MATCH_KEYWORDS) {
+    // A group with an active management override is defined SOLELY by its override keys
+    // above — don't let the legacy fallback re-introduce default matches for it.
+    // (e.g. RPME's "Total ADMINISTRATIVE EXPENSES" must not fall back to admin via "admin".)
+    if(overrides && overrides[group]) continue;
     if(keys.some(k=>lc.includes(k))) return group;
   }
   return null;
