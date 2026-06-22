@@ -4997,10 +4997,13 @@ function savePfMappingByGroup(propId, group, stmtLabel) {
 function resetPfMapping(propId) {
   if(!propData[propId]) return;
   const d = propData[propId];
-  if(!d.proforma || !d.statement) return;
+  // Only the statement is required — the mapping is built from statement rows; the proforma
+  // is not used by the matcher. (Previously this also required a proforma, which made the
+  // "Re-match mapping" button a silent no-op for statement-only properties.)
+  if(!d.statement) return;
   // Re-run auto-match and rebuild group-keyed mapping
   const _prop = properties.find(x=>x.id===propId);
-  const rawMatches = autoMatchProformaToStatement(d.proforma.rows, d.statement.rows, _prop?.system, getPropMgmt(_prop));
+  const rawMatches = autoMatchProformaToStatement((d.proforma || {rows:[]}).rows, d.statement.rows, _prop?.system, getPropMgmt(_prop));
   propData[propId].pfMapping = rawMatches;
   save(propId); // fire-and-forget
   renderMappingEditor(propId);
