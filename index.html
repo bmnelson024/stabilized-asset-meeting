@@ -5570,7 +5570,7 @@ function renderBenchmarkTab() {
     // For statement subtotals, prefer bgGroupTotals (keyword aggregate) over the single leaf
     // that happens to share the subtotal's cleaned label — avoids undercount on flat budgets.
     // For leaf rows with no bgRow match, fall back to bgGroupTotals as before.
-    const bgRowGroup = getStmtMatchGroup(r.label);
+    const bgRowGroup = getStmtMatchGroup(r.label, getPropMgmt(p));
     const bgAnnual = (r.isSubtotal && bgRowGroup && bgGroupTotals[bgRowGroup])
                    ? bgGroupTotals[bgRowGroup]
                    : bgRow ? bgRow.total
@@ -5972,7 +5972,7 @@ function renderBenchmarkTab() {
           // it means the budget leaf row was rolled up into a parent subtotal that spans
           // multiple line items (e.g. "Utilities Reimbursement" promoted to
           // "Total Rent - Residential"). Fall through to bgGroupTotals instead.
-          if(bgRow.isSubtotal && getStmtMatchGroup(bgRow.label) !== item.group) return;
+          if(bgRow.isSubtotal && getStmtMatchGroup(bgRow.label, getPropMgmt(p)) !== item.group) return;
           bgSum += bgRow.total; anyFound = true;
         }
       });
@@ -7503,7 +7503,7 @@ function computeFlags(propId) {
           // Same guard as pfLineItemRow: if bgMap returned a promoted subtotal that belongs to
           // a different keyword group (e.g. "Utilities Reimbursement" → "Total Rent - Residential"),
           // skip it — the bgGroupTotals path is more accurate for that item.
-          if(bgRow.isSubtotal && getStmtMatchGroup(bgRow.label) !== item.group) return;
+          if(bgRow.isSubtotal && getStmtMatchGroup(bgRow.label, getPropMgmt(p)) !== item.group) return;
           bgSum += bgRow.total; anyFound = true;
         }
       });
