@@ -6395,7 +6395,6 @@ function renderRentRollTab() {
     const rrMonthlyRent = rr && rr.units ? rr.units.reduce((s,u) => s + (u.actualRent||0), 0) : 0;
     const arPct    = rrMonthlyRent > 0 ? (dq.totalAR / rrMonthlyRent * 100) : null;
     const arColor  = arPct === null ? 'var(--text)' : arPct > 5 ? 'var(--red)' : arPct > 3 ? '#ffa040' : 'var(--green)';
-    const arPctLabel = arPct !== null ? ` (${arPct.toFixed(1)}% of rent)` : '';
     // 30+ aging: red if majority of AR is old, yellow if significant
     const a30Color = dq.aging30Plus > 2000 ? 'var(--red)' : dq.aging30Plus > 500 ? '#ffa040' : 'var(--green)';
 
@@ -6433,8 +6432,9 @@ function renderRentRollTab() {
 
     html += `<div style="margin-top:16px">
       <div class="bench-title" style="margin-bottom:12px">Delinquency${dq.asOfDate ? ` <span style="font-size:12px;font-weight:400;color:var(--text3)">as of ${dq.asOfDate}</span>` : ''}</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px">
-        <div class="kpi-card"><div class="kpi-label">Past due</div><div class="kpi-val" style="color:${arColor}">${fmtD(dq.totalAR)}</div>${arPctLabel ? `<div style="font-size:11px;color:${arColor};margin-top:3px;opacity:0.8">${arPctLabel.trim()}</div>` : ''}</div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:12px">
+        <div class="kpi-card"><div class="kpi-label">Past due</div><div class="kpi-val" style="color:${arColor}">${fmtD(dq.totalAR)}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Delinquency ratio</div><div class="kpi-val" style="color:${arColor}">${arPct !== null ? arPct.toFixed(1)+'%' : '—'}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">${arPct !== null ? 'of monthly rent' : 'rent roll needed'}</div></div>
         <div class="kpi-card"><div class="kpi-label">0–30 days</div><div class="kpi-val">${fmtD(dq.aging0_30)}</div></div>
         <div class="kpi-card"><div class="kpi-label">30+ days</div><div class="kpi-val" style="color:${a30Color}">${fmtD(dq.aging30Plus)}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">${dq.totalAR > 0 ? (dq.aging30Plus/dq.totalAR*100).toFixed(0)+'% of total' : ''}</div></div>
         <div class="kpi-card"><div class="kpi-label">Delinquent units</div><div class="kpi-val">${dq.units.length}</div></div>
@@ -10272,13 +10272,17 @@ function portfolioPropRow(p, pm, isOpen) {
       const noiStr = noi !== null ? fmt(noi) : '—';
       const dqD = (propData[p.id] || {}).delinquency;
       if(!dqD || !dqD.totalAR) return noiStr;
-      // Color by AR as % of monthly income: >5% red, >3% yellow, ≤3% green
-      const arBase = currentMonthIncome ? Math.abs(currentMonthIncome) : 0;
-      const arPct  = arBase > 0 ? (dqD.totalAR / arBase * 100) : null;
+      // Delinquency ratio = past-due AR ÷ total monthly rent (rent roll), matching the
+      // detail view. Shown on-screen (not just tooltip). No % when the rent roll isn't
+      // loaded. Color: >5% red, >3% yellow, ≤3% green.
+      const rrP = (propData[p.id] || {}).rentroll;
+      const rentBase = rrP && rrP.units ? rrP.units.reduce((s,u) => s + (u.actualRent||0), 0) : 0;
+      const arPct  = rentBase > 0 ? (dqD.totalAR / rentBase * 100) : null;
       const arColor = arPct === null ? 'var(--text3)' : arPct > 5 ? 'var(--red)' : arPct > 3 ? '#ffa040' : 'var(--green)';
-      const arPctStr = arPct !== null ? ` · ${arPct.toFixed(1)}% of income` : '';
       const arStr = '$' + Math.round(dqD.totalAR).toLocaleString();
-      return `${noiStr}<br><span style="font-size:10px;color:${arColor}" title="AR ${arStr}${arPctStr} · as of ${dqD.asOfDate||'?'}">AR ${arStr}</span>`;
+      const pctStr = arPct !== null ? ` (${arPct.toFixed(1)}%)` : '';
+      const arTitle = arPct !== null ? `AR ${arStr} · ${arPct.toFixed(1)}% of monthly rent · as of ${dqD.asOfDate||'?'}` : `AR ${arStr} · as of ${dqD.asOfDate||'?'}`;
+      return `${noiStr}<br><span style="font-size:10px;color:${arColor}" title="${arTitle}">AR ${arStr}${pctStr}</span>`;
     })()}</td>
     <td>${efcfHTML}</td>
     <td style="padding:4px 10px">${sparklineHTML}</td>
