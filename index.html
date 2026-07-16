@@ -4459,12 +4459,18 @@ function parseAppfolioBudget(ws) {
   // Buildium budget but uses different header text, so we parse it directly.
   const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
 
-  let headerRow = -1;
+  // Header row: the row containing an "Account Name" (or "Account") cell. Some exports
+  // (e.g. RPME "Budget Detail") put an "Account Number" column first, so the label lives
+  // in a later column — capture its index as labelCol rather than assuming column 0.
+  let headerRow = -1, labelCol = 0;
   for(let i = 0; i < 15; i++) {
     const row = data[i];
     if(!row) continue;
-    const first = row[0] && row[0].toString().trim();
-    if(first === 'Account Name' || first === 'Account') { headerRow = i; break; }
+    const idx = row.findIndex(c => {
+      const s = c && c.toString().trim();
+      return s === 'Account Name' || s === 'Account';
+    });
+    if(idx >= 0) { headerRow = i; labelCol = idx; break; }
   }
 
   if(headerRow >= 0) {
@@ -4505,14 +4511,19 @@ function parseAppfolioBudget(ws) {
 
     for(let i = headerRow + 1; i < data.length; i++) {
       const row = data[i];
-      if(!row || !row[0]) continue;
-      const raw = row[0].toString().trim();
-      if(!raw) continue;
+      if(!row) continue;
+      const rawCell = row[labelCol];
+      if(rawCell === null || rawCell === undefined || rawCell.toString().trim() === '') continue;
+      const raw = rawCell.toString().trim();
       const lc = raw.toLowerCase();
 
-      // Section headers (no numeric data) — track state and skip
-      const isCategory = !row.slice(1).some(v => v !== null && v !== '' && v !== 0
-        && !(typeof v === 'string' && v.startsWith('=')));
+      // Section headers have no numeric values in any month column. Basing this on the month
+      // columns (not row.slice(1)) is required for exports with an Account Number column,
+      // where the text account name in another column would otherwise look like data.
+      const isCategory = !monthCols.some(ci => {
+        const v = row[ci];
+        return v !== null && v !== '' && v !== 0 && !(typeof v === 'string' && v.startsWith('='));
+      });
       if(isCategory) {
         // Liability section: enter tracking mode but don't stop — we still want
         // principal payment rows (e.g. "Mortgage Payable") flagged as isDebtService
