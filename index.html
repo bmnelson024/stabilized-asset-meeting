@@ -346,6 +346,7 @@
           <span id="detail-status-badge" class="badge badge-neutral">No data</span>
           <button id="detail-review-btn" class="btn" style="font-size:12px;display:none" onclick="handleReviewBtnClick()">Mark reviewed</button>
           <button id="detail-stab-toggle" class="btn" onclick="toggleStabilized()" style="font-size:12px">Stabilized</button>
+          <button class="btn" onclick="exportPropertyExcel()" style="font-size:12px" title="Export every tab as a sheet in one Excel workbook">⬇ Export Excel</button>
           <button class="btn" onclick="deleteProperty()" style="color:var(--red);border-color:var(--red-bg)">Remove</button>
         </div>
       </div>
@@ -10884,6 +10885,223 @@ function downloadAllStatements() {
 }
 
 // ─── FORMATTING ───────────────────────────────────────────────────────────────
+// ─── EXPORT PROPERTY TO EXCEL (all tabs → one workbook) ──────────────────────
+const XLEXPORT_TABS = [
+  ['benchmarks', 'Benchmarks'],
+  ['statement',  'Income Cash Flow'],
+  ['proforma',   'Proforma'],
+  ['rentroll',   'Rent Roll'],
+  ['rentprog',   'Rent Progression'],
+  ['cashreview', 'Cash Review'],
+  ['capex',      'Capex'],
+  ['propval',    'Property Valuation'],
+  ['flags',      'Flags'],
+];
+
+function xlSanitizeSheetName(name) {
+  return name.replace(/[\\\/\?\*\[\]:]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 31) || 'Sheet';
+}
+
+// Convert display strings like "$1,234", "($5,678)", "+$200", "12.3%", "1,234"
+// into real numbers with Excel number formats. Returns null if not numeric-looking.
+function xlCoerceCell(s) {
+  if(typeof s !== 'string') return null;
+  let t = s.trim();
+  if(!t || t === '—' || t === '–') return null;
+  let sign = 1;
+  if(/^\(.*\)$/.test(t)) { sign = -1; t = t.slice(1, -1).trim(); }
+  if(t[0] === '+' ) { t = t.slice(1).trim(); }
+  else if(t[0] === '-' || t[0] === '−') { sign *= -1; t = t.slice(1).trim(); }
+  let isCur = false, isPct = false;
+  if(t[0] === '$') { isCur = true; t = t.slice(1).trim(); }
+  if(t.endsWith('%')) { isPct = true; t = t.slice(0, -1).trim(); }
+  if(!/^\d[\d,]*(\.\d+)?$/.test(t)) return null;
+  const hadComma = t.includes(',');
+  const dec = (t.split('.')[1] || '').length;
+  const n = parseFloat(t.replace(/,/g, ''));
+  if(isNaN(n)) return null;
+  if(isPct) return { v: sign * n / 100, z: dec > 0 ? '0.' + '0'.repeat(Math.min(dec, 3)) + '%' : '0%' };
+  if(isCur) return { v: sign * n, z: dec > 0 ? '"$"#,##0.00;("$"#,##0.00)' : '"$"#,##0;("$"#,##0)' };
+  return { v: sign * n, z: hadComma ? (dec > 0 ? '#,##0.00' : '#,##0') : undefined };
+}
+
+// Coerce numeric-looking text cells + set column widths on a finished sheet.
+function xlFinishSheet(ws) {
+  if(!ws || !ws['!ref']) return;
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  const colW = [];
+  for(let R = range.s.r; R <= range.e.r; R++) {
+    for(let C = range.s.c; C <= range.e.c; C++) {
+      const addr = XLSX.utils.encode_cell({ r: R, c: C });
+      const cell = ws[addr];
+      if(!cell || cell.v == null) continue;
+      if(cell.t === 's') {
+        cell.v = String(cell.v).replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
+        const co = xlCoerceCell(cell.v);
+        if(co) { cell.t = 'n'; cell.v = co.v; if(co.z) cell.z = co.z; delete cell.w; }
+      }
+      const len = cell.t === 'n' ? String(Math.round(cell.v)).length + 4 : String(cell.v).length;
+      colW[C] = Math.max(colW[C] || 9, Math.min(44, len + 2));
+    }
+  }
+  ws['!cols'] = colW.map(w => ({ wch: w || 10 }));
+}
+
+// Build a worksheet from a rendered tab container: KPI cards become label/value
+// rows, headings become section rows, tables are appended in document order.
+function xlSheetFromContainer(container) {
+  if(!container) return null;
+  // Sync live input/select/textarea state into the markup so cloning keeps it
+  container.querySelectorAll('input').forEach(i => { try { i.setAttribute('value', i.type === 'checkbox' ? (i.checked ? 'Yes' : 'No') : (i.value || '')); } catch(e) {} });
+  container.querySelectorAll('select').forEach(s => { Array.from(s.options).forEach(o => { if(o.selected) o.setAttribute('selected', ''); else o.removeAttribute('selected'); }); });
+  container.querySelectorAll('textarea').forEach(t => { t.textContent = t.value || ''; });
+
+  const clone = container.cloneNode(true);
+  clone.querySelectorAll('button, svg, .note-delete, .upload-notice, [data-noexport]').forEach(el => el.remove());
+  // Drop elements hidden via inline style (collapsed sections, hidden warnings)
+  clone.querySelectorAll('[style*="display:none"], [style*="display: none"]').forEach(el => el.remove());
+  clone.querySelectorAll('input').forEach(el => el.replaceWith(document.createTextNode(el.getAttribute('value') || '')));
+  clone.querySelectorAll('select').forEach(el => {
+    const opt = el.querySelector('option[selected]') || el.querySelector('option');
+    el.replaceWith(document.createTextNode(opt ? opt.textContent.trim() : ''));
+  });
+  clone.querySelectorAll('textarea').forEach(el => el.replaceWith(document.createTextNode(el.textContent || '')));
+
+  let ws = null, lastType = null;
+  // raw:true keeps table cells as text so xlCoerceCell applies formats uniformly
+  function addAoa(rows) { if(!ws) ws = XLSX.utils.aoa_to_sheet(rows); else XLSX.utils.sheet_add_aoa(ws, rows, { origin: -1 }); }
+  function addTable(node) { if(!ws) ws = XLSX.utils.table_to_sheet(node, { raw: true }); else XLSX.utils.sheet_add_dom(ws, node, { origin: -1, raw: true }); }
+  function spacer() { if(ws) addAoa([['']]); }
+  function walk(node) {
+    if(node.nodeType !== 1) return;
+    if(node.tagName === 'TABLE') {
+      spacer();
+      addTable(node);
+      lastType = 'table';
+      return; // don't descend into the table
+    }
+    if(node.classList && node.classList.contains('kpi-card')) {
+      const label = (node.querySelector('.kpi-label') || {}).textContent || '';
+      const val   = (node.querySelector('.kpi-val')   || {}).textContent || '';
+      if(label.trim() || val.trim()) {
+        if(lastType !== 'kpi') spacer();
+        addAoa([[label.trim(), val.trim()]]);
+        lastType = 'kpi';
+      }
+      return;
+    }
+    if(/^H[1-6]$/.test(node.tagName)) {
+      const txt = node.textContent.replace(/\s+/g, ' ').trim();
+      if(txt) {
+        spacer();
+        addAoa([[txt]]);
+        lastType = 'heading';
+      }
+      return;
+    }
+    Array.from(node.children).forEach(walk);
+  }
+  Array.from(clone.children).forEach(walk);
+  return ws;
+}
+
+// Property debt tab is card/input based, so export it from the data model.
+function xlBuildDebtSheet() {
+  const d = propData[currentPropId] || {};
+  const loans = d.loans || [];
+  if(!loans.length) return null;
+  const rows = [['Loan', 'Lender', 'Original amount', 'Loan start', 'Rate type', 'Interest rate', 'Monthly payment', 'Interest only', 'IO end', 'Maturity date', 'Est. current balance']];
+  let totBal = 0, anyBal = false;
+  loans.forEach(l => {
+    const bal = computeLoanBalance(l);
+    if(bal != null) { totBal += bal; anyBal = true; }
+    rows.push([
+      l.label || 'Loan', l.lender || '',
+      l.originalAmount != null ? fmt(l.originalAmount) : '',
+      l.loanStartDate || '', l.rateType || '',
+      l.interestRate != null ? (l.interestRate * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '',
+      l.monthlyPayment != null ? fmt(l.monthlyPayment) : '',
+      l.hasIO ? 'Yes' : 'No', l.ioEndDate || '', l.maturityDate || '',
+      bal != null ? fmt(bal) : '',
+    ]);
+  });
+  rows.push([]);
+  if(anyBal) rows.push(['Total est. debt', '', '', '', '', '', '', '', '', '', fmt(totBal)]);
+  const estValue = computePropertyEstimatedValue(currentPropId);
+  if(estValue) {
+    rows.push(['Estimated property value', '', '', '', '', '', '', '', '', '', fmt(estValue)]);
+    if(anyBal && totBal > 0) rows.push(['Est. LTV', '', '', '', '', '', '', '', '', '', (totBal / estValue * 100).toFixed(1) + '%']);
+  }
+  return XLSX.utils.aoa_to_sheet(rows);
+}
+
+function xlBuildNotesSheet() {
+  const propNotes = notes.filter(n => n.propId === currentPropId);
+  if(!propNotes.length) return null;
+  const rows = [['Date', 'Type', 'Note']];
+  propNotes.forEach(n => {
+    let dstr = '';
+    if(n.ts) {
+      const ms = n.ts > 1e14 ? Math.floor(n.ts / 1000) : n.ts; // new notes store ts*1000
+      try { dstr = new Date(ms).toLocaleDateString('en-US'); } catch(e) {}
+    }
+    rows.push([dstr, n.type === 'action' ? 'Action' : n.type === 'concern' ? 'Concern' : 'Note', n.text || '']);
+  });
+  return XLSX.utils.aoa_to_sheet(rows);
+}
+
+function exportPropertyExcel() {
+  if(!currentPropId) { alert('Open a property first.'); return; }
+  const p = properties.find(x => x.id === currentPropId);
+  if(!p) return;
+
+  // Re-render every tab so all containers hold current data, and force the
+  // statement view to "All months" for the export, restoring it afterwards.
+  let prevView = null, prevMonth = null;
+  try {
+    renderBenchmarkTab(); renderStatementTab(); renderProformaTab(); renderRentRollTab();
+    renderRentProgressionTab(); renderCashReviewTab(); renderCapexTab();
+    renderPropertyValuationTab(); renderFlagsTab();
+    const viewSel = document.getElementById('stmt-view-sel');
+    const monthSel = document.getElementById('stmt-month-sel');
+    if(viewSel && monthSel) {
+      prevView = viewSel.value; prevMonth = monthSel.value;
+      viewSel.value = 'all';
+      renderStatementTable(monthSel.value);
+    }
+  } catch(e) { console.error('Export: render error', e); }
+
+  const wb = XLSX.utils.book_new();
+  const usedNames = {};
+  function appendSheet(ws, name) {
+    if(!ws || !ws['!ref']) return;
+    let nm = xlSanitizeSheetName(name), i = 2;
+    while(usedNames[nm]) nm = xlSanitizeSheetName(name).slice(0, 28) + ' ' + (i++);
+    usedNames[nm] = 1;
+    XLSX.utils.book_append_sheet(wb, ws, nm);
+  }
+
+  XLEXPORT_TABS.forEach(([id, name]) => {
+    try {
+      const ws = xlSheetFromContainer(document.getElementById('tab-' + id));
+      if(ws) xlFinishSheet(ws);
+      appendSheet(ws, name);
+    } catch(e) { console.error('Export: failed on tab ' + id, e); }
+  });
+  try { const wsD = xlBuildDebtSheet(); if(wsD) { xlFinishSheet(wsD); appendSheet(wsD, 'Property Debt'); } } catch(e) { console.error('Export: debt sheet failed', e); }
+  try { const wsN = xlBuildNotesSheet(); if(wsN) { xlFinishSheet(wsN); appendSheet(wsN, 'Notes'); } } catch(e) { console.error('Export: notes sheet failed', e); }
+
+  // Restore the statement view the user had on screen
+  try {
+    const viewSel = document.getElementById('stmt-view-sel');
+    if(viewSel && prevView !== null) { viewSel.value = prevView; renderStatementTable(prevMonth); }
+  } catch(e) {}
+
+  if(!wb.SheetNames.length) { alert('Nothing to export yet — upload files for this property first.'); return; }
+  const fname = (p.name || 'Property').replace(/[\\\/\?\*\[\]:]/g, '') + ' AM Review ' + new Date().toISOString().slice(0, 10) + '.xlsx';
+  XLSX.writeFile(wb, fname);
+}
+
 function fmt(v) {
   if(v===null||v===undefined||isNaN(v)) return '—';
   const n = Math.round(v);
