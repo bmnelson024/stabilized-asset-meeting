@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Monthly Property Review</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- supabase-js no longer needed: data access uses the REST API directly with the anon key -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
   // Set PDF.js worker before any usage
@@ -219,17 +219,6 @@
   ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 
-  /* LOGIN SCREEN */
-  .login-screen{display:none;position:fixed;inset:0;background:var(--bg);z-index:999;align-items:center;justify-content:center;flex-direction:column}
-  .login-screen.active{display:flex}
-  .login-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:36px;max-width:380px;width:90%;text-align:center}
-  .login-box h2{font-size:18px;font-weight:500;margin-bottom:6px}
-  .login-box p{font-size:13px;color:var(--text3);margin-bottom:24px}
-  .login-input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px;font-family:inherit;background:var(--bg);color:var(--text);margin-bottom:10px;outline:none}
-  .login-input:focus{border-color:var(--blue)}
-  .login-status{font-size:12px;margin-top:10px;min-height:18px}
-  .login-status.ok{color:var(--green)}
-  .login-status.err{color:var(--red)}
 
   /* RENT PROGRESSION */
   .rp-tier-full{background:var(--green-bg);color:var(--green)}
@@ -238,17 +227,6 @@
 </style>
 </head>
 <body>
-
-<!-- LOGIN SCREEN -->
-<div class="login-screen" id="login-screen">
-  <div class="login-box">
-    <h2>Monthly Property Review</h2>
-    <p>Enter your @leavenwealth.com email to receive a sign-in link.</p>
-    <input class="login-input" type="email" id="login-email" placeholder="you@leavenwealth.com" autocomplete="email">
-    <button class="btn btn-primary" style="width:100%;padding:9px" onclick="sendMagicLink()">Send sign-in link</button>
-    <div class="login-status" id="login-status"></div>
-  </div>
-</div>
 
 <div class="topbar">
   <div class="topbar-left">
@@ -273,7 +251,6 @@
       ↑ Restore
       <input type="file" accept=".json" style="display:none" onchange="restoreBackup(this.files[0]);this.value=''">
     </label>
-    <button class="btn" onclick="signOut()" style="color:var(--text3)">Sign out</button>
   </div>
 </div>
 
@@ -683,19 +660,14 @@ const PM_MAP = {
 // ─── SUPABASE SETUP ───────────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://beoquaazkkxjisxnmrmg.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJlb3F1YWF6a2t4amlzeG5tcm1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3MTI3MzgsImV4cCI6MjA5MjI4ODczOH0.Cskq3HwXi9qydh0jBV9FerFTcAH1V6IhgHZmYlehdJY';
-const ALLOWED_DOMAIN = 'leavenwealth.com';
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// NOTE: sign-in was removed — anyone with the page URL can read/write the data.
+// Supabase RLS policies on sam_meta / sam_propdata must allow the `anon` role.
 
-// Cached access token — set after sign-in, used for raw REST calls
-let _sbToken = null;
-
-// Raw REST helper — bypasses the Supabase JS client's internal auth-lock which
-// can hang indefinitely on some browsers/versions. Auth calls still use sb.auth.
+// Raw REST helper — talks to Supabase's REST API directly with the anon key
 async function sbRest(method, path, body, extraHeaders = {}) {
-  const token = _sbToken || SUPABASE_ANON_KEY;
   const headers = {
     'apikey': SUPABASE_ANON_KEY,
-    'Authorization': `Bearer ${token}`,
+    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
     'Content-Type': 'application/json',
     ...extraHeaders,
   };
@@ -722,28 +694,6 @@ let currentPropId = null;
 
 const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const GROUP_ORDER = ['Point Guard','Point Guard Sioux Falls','Kouri','Arrow','RPME','Bender','J&M','Orange'];
-
-// ─── AUTH ─────────────────────────────────────────────────────────────────────
-async function sendMagicLink() {
-  const email = document.getElementById('login-email').value.trim().toLowerCase();
-  const status = document.getElementById('login-status');
-  if(!email) { status.className='login-status err'; status.textContent='Please enter your email.'; return; }
-  if(!email.endsWith('@'+ALLOWED_DOMAIN)) {
-    status.className='login-status err';
-    status.textContent='Only @'+ALLOWED_DOMAIN+' email addresses are allowed.';
-    return;
-  }
-  status.className='login-status'; status.textContent='Sending…';
-  const {error} = await sb.auth.signInWithOtp({email, options:{shouldCreateUser:true}});
-  if(error) { status.className='login-status err'; status.textContent='Error: '+error.message; return; }
-  status.className='login-status ok';
-  status.textContent='Check your email for a sign-in link!';
-}
-
-async function signOut() {
-  await sb.auth.signOut();
-  document.getElementById('login-screen').classList.add('active');
-}
 
 // ─── DATA LAYER (raw REST — bypasses Supabase JS client lock) ─────────────────
 const UPSERT_HEADERS = { 'Prefer': 'resolution=merge-duplicates,return=minimal' };
@@ -961,47 +911,8 @@ async function restoreBackup(file) {
 let _loadAndRenderRunning = false; // Fix #2 - prevent double load
 
 async function init() {
-  // Fix #1 - register auth listener unconditionally BEFORE checking session,
-  // so magic link redirects are handled even on a cold page load
-  sb.auth.onAuthStateChange(async (event, session) => {
-    if(event === 'SIGNED_IN') {
-      _sbToken = session?.access_token || null;
-      document.getElementById('login-screen').classList.remove('active');
-      if(!_loadAndRenderRunning) await loadAndRender();
-    } else if(event === 'TOKEN_REFRESHED') {
-      // Keep cached token fresh — Supabase rotates it every ~60 min
-      _sbToken = session?.access_token || null;
-    } else if(event === 'SIGNED_OUT') {
-      _sbToken = null;
-      // Fix #3 - clear in-memory state on sign-out
-      properties = null;
-      propData = {};
-      notes = [];
-      groupOpenState = {};
-      currentPropId = null;
-      document.getElementById('login-screen').classList.add('active');
-    }
-  });
-
-  // Handle magic link token in URL hash — Supabase exchanges it automatically
-  // via onAuthStateChange above; just clean the URL if a token is present
-  const hash = window.location.hash;
-  if(hash && hash.includes('access_token')) {
-    history.replaceState(null, '', window.location.pathname);
-    // onAuthStateChange will fire SIGNED_IN and call loadAndRender — return here
-    return;
-  }
-
-  // Check for existing session
-  const {data:{session}} = await sb.auth.getSession();
-  if(!session) {
-    document.getElementById('login-screen').classList.add('active');
-    return;
-  }
-
-  _sbToken = session.access_token || null;
-  document.getElementById('login-screen').classList.remove('active');
-  await loadAndRender();
+  // No sign-in — load data immediately using the anon key
+  if(!_loadAndRenderRunning) await loadAndRender();
 }
 
 async function loadAndRender() {
@@ -11120,7 +11031,6 @@ function fmtVar(v) {
 document.addEventListener('keydown', e=>{
   if(e.key==='Escape') { closeModal(); }
   if(e.key==='Enter' && document.getElementById('modal-add').classList.contains('open')) { addProperty(); }
-  if(e.key==='Enter' && document.getElementById('login-screen').classList.contains('active')) { sendMagicLink(); }
 });
 
 init();
