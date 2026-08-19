@@ -322,6 +322,19 @@
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <span id="detail-status-badge" class="badge badge-neutral">No data</span>
           <button id="detail-review-btn" class="btn" style="font-size:12px;display:none" onclick="handleReviewBtnClick()">Mark reviewed</button>
+          <select id="detail-pm-select" class="btn" onchange="setPropertyPm(this.value)" style="font-size:12px;padding:5px 8px" title="Property manager">
+            <option value="">— Auto-detect from name —</option>
+            <option value="Point Guard">Point Guard</option>
+            <option value="Point Guard Sioux Falls">Point Guard Sioux Falls</option>
+            <option value="Kouri">Kouri</option>
+            <option value="Arrow">Arrow</option>
+            <option value="RPME">RPME</option>
+            <option value="AJ">AJ</option>
+            <option value="J&M">J&amp;M</option>
+            <option value="Orange">Orange</option>
+            <option value="Pillar">Pillar</option>
+            <option value="Other">Other</option>
+          </select>
           <button id="detail-stab-toggle" class="btn" onclick="toggleStabilized()" style="font-size:12px">Stabilized</button>
           <button class="btn" onclick="exportPropertyExcel()" style="font-size:12px" title="Export every tab as a sheet in one Excel workbook">⬇ Export Excel</button>
           <button class="btn" onclick="deleteProperty()" style="color:var(--red);border-color:var(--red-bg)">Remove</button>
@@ -518,9 +531,10 @@
         <option value="Kouri">Kouri</option>
         <option value="Arrow">Arrow</option>
         <option value="RPME">RPME</option>
-        <option value="Bender">Bender</option>
+        <option value="AJ">AJ</option>
         <option value="J&M">J&amp;M</option>
         <option value="Orange">Orange</option>
+        <option value="Pillar">Pillar</option>
         <option value="Other">Other</option>
       </select>
     </div>
@@ -560,7 +574,10 @@ const SEED_PROPERTIES = [
   {name:'Venice',system:'buildium',units:11,purchaseDate:'2022-05-31',proforma:null},
   {name:'Villa Blanca',system:'buildium',units:24,purchaseDate:'2022-08-12',proforma:null},
   {name:'60th Street Duplexes',system:'buildium',units:10,purchaseDate:'2024-06-08',proforma:null},
-  {name:'15th Street 9 Plex',system:'appfolio',units:9,purchaseDate:'2021-10-08',proforma:null},
+  // SOLD 2026-08. Left in place deliberately: seed ids are positional ('prop_seed_'+i), so
+  // splicing this out would shift every later index and the metadata sync below would rename
+  // 13 existing properties onto the wrong records. `sold` is filtered at seed-creation instead.
+  {name:'15th Street 9 Plex',system:'appfolio',units:9,purchaseDate:'2021-10-08',proforma:null,sold:true},
   {name:'Adventureland',system:'appfolio',units:72,purchaseDate:'2024-08-30',proforma:null,stabilized:false},
   {name:'Altoona Terrace',system:'appfolio',units:83,purchaseDate:'2024-08-30',proforma:null,stabilized:false},
   {name:'BG Flats',system:'appfolio',units:42,purchaseDate:'2022-08-10',proforma:null},
@@ -649,9 +666,8 @@ const PM_MAP = {
   'Capitol City Villas':          'Arrow',
   'BG Flats':                     'RPME',
   'Champion Villas':              'RPME',
-  'The Whitney':                  'Bender',
-  'Uptown Flats':                 'Bender',
-  '15th Street 9 Plex':           'Bender',
+  'The Whitney':                  'AJ',
+  'Uptown Flats':                 'AJ',
   'Dakota Bend':                  'J&M',
   'Grandview':                    'J&M',
   'Dundee Village':               'Orange',
@@ -693,7 +709,8 @@ let _noteCounter = 0; // ensures unique timestamps even when notes are added wit
 let currentPropId = null;
 
 const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const GROUP_ORDER = ['Point Guard','Point Guard Sioux Falls','Kouri','Arrow','RPME','Bender','J&M','Orange'];
+// 'AJ' replaced 'Bender' in Aug 2026 (The Whitney + Uptown Flats moved managers).
+const GROUP_ORDER = ['Point Guard','Point Guard Sioux Falls','Kouri','Arrow','RPME','AJ','J&M','Orange','Pillar'];
 
 // ─── DATA LAYER (raw REST — bypasses Supabase JS client lock) ─────────────────
 const UPSERT_HEADERS = { 'Prefer': 'resolution=merge-duplicates,return=minimal' };
@@ -929,19 +946,31 @@ async function loadAndRender() {
 
   let dirty = false; // Fix #10 - only write back if cleanup actually changed something
 
+  // One-time migration: Bender was renamed to AJ (Aug 2026). A property saved with an explicit
+  // pm wins over PM_MAP, so without this it would keep resolving to 'Bender' and fall into a
+  // stray group at the bottom of the portfolio (GROUP_ORDER no longer lists it).
+  if(properties && properties.length) {
+    properties.forEach(p => { if(p.pm === 'Bender') { p.pm = 'AJ'; dirty = true; } });
+  }
+
   if(!properties || !properties.length) {
-    properties = SEED_PROPERTIES.map((p,i)=>({
-      id: 'prop_seed_'+i,
-      name: p.name,
-      system: p.system,
-      units: p.units||null,
-      purchaseDate: p.purchaseDate||null,
-    }));
+    properties = SEED_PROPERTIES
+      .map((p,i)=>({
+        id: 'prop_seed_'+i,
+        name: p.name,
+        system: p.system,
+        units: p.units||null,
+        purchaseDate: p.purchaseDate||null,
+        _sold: !!p.sold,
+      }))
+      .filter(p => !p._sold)          // sold properties are never re-created
+      .map(({_sold, ...rest}) => rest);
     dirty = true;
   }
 
   // Always sync seeded property metadata (purchaseDate, units, stabilized) — self-heals stale data
   SEED_PROPERTIES.forEach((p,i)=>{
+    if(p.sold) return; // sold — leave any surviving record alone so it can be removed for good
     const id = 'prop_seed_'+i;
     const existing = properties.find(x=>x.id===id);
     if(existing) {
@@ -1180,6 +1209,7 @@ function selectProp(id, tab) {
   })();
   document.getElementById('detail-prop-meta').innerHTML = `${p.system==='buildium'?'Buildium':'Appfolio'} · ${p.units||'?'} units${pfYearStr}${stalenessMeta}`;
   updateStabToggle(p);
+  updatePmSelect(p);
   renderUploadTab(p);
   updateDetailBadge();
   updateDetailReviewButton();
@@ -1280,6 +1310,32 @@ function updateStabToggle(p) {
   btn.textContent = isStab ? 'Stabilized' : 'Non-Stabilized';
   btn.style.color = isStab ? 'var(--green)' : 'var(--amber)';
   btn.style.borderColor = isStab ? 'var(--green)' : 'var(--amber)';
+}
+
+// Reflect the current property's manager in the detail-header dropdown.
+function updatePmSelect(p) {
+  const sel = document.getElementById('detail-pm-select');
+  if(!sel || !p) return;
+  sel.value = p.pm || '';
+}
+
+// Change a property's manager after creation. Re-runs auto-match because the statement keyword
+// overrides (MGMT_STMT_KEY_OVERRIDES) and subtotal preferences are management-specific, so the
+// existing pfMapping was built for the OLD manager and would otherwise be stale.
+async function setPropertyPm(val) {
+  const p = properties.find(x=>x.id===currentPropId);
+  if(!p) return;
+  if(val) p.pm = val; else delete p.pm;   // '' = fall back to PM_MAP name lookup
+  const pd = propData[currentPropId];
+  if(pd && pd.statement) {
+    delete pd.pfMapping;                  // force a rebuild under the new manager's rules
+    maybeAutoMatch(currentPropId, p);
+  }
+  await save(currentPropId);
+  renderPortfolio();
+  renderBenchmarkTab();
+  renderFlagsTab();
+  if(pd && pd.proforma && pd.statement) renderMappingEditor(currentPropId);
 }
 
 function toggleStabilized() {
@@ -2458,7 +2514,7 @@ function normalizePrincipalSign(rows) {
     // "Loan - Mortgage" in RPME (BG Flats, Champion Villas, Doral) = principal payment
     // reported as a negative liability reduction — flip to positive for debt service math
     const isLoanMortgage = lc.includes('loan') && lc.includes('mortgage') && !lc.includes('interest');
-    // "Property Loan" in Bender/AppFolio statements = debt service (principal+interest combined)
+    // "Property Loan" in AJ (formerly Bender) / AppFolio statements = debt service (P+I combined)
     // reported as a negative outflow — flip to positive for debt service math
     const isPropertyLoan = lc.includes('property loan');
     // Capital Expenditures also lives in "Other Items" as a negative outflow
@@ -7491,7 +7547,7 @@ const _DS_KEYS = [
   'interest expense','interest exp','principal','loan interest','debt service','loan payment',
   'principal & interest','p & i','total debt service',
   'loan - mortgage',  // RPME (BG Flats, Champion Villas, Doral) principal payment row
-  'property loan',    // Bender/AppFolio statements (The Whitney)
+  'property loan',    // AJ (formerly Bender) / AppFolio statements (The Whitney)
 ];
 const _AMF_KEYS = ['asset management','asset mgmt'];
 
