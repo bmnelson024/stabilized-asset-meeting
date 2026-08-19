@@ -1073,7 +1073,7 @@ function getPortfolioSortValue(propId, col) {
     if(!budgetNoi || !stmt || mi < 0) return null;
     const noiRow = stmt.rows.find(r=>r.isNOI);
     if(!noiRow) return null;
-    const budgetMonthly = budgetNoi / 12;
+    const budgetMonthly = getKeyMetric(propId, 'budget_noi_month');
     if(!budgetMonthly) return null;
     return ((noiRow.values[mi]??0) - budgetMonthly) / Math.abs(budgetMonthly) * 100;
   }
@@ -1154,7 +1154,7 @@ function getStatusDot(id) {
   if(!noiRow.values.length) return 'dot-none';
   const lastMonthIdx = getPrevMonthIdx(stmt.months, id);
   const currentMonthNoi = noiRow.values[lastMonthIdx] ?? 0;
-  const budgetMonthlyNoi = budgetNoi / 12;
+  const budgetMonthlyNoi = getKeyMetric(id, 'budget_noi_month');
   if(!budgetMonthlyNoi) return 'dot-none';
   const pct = (currentMonthNoi - budgetMonthlyNoi) / Math.abs(budgetMonthlyNoi);
   if(pct >= -0.05) return 'dot-ok';
@@ -4285,8 +4285,15 @@ function parseBuildiumBudget(ws) {
   headers.forEach((h,ci)=>{
     if(!h) return;
     const hs = h.toString().trim();
-    if(hs.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/)) {
-      months.push(hs + ' ' + budgetYear);
+    // Accept both a bare "Jan" and a year-qualified "Jan 2026" header. The multi-tab
+    // portfolio budget workbook uses bare month names; single-property exports usually
+    // carry the year. Comparison columns (prior year, actuals, variance) are excluded so
+    // they are never mistaken for a budget month.
+    const moMatch = /actual|prior|variance|last year|budget vs|%/i.test(hs)
+      ? null
+      : hs.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/);
+    if(moMatch) {
+      months.push(moMatch[1] + ' ' + budgetYear);
       monthCols.push(ci);
     }
     if(hs.includes('Annual') || hs.includes('Total') || hs === String(budgetYear)+' Annual') annualCol = ci;
@@ -4565,7 +4572,97 @@ function getKeyMetric(propId, metric) {
     const row = rows.find(r=>r.total) || rows[rows.length-1] || null;
     return row ? row.total : null;
   }
+  // Budget NOI for the property's reconciliation-aware current month. Use this — not
+  // budget_noi/12 — anywhere a single month's actual is compared to budget.
+  if(metric==='budget_noi_month') {
+    const bg = d.budget;
+    if(!bg) return null;
+    const rows = bg.rows.filter(r=>r.isNOI);
+    const row = rows.find(r=>r.total) || rows[rows.length-1] || null;
+    if(!row) return null;
+    const stmt = d.statement;
+    const label = (stmt && stmt.months && stmt.months.length)
+      ? stmt.months[getPrevMonthIdx(stmt.months, propId)]
+      : null;
+    return bgRowMonthly(row, bg, label);
+  }
   return null;
+}
+
+// ─── BUDGET MONTH RESOLUTION ──────────────────────────────────────────────────
+// A parsed budget carries a per-month `values` array plus an annual `total`. Budgets
+// with no month detail (a file with only a Total column, or data parsed before month
+// support existed) have an empty values array, and every helper below falls back to
+// annual/12 — preserving the tool's earlier behavior exactly.
+//
+// CRITICAL: never index a budget's values array with a statement month index. Statement
+// months are a rolling T-12 that can span two calendar years; budget months are always
+// Jan–Dec of the budget year. Always resolve by month LABEL.
+function bgMonthIdx(bg, monthLabel) {
+  if(!bg || !Array.isArray(bg.months) || !bg.months.length || !monthLabel) return -1;
+  const norm = v => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const target = norm(monthLabel);
+  const exact = bg.months.findIndex(m => norm(m) === target);
+  if(exact >= 0) return exact;
+  // No same-year column: a T-12 statement reaches back into the prior calendar year.
+  // Falling back to the matching month name is the same class of approximation the
+  // annual/12 fallback made, and keeps older statement columns populated.
+  const mo3 = target.slice(0, 3);
+  if(!/^[a-z]{3}$/.test(mo3)) return -1;
+  return bg.months.findIndex(m => norm(m).slice(0, 3) === mo3);
+}
+
+// Monthly budget for a single parsed budget row.
+function bgRowMonthly(row, bg, monthLabel) {
+  if(!row) return null;
+  const idx = bgMonthIdx(bg, monthLabel);
+  if(idx >= 0 && Array.isArray(row.values) && row.values.length > idx) {
+    const v = row.values[idx];
+    if(typeof v === 'number' && isFinite(v)) return v;
+  }
+  return (typeof row.total === 'number') ? row.total / 12 : null;
+}
+
+// Monthly budget for a set of rows that get summed (debt service, capex, AMF).
+function bgRowsMonthly(rows, bg, monthLabel) {
+  if(!rows || !rows.length) return null;
+  return rows.reduce((s, r) => s + (bgRowMonthly(r, bg, monthLabel) || 0), 0);
+}
+
+// Sums budget leaf rows into canonical PF_LINE_ITEMS groups — both an annual total and a
+// per-month array. A group only gets a monthly array when EVERY row feeding it has month
+// detail; otherwise the group is annual-only and falls back to /12, so a partially-parsed
+// budget can never silently undercount a month.
+function buildBgGroups(bg, p) {
+  const totals = {}, monthly = {}, incomplete = {};
+  const nMonths = (bg && Array.isArray(bg.months)) ? bg.months.length : 0;
+  if(bg && Array.isArray(bg.rows)) {
+    bg.rows.forEach(r => {
+      if(r.isCategory || r.isSubtotal || r.isTotal || r.isNOI || r.isNetIncome) return;
+      if(r.isDebtService || r.isAssetMgmt || r.isCapex) return; // handled separately
+      const grp = getStmtMatchGroup(r.label, getPropMgmt(p));
+      if(!grp) return;
+      totals[grp] = (totals[grp] || 0) + (r.total || 0);
+      if(nMonths && Array.isArray(r.values) && r.values.length === nMonths) {
+        if(!monthly[grp]) monthly[grp] = Array(nMonths).fill(0);
+        r.values.forEach((v, i) => { monthly[grp][i] += (v || 0); });
+      } else {
+        incomplete[grp] = true;
+      }
+    });
+  }
+  Object.keys(incomplete).forEach(g => { delete monthly[g]; });
+  return { totals, monthly };
+}
+
+// Monthly budget for a canonical group, for a specific month label.
+function bgGroupMonthly(bgGroups, bg, grp, monthLabel) {
+  if(!bgGroups || !grp) return null;
+  const arr = bgGroups.monthly[grp];
+  const idx = bgMonthIdx(bg, monthLabel);
+  if(arr && idx >= 0 && idx < arr.length) return arr[idx];
+  const t = bgGroups.totals[grp];
+  return (t === undefined || t === null) ? null : t / 12;
 }
 
 // ─── STATEMENT TAB ────────────────────────────────────────────────────────────
@@ -5255,15 +5352,8 @@ function renderBenchmarkTab() {
   // Precompute budget group totals by keyword classification — used as a fallback when the
   // budget has no subtotal rows (e.g. PGO/Buildium budgets list individual line items with no
   // section headers). Groups individual budget rows into canonical PF_LINE_ITEMS groups.
-  const bgGroupTotals = {};
-  if(bg) {
-    bg.rows.forEach(r => {
-      if(r.isCategory || r.isSubtotal || r.isTotal || r.isNOI || r.isNetIncome) return;
-      if(r.isDebtService || r.isAssetMgmt || r.isCapex) return; // handled separately
-      const grp = getStmtMatchGroup(r.label, getPropMgmt(p));
-      if(grp) bgGroupTotals[grp] = (bgGroupTotals[grp] || 0) + (r.total || 0);
-    });
-  }
+  const bgGroups      = buildBgGroups(bg, p);
+  const bgGroupTotals = bgGroups.totals;
 
   // Always recalculate pfYear dynamically from purchase date — never trust the stored value
   const pfYear = pf ? (getProformaYear(p.purchaseDate) || pf.pfYear || 1) : null;
@@ -5352,7 +5442,9 @@ function renderBenchmarkTab() {
         label: 'Asset Management Fee', isAssetMgmt: true,
         isTotalExpense: false, isNOI: false, isNetIncome: false,
         isTotal: false, isCategory: false, isSubtotal: false, level: 1,
-        values: Array(12).fill(amfAnnual / 12), total: amfAnnual,
+        // Track the budget's own monthly shape rather than a flat annual/12, and align to
+        // the statement's month labels so the row lines up with every other statement row.
+        values: stmt.months.map(m => bgRowsMonthly(bgAmfRows, bg, m) || 0), total: amfAnnual,
         _bgAnnual: amfAnnual, _synthetic: true,
       });
     }
@@ -5510,11 +5602,17 @@ function renderBenchmarkTab() {
     // that happens to share the subtotal's cleaned label — avoids undercount on flat budgets.
     // For leaf rows with no bgRow match, fall back to bgGroupTotals as before.
     const bgRowGroup = getStmtMatchGroup(r.label, getPropMgmt(p));
-    const bgAnnual = (r.isSubtotal && bgRowGroup && bgGroupTotals[bgRowGroup])
-                   ? bgGroupTotals[bgRowGroup]
-                   : bgRow ? bgRow.total
-                   : (bgRowGroup && bgGroupTotals[bgRowGroup]) ? bgGroupTotals[bgRowGroup]
-                   : null;
+    // Which budget figure applies to this row: the keyword-classified group aggregate, or
+    // a single matched budget row. (Same precedence as before, factored out so the monthly
+    // and annual figures are always drawn from the same source.)
+    const bgSrcGroup = (r.isSubtotal && bgRowGroup && bgGroupTotals[bgRowGroup]) ? bgRowGroup
+                     : (!bgRow && bgRowGroup && bgGroupTotals[bgRowGroup])       ? bgRowGroup
+                     : null;
+    // Monthly budget for THIS month, from the budget's own monthly values when it has them.
+    const bgMonthResolved = bgSrcGroup
+      ? bgGroupMonthly(bgGroups, bg, bgSrcGroup, stmt.months[mi])
+      : bgRow ? bgRowMonthly(bgRow, bg, stmt.months[mi])
+      : null;
 
     // Rows that use T-6 actuals as their benchmark (no budget comparison)
     // Use label-matcher as fallback since AppFolio statement rows don't carry isDebtService flag
@@ -5537,7 +5635,7 @@ function renderBenchmarkTab() {
       if(isAMF) {
         cells += `<td>—</td><td>—</td><td>—</td>`;
       } else {
-        const bgMonth = bgAnnual !== null ? bgAnnual/12 : null;
+        const bgMonth = bgMonthResolved;
         const varD = bgMonth !== null ? actual - bgMonth : null;
         const varPct = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
         const vCls = varD !== null ? (varGood(varD)?'val-pos':'val-neg') : '';
@@ -5735,15 +5833,15 @@ function renderBenchmarkTab() {
     const t6Avg  = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-5),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
     const t12Avg = rows.reduce((s,r) => { const sl=r.values.slice(Math.max(0,monthIdx-11),monthIdx+1); return s + sl.reduce((a,b)=>a+b,0)/(sl.length||1); }, 0);
     // Synthesized rows carry _bgAnnual from budget; otherwise sum bg.rows with isCapex
-    const bgCapexAnnual = (() => {
-      if(rows[0] && rows[0]._bgAnnual !== undefined) return rows[0]._bgAnnual;
-      if(!hasBG) return null;
+    const bgCapexMonth = (() => {
+      if(!hasBG) return rows[0] && rows[0]._bgAnnual !== undefined ? rows[0]._bgAnnual / 12 : null;
       const bgCx = bg.rows.filter(r => r.isCapex && r.total);
-      return bgCx.length ? bgCx.reduce((s,r) => s + r.total, 0) : null;
+      if(bgCx.length) return bgRowsMonthly(bgCx, bg, selMonth);
+      return rows[0] && rows[0]._bgAnnual !== undefined ? rows[0]._bgAnnual / 12 : null;
     })();
     let cells = `<td>${rows[0]?._synthetic ? '— <span style="font-size:10px;color:var(--text3)">(budget only)</span>' : fmt(actual)}</td>`;
     if(hasBG) {
-      const bgMonth = bgCapexAnnual !== null ? bgCapexAnnual / 12 : null;
+      const bgMonth = bgCapexMonth;
       const varD    = (bgMonth !== null && !rows[0]?._synthetic) ? actual - bgMonth : null;
       const varPct  = (varD !== null && bgMonth) ? varD / Math.abs(bgMonth) * 100 : null;
       const vCls    = varD !== null ? (varD <= 0 ? 'val-pos' : 'val-neg') : '';
@@ -5815,7 +5913,7 @@ function renderBenchmarkTab() {
     // Budget — sum all isDebtService rows from the budget
     if(hasBG) {
       const bgDSRows  = bg.rows.filter(r => r.isDebtService && r.total);
-      const bgDSMonth = bgDSRows.length ? bgDSRows.reduce((s,r) => s + r.total, 0) / 12 : null;
+      const bgDSMonth = bgDSRows.length ? bgRowsMonthly(bgDSRows, bg, selMonth) : null;
       const bgVarD    = bgDSMonth !== null ? totalActual - bgDSMonth : null;
       const bgVarPct  = (bgVarD !== null && bgDSMonth) ? bgVarD / Math.abs(bgDSMonth) * 100 : null;
       const bgVCls    = bgVarD !== null ? (varGoodDS(bgVarD) ? 'val-pos' : 'val-neg') : '';
@@ -5892,7 +5990,7 @@ function renderBenchmarkTab() {
     const actual  = sumStmtRows(stmtLabels, r => r.values[monthIdx]);
 
     // Budget lookup — sum individual mapped rows; fall back to keyword-classified group total
-    let bgAnnualLI = null;
+    let bgMonthLI = null;
     if(hasBG) {
       // If statement labels are subtotals (aggregating many leaf rows), a flat budget may only
       // have leaf rows whose labels match the subtotal name — missing all the other sub-items.
@@ -5903,7 +6001,7 @@ function renderBenchmarkTab() {
         return r && r.isSubtotal;
       });
 
-      let bgSum = 0, anyFound = false;
+      let bgSum = 0, bgMonthSum = 0, anyFound = false;
       stmtLabels.forEach(lbl => {
         const bgRow = bgMap[lbl.toLowerCase()];
         if(bgRow && bgRow.total) {
@@ -5913,6 +6011,7 @@ function renderBenchmarkTab() {
           // "Total Rent - Residential"). Fall through to bgGroupTotals instead.
           if(bgRow.isSubtotal && getStmtMatchGroup(bgRow.label, getPropMgmt(p)) !== item.group) return;
           bgSum += bgRow.total; anyFound = true;
+          bgMonthSum += bgRowMonthly(bgRow, bg, selMonth) || 0;
         }
       });
       if(anyStmtSubtotal && bgGroupTotals[item.group]) {
@@ -5921,13 +6020,13 @@ function renderBenchmarkTab() {
         // This handles flat-list budgets (e.g. Buildium/PGO) where individual items like
         // "Appliance Repairs", "Locksmith Service", etc. live as separate rows rather than
         // under a single "Repairs" subtotal that would match the statement subtotal label.
-        bgAnnualLI = bgGroupTotals[item.group];
+        bgMonthLI = bgGroupMonthly(bgGroups, bg, item.group, selMonth);
       } else if(anyFound) {
-        bgAnnualLI = bgSum;
+        bgMonthLI = bgMonthSum;
       } else if(bgGroupTotals[item.group]) {
         // Budget has no label matching any statement label — sum individual line items
         // that keyword-match this group (handles PGO/Buildium flat-list budgets)
-        bgAnnualLI = bgGroupTotals[item.group];
+        bgMonthLI = bgGroupMonthly(bgGroups, bg, item.group, selMonth);
       }
     }
 
@@ -5945,7 +6044,7 @@ function renderBenchmarkTab() {
     const stmtLabelsLI = getMappedLabels(item.group);
     let cells = `<td>${fmt(actual)}</td>`;
     if(hasBG) {
-      const bgMonth = bgAnnualLI !== null ? bgAnnualLI/12 : null;
+      const bgMonth = bgMonthLI;
       const varD = bgMonth !== null ? actual - bgMonth : null;
       const varPct = bgMonth ? varD/Math.abs(bgMonth)*100 : null;
       const vCls = varD !== null ? (vgLI(varD)?'val-pos':'val-neg') : '';
@@ -6116,17 +6215,23 @@ function renderBenchmarkTab() {
       const isExp = r.isTotalExpense || r.isDebtService || r.isExpenseLine;
       const vg = v => isExp ? v <= 0 : v >= 0;
 
-      // Budget YTD — prorate annual budget by months elapsed
-      let bgAnnual = null;
+      // Budget YTD — sum the budget's own monthly values across the YTD window. When the
+      // budget has no month detail every month resolves to annual/12, which reduces to the
+      // previous `annual * monthsInYTD / 12` prorate exactly.
+      let bgYTD = null;
       if(hasBG) {
         const bgRow = bgMap[lc]
                    || (r.isNOI         ? ytdBestBg(x=>x.isNOI)         : null)
                    || (r.isTotalIncome  ? ytdBestBg(x=>x.isTotalIncome)  : null)
                    || (r.isTotalExpense ? ytdBestBg(x=>x.isTotalExpense) : null)
                    || (r.isNetIncome    ? ytdBestBg(x=>x.isNetIncome)    : null);
-        bgAnnual = bgRow ? bgRow.total : null;
+        if(bgRow) {
+          bgYTD = 0;
+          for(let k = ytdStartIdx; k <= monthIdx; k++) {
+            bgYTD += bgRowMonthly(bgRow, bg, stmt.months[k]) || 0;
+          }
+        }
       }
-      const bgYTD = bgAnnual !== null ? bgAnnual * monthsInYTD / 12 : null;
 
       let pfAnnual = null;
       if(hasPF) {
@@ -7091,6 +7196,9 @@ function renderPropertyValuationTab() {
   }
 
   // ── Budget / proforma NOI ──────────────────────────────────────────────────
+  // Deliberately annual/12, NOT the selected month's budget NOI: this figure is annualized
+  // (noiMonthly * 12) to drive the cap-rate valuation below. Using one month's budget would
+  // let a seasonal month swing the property's estimated value.
   let bgNoiMonthly = null, pfNoiMonthly = null;
   if(bg) { const r = bestRow(bg.rows.filter(r=>r.isNOI)); if(r&&r.total) bgNoiMonthly = r.total/12; }
   if(pf) { const r = bestRow(pf.rows.filter(r=>r.isNOI)); if(r&&r.total) pfNoiMonthly = r.total/12; }
@@ -7399,15 +7507,10 @@ function computeFlags(propId) {
 
   // Budget group totals by keyword — same logic as in the benchmark tab.
   // Used as a fallback when statement subtotals don't directly match budget flat-list labels.
-  const bgGroupTotals = {};
-  if(bg) {
-    bg.rows.forEach(r => {
-      if(r.isCategory || r.isSubtotal || r.isTotal || r.isNOI || r.isNetIncome) return;
-      if(r.isDebtService || r.isAssetMgmt || r.isCapex) return;
-      const grp = getStmtMatchGroup(r.label, getPropMgmt(p));
-      if(grp) bgGroupTotals[grp] = (bgGroupTotals[grp] || 0) + (r.total || 0);
-    });
-  }
+  const bgGroups      = buildBgGroups(bg, p);
+  const bgGroupTotals = bgGroups.totals;
+  // Month being flagged, as a label — budget lookups resolve by label, never by index.
+  const flagMonthLabel = (stmt && stmt.months) ? stmt.months[monthIdx] : null;
 
   function getMappedLabels(group) {
     const v = mapping[group];
@@ -7434,7 +7537,7 @@ function computeFlags(propId) {
         const r = stmtLookup[lbl];
         return r && r.isSubtotal;
       });
-      let bgSum = 0, anyFound = false;
+      let bgMonthSum = 0, anyFound = false;
       stmtLabels.forEach(lbl => {
         const bgRow = bgMap[lbl.toLowerCase()];
         // Only count rows with a non-zero budget; zero means unbudgeted, fall through to proforma
@@ -7443,15 +7546,16 @@ function computeFlags(propId) {
           // a different keyword group (e.g. "Utilities Reimbursement" → "Total Rent - Residential"),
           // skip it — the bgGroupTotals path is more accurate for that item.
           if(bgRow.isSubtotal && getStmtMatchGroup(bgRow.label, getPropMgmt(p)) !== item.group) return;
-          bgSum += bgRow.total; anyFound = true;
+          anyFound = true;
+          bgMonthSum += bgRowMonthly(bgRow, bg, flagMonthLabel) || 0;
         }
       });
       if(anyStmtSubtotal && bgGroupTotals[item.group]) {
-        budgetMonth = bgGroupTotals[item.group] / 12;
+        budgetMonth = bgGroupMonthly(bgGroups, bg, item.group, flagMonthLabel);
       } else if(anyFound) {
-        budgetMonth = bgSum / 12;
+        budgetMonth = bgMonthSum;
       } else if(bgGroupTotals[item.group]) {
-        budgetMonth = bgGroupTotals[item.group] / 12;
+        budgetMonth = bgGroupMonthly(bgGroups, bg, item.group, flagMonthLabel);
       }
     }
     if(budgetMonth === null && pf) {
@@ -7510,7 +7614,7 @@ function computeFlags(propId) {
       let budgetMonth = null;
       if(bg) {
         const bgTotRow = bg.rows.find(r => r.isTotalIncome);
-        if(bgTotRow && bgTotRow.total) budgetMonth = bgTotRow.total / 12;
+        if(bgTotRow && bgTotRow.total) budgetMonth = bgRowMonthly(bgTotRow, bg, flagMonthLabel);
       }
       if(budgetMonth === null && pf) {
         const pfTotRow = pf.rows.find(r => r.isTotalIncome);
@@ -7607,6 +7711,7 @@ function computePropertyEstimatedValue(propId) {
       if(n6 >= 4) { let s6=0; for(let i=0;i<n6;i++) s6+=r.values[ceMi-i]||0; stmtNoiT6=s6/n6; }
     }
   }
+  // Annual/12 on purpose — this feeds (noiMonthly * 12) / capRate for the estimated value.
   let bgNoi = null, pfNoi = null;
   if(bg) { const r = bestRow(bg.rows.filter(r=>r.isNOI)); if(r?.total) bgNoi = r.total/12; }
   if(pf) { const r = bestRow(pf.rows.filter(r=>r.isNOI)); if(r?.total) pfNoi = r.total/12; }
@@ -8251,6 +8356,8 @@ function renderCashReviewTab() {
   }
 
   // ── Collect budget / proforma NOI options ─────────────────────────────────
+  // Annual/12 on purpose: this is a forward-looking run-rate for the cash projection, not a
+  // month-vs-budget comparison. A single month's budget NOI would distort the projection.
   let bgNoiMonthly = null, pfNoiMonthly = null;
   if(bg) {
     const bgNOI = bestRow(bg.rows.filter(r => r.isNOI));
@@ -8358,6 +8465,8 @@ function renderCashReviewTab() {
   if(trailingCapex === null && bg) {
     const bgCapexRows = bg.rows.filter(r => r.isCapex && r.total);
     if(bgCapexRows.length) {
+      // Annual/12 on purpose: a monthly capex reserve assumption should be the 12-month
+      // average, not whatever the budget happens to load into the selected month.
       const bgCapexAnnual = bgCapexRows.reduce((s, r) => s + r.total, 0);
       trailingCapex = bgCapexAnnual / 12;
       capexMonthsUsed = 0; // signals budget-derived, not trailing avg
@@ -10170,7 +10279,7 @@ function portfolioPropRow(p, pm, isOpen) {
   const pfNoi = getKeyMetric(p.id,'proforma_noi');
 
   const varHTML = budgetNoi && currentMonthNoi !== null ? (() => {
-    const budgetMonthly = budgetNoi / 12;
+    const budgetMonthly = getKeyMetric(p.id, 'budget_noi_month');
     if(!budgetMonthly) return '—';
     const pct = (currentMonthNoi - budgetMonthly) / Math.abs(budgetMonthly) * 100;
     if(!isFinite(pct)) return '—';
@@ -10627,7 +10736,7 @@ function renderPortfolio() {
       const hasLoaded = dots.some(d=>d!=='dot-none');
       const summaryDotClass = !hasLoaded ? 'dot-none' : hasFlag ? 'dot-flag' : hasWarn ? 'dot-warn' : 'dot-ok';
       const groupNoi = props.reduce((sum,p)=>sum+getCurrentMonthNoi(p.id), 0);
-      const groupBgNoi = props.reduce((sum,p)=>{ const n=getKeyMetric(p.id,'budget_noi'); return sum+(n?n/12:0); }, 0);
+      const groupBgNoi = props.reduce((sum,p)=>{ const n=getKeyMetric(p.id,'budget_noi_month'); return sum+(n||0); }, 0);
       const groupLoaded = props.filter(p=>propData[p.id]&&propData[p.id].statement).length;
       const groupNoteCount = props.reduce((sum,p)=>sum+notes.filter(n=>n.propId===p.id).length,0);
       const noiVar = groupNoi&&groupBgNoi ? (() => {
