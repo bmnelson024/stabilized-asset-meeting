@@ -7958,6 +7958,68 @@ function clearAllFlagNotes(propId) {
   renderPortfolio();
 }
 
+// ─── FLAG HEURISTIC AUTO-NOTES ────────────────────────────────────────────────
+// Every heuristic rule carries an id. Dismissing an auto note hides THAT RULE for
+// THAT CATEGORY at THAT property permanently (until restored) — a different rule
+// can still surface on the same category in a later month.
+const HEUR_RULE_NAMES = {
+  zero_month:      'Zero-month',
+  double_draft:    'Possible double draft',
+  seasonal_winter: 'Seasonal — winter utilities',
+  seasonal_summer: 'Seasonal — summer electric',
+  one_time_spike:  'One-time charge',
+  vacancy_income:  'Vacancy-driven income miss',
+  round_number:    'Round number / manual entry',
+};
+
+function heurDismissKey(group, ruleId) { return group + '::' + ruleId; }
+
+function dismissHeuristic(propId, group, ruleId) {
+  if(!propData[propId]) propData[propId] = {};
+  if(!propData[propId].heurDismissed) propData[propId].heurDismissed = {};
+  propData[propId].heurDismissed[heurDismissKey(group, ruleId)] = true;
+  save(propId);
+  renderFlagsTab();
+}
+
+function restoreHeuristics(propId) {
+  if(propData[propId]) propData[propId].heurDismissed = {};
+  save(propId);
+  renderFlagsTab();
+}
+
+// Copy an auto note into the flag's editable note field and persist it.
+// Reads the text back out of the DOM so no quote-escaping is needed.
+function useHeuristicNote(btn, propId, group) {
+  const wrap = btn.closest('[data-heur]');
+  const src  = wrap && wrap.querySelector('.heur-text');
+  if(!src) return;
+  const text  = src.textContent.trim();
+  const input = document.getElementById(`flagnote-${propId}-${group}`);
+  if(input) input.value = text;
+  saveFlagNote(propId, group, text);
+}
+
+// Footer listing dismissed auto notes, with a restore control.
+function renderHeurDismissedBox(propId, d) {
+  const dis  = (d && d.heurDismissed) || {};
+  const keys = Object.keys(dis).filter(k => dis[k]);
+  if(!keys.length) return '';
+  const items = keys.map(k => {
+    const parts = k.split('::');
+    const g = parts[0], rid = parts[1];
+    const item = PF_LINE_ITEMS.find(i => i.group === g);
+    return `${item ? item.label : g} — ${HEUR_RULE_NAMES[rid] || rid}`;
+  });
+  return `
+    <div style="margin-top:8px;padding:10px 14px;border:1px dashed var(--border);border-radius:var(--radius-lg);background:var(--bg2)">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <span style="font-size:12px;color:var(--text3)">${keys.length} auto note${keys.length>1?'s':''} dismissed: ${escHtml(items.join(' · '))}</span>
+        <button onclick="restoreHeuristics('${propId}')" style="font-size:11px;padding:3px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text3);cursor:pointer;font-family:inherit;white-space:nowrap">Restore all</button>
+      </div>
+    </div>`;
+}
+
 function suppressFlag(propId, group) {
   if(!propData[propId]) propData[propId] = {};
   if(!propData[propId].flagSuppressed) propData[propId].flagSuppressed = {};
@@ -8913,6 +8975,7 @@ function renderFlagsTab() {
           <div style="font-size:12px;color:var(--text3);margin-top:6px">All mapped line items are within threshold</div>
           ${dismissedNote}
         </div>`;
+      html += renderHeurDismissedBox(pid, d);
     }
     el.innerHTML = html;
     return;
@@ -8956,12 +9019,17 @@ function renderFlagsTab() {
 
     // Heuristic annotation
     const heuristic = getFlagHeuristic(f, d, stmt, monthIdx);
+    const heurBtnStyle = `font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text3);cursor:pointer;font-family:inherit;line-height:1.3;white-space:nowrap`;
     const heuristicHtml = heuristic ? `
-      <div style="padding:9px 14px;background:var(--bg2);border-top:1px solid var(--border);display:flex;align-items:flex-start;gap:8px">
+      <div data-heur="${heuristic.id || ''}" style="padding:9px 14px;background:var(--bg2);border-top:1px solid var(--border);display:flex;align-items:flex-start;gap:8px">
         <span style="font-size:15px;line-height:1.4;flex-shrink:0">${heuristic.icon}</span>
-        <div>
+        <div style="flex:1;min-width:0">
           <div style="font-size:11px;font-weight:700;color:${heuristic.color};margin-bottom:2px;text-transform:uppercase;letter-spacing:0.04em">Likely explanation</div>
-          <div style="font-size:12px;color:var(--text2);line-height:1.5">${heuristic.text}</div>
+          <div class="heur-text" style="font-size:12px;color:var(--text2);line-height:1.5">${heuristic.text}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;align-items:center">
+          ${status !== 'reviewed' ? `<button onclick="useHeuristicNote(this,'${pid}','${eg}')" style="${heurBtnStyle}" title="Copy this text into the note field below">↓ Use as note</button>` : ''}
+          <button onclick="dismissHeuristic('${pid}','${eg}','${heuristic.id || ''}')" style="${heurBtnStyle}" title="Delete this auto note — this reason won't be suggested for this line item again">✕</button>
         </div>
       </div>` : '';
 
@@ -9063,13 +9131,27 @@ function renderFlagsTab() {
     </div>`;
   }
 
+  // ── Dismissed auto notes section ──────────────────────────────────────────
+  html += renderHeurDismissedBox(pid, d);
+
   el.innerHTML = html;
 }
 
 // ─── FLAG HEURISTICS ──────────────────────────────────────────────────────────
 // Examines a flag's historical values and returns a plain-English explanation
 // of the most likely cause, or null if no pattern is detected.
+// Public entry point: computes the heuristic, then drops it if the user has
+// dismissed that rule for this category at this property.
 function getFlagHeuristic(flag, d, stmt, monthIdx) {
+  const h = computeFlagHeuristic(flag, d, stmt, monthIdx);
+  if(!h) return null;
+  const group = flag.group || (PF_LINE_ITEMS.find(i => i.label === flag.label) || {}).group || flag.label;
+  const dismissed = (d && d.heurDismissed) || {};
+  if(h.id && dismissed[heurDismissKey(group, h.id)]) return null;
+  return h;
+}
+
+function computeFlagHeuristic(flag, d, stmt, monthIdx) {
   const { actual, isIncome, stmtLabels } = flag;
   // Derive group from PF_LINE_ITEMS (flag objects don't carry a group property)
   const group = (PF_LINE_ITEMS.find(i => i.label === flag.label) || {}).group || flag.label;
@@ -9105,6 +9187,7 @@ function getFlagHeuristic(flag, d, stmt, monthIdx) {
   // Expense/income was non-zero recently but is $0 this month
   if(Math.abs(actual) < 1 && priorAvg !== null && Math.abs(priorAvg) > 100) {
     return {
+      id: 'zero_month',
       icon: '⚠',
       color: 'var(--amber,#ffa040)',
       text: `Value is $0 this month despite averaging ${fmtH(priorAvg)}/mo previously. May be an escrowed payment, a timing delay, or a missed entry — worth verifying.`,
@@ -9122,6 +9205,7 @@ function getFlagHeuristic(flag, d, stmt, monthIdx) {
     const ratio = absActual / absPrior;
     if(ratio >= 1.75 && ratio <= 2.35) {
       return {
+        id: 'double_draft',
         icon: '💡',
         color: 'var(--blue,#4a90d9)',
         text: `Value is ${ratio.toFixed(1)}× the prior 3-month average (${fmtH(priorAvg)}/mo). Possible double draft — check whether the charge was pulled twice this month.`,
@@ -9135,11 +9219,13 @@ function getFlagHeuristic(flag, d, stmt, monthIdx) {
   const isSummer = /^(Jun|Jul|Aug)/i.test(monthLabel);
   if(utilityGroups.has(group) && absPrior !== null && absActual > absPrior * 1.15) {
     if(isWinter) return {
+      id: 'seasonal_winter',
       icon: '❄',
       color: 'var(--text2)',
       text: `Seasonal — utilities (especially heating and water) tend to run higher in winter months. Prior 3-month average: ${fmtH(priorAvg)}/mo.`,
     };
     if(isSummer && group === 'electric') return {
+      id: 'seasonal_summer',
       icon: '☀',
       color: 'var(--text2)',
       text: `Seasonal — electric tends to run higher in summer months due to cooling. Prior 3-month average: ${fmtH(priorAvg)}/mo.`,
@@ -9156,6 +9242,7 @@ function getFlagHeuristic(flag, d, stmt, monthIdx) {
     const priorStdDev = Math.sqrt(priorVariance);
     if(priorStdDev < absPrior * 0.3) { // prior months were stable
       return {
+        id: 'one_time_spike',
         icon: '📌',
         color: 'var(--text2)',
         text: `Prior 3 months averaged ${fmtH(priorAvg)}/mo with little variation — this looks like a one-time charge rather than a trend.`,
@@ -9171,6 +9258,7 @@ function getFlagHeuristic(flag, d, stmt, monthIdx) {
       if(vacant > 0) {
         const vacPct = (vacant / rrUnits.length * 100).toFixed(0);
         return {
+          id: 'vacancy_income',
           icon: '🏠',
           color: 'var(--text2)',
           text: `${vacant} vacant unit${vacant !== 1 ? 's' : ''} (${vacPct}% vacancy rate) — income underperformance is likely vacancy-driven rather than a pricing issue.`,
@@ -9184,6 +9272,7 @@ function getFlagHeuristic(flag, d, stmt, monthIdx) {
   if(Math.abs(actual) >= 500 && Math.abs(actual) % 500 === 0) {
     if(priorAvg === null || Math.abs(actual - priorAvg) > 200) {
       return {
+        id: 'round_number',
         icon: '🔢',
         color: 'var(--text3)',
         text: `${fmtH(actual)} is a round number — may be a manual journal entry or estimate rather than an actual vendor charge.`,
