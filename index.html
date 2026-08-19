@@ -3542,6 +3542,20 @@ const MGMT_STMT_KEY_OVERRIDES = {
   Kouri: {
     admin: ['marketing', 'advertising'],
   },
+  // Arrow (Capitol City Villas): residents are billed a cable/internet charge that belongs
+  // in Utility Reimbursement alongside the Utility Income line. The default reimbursement
+  // keys are kept so an existing "Utility Reimbursement" row is never dropped — an override
+  // REPLACES stmtKeys, it does not extend them.
+  //
+  // 'cable/internet' also appears on the EXPENSE side at this property (the property pays the
+  // bill and rebills residents). utility_reimb is the 2nd entry in PF_LINE_ITEMS and
+  // getStmtMatchGroup returns the first match, so without the income/expense-side guard in
+  // autoMatchProformaToStatement and buildBgGroups that expense row would classify as
+  // reimbursement income. Do not remove that guard.
+  Arrow: {
+    utility_reimb: ['utility reimbursement', 'utility reimb', 'rubs', 'utilities reimb',
+                    'utility income', 'cable/internet'],
+  },
   RPME: {
     // RPME "Admin & Marketing" = the Marketing line + Legal & Professional + Office Supplies.
     // 'legal & professional' uses the ampersand so the below-NOI corporate line
@@ -3748,8 +3762,19 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system, mgmt) {
     // single subtotal that covers Advertising + Technology Fees + Vendor Markups, so we
     // collect each leaf (excluding subtotals/totals, which would double-count).
     if(mgmtOverrides[item.group]) {
-      const matching = stmtRows.filter(r =>
-        !r.isCategory && !r.isTotal &&
+      // Keyword overrides are deliberately broad, so a label that appears on BOTH sides of
+      // the statement (e.g. "Cable/Internet Service" as resident billing AND as the vendor
+      // expense) could land in the wrong group — getStmtMatchGroup sees only a label, and
+      // income groups are evaluated first in PF_LINE_ITEMS. Position is the only reliable
+      // discriminator: everything above Total Operating Income is income.
+      // Scoped to overridden groups only, so no other manager's matching changes.
+      const totalIncIdx = stmtRows.findIndex(r => r.isTotalIncome);
+      const onCorrectSide = (i) => {
+        if(totalIncIdx < 0) return true; // no income total to split on — behave as before
+        return item.isIncome ? i < totalIncIdx : i > totalIncIdx;
+      };
+      const matching = stmtRows.filter((r, i) =>
+        !r.isCategory && !r.isTotal && onCorrectSide(i) &&
         getStmtMatchGroup(r.label, mgmt) === item.group);
       // For a group that maps to a single statement section (see MGMT_SUBTOTAL_PREFERRED),
       // the section subtotal is the correct aggregate. Otherwise sum the leaves. It is
@@ -4663,12 +4688,22 @@ function bgRowsMonthly(rows, bg, monthLabel) {
 function buildBgGroups(bg, p) {
   const totals = {}, monthly = {}, incomplete = {};
   const nMonths = (bg && Array.isArray(bg.months)) ? bg.months.length : 0;
+  // Mirror of the income/expense-side guard in autoMatchProformaToStatement — without it the
+  // ACTUAL would exclude a wrong-side row while the BUDGET still included it, which is worse
+  // than both being wrong. Scoped to groups with an active management override.
+  const bgMgmt      = getPropMgmt(p);
+  const bgOverrides = (bgMgmt && MGMT_STMT_KEY_OVERRIDES[bgMgmt]) || {};
+  const bgTotIncIdx = (bg && Array.isArray(bg.rows)) ? bg.rows.findIndex(r => r.isTotalIncome) : -1;
   if(bg && Array.isArray(bg.rows)) {
-    bg.rows.forEach(r => {
+    bg.rows.forEach((r, idx) => {
       if(r.isCategory || r.isSubtotal || r.isTotal || r.isNOI || r.isNetIncome) return;
       if(r.isDebtService || r.isAssetMgmt || r.isCapex) return; // handled separately
-      const grp = getStmtMatchGroup(r.label, getPropMgmt(p));
+      const grp = getStmtMatchGroup(r.label, bgMgmt);
       if(!grp) return;
+      if(bgOverrides[grp] && bgTotIncIdx >= 0) {
+        const grpIsIncome = !!(PF_LINE_ITEMS.find(x => x.group === grp) || {}).isIncome;
+        if(grpIsIncome !== (idx < bgTotIncIdx)) return; // wrong side of Total Income
+      }
       totals[grp] = (totals[grp] || 0) + (r.total || 0);
       if(nMonths && Array.isArray(r.values) && r.values.length === nMonths) {
         if(!monthly[grp]) monthly[grp] = Array(nMonths).fill(0);
