@@ -3528,12 +3528,19 @@ const PF_LINE_ITEMS = [
 // (matches PM_MAP / p.pm values). For a group listed here, the keyword list below
 // REPLACES that group's default stmtKeys when classifying that PM's statements.
 //
-// Kouri: "Admin & Marketing" should capture marketing/advertising PLUS Technology
-// Fees and Vendor Markups. Management Fees are intentionally NOT included — they are
-// matched earlier by the Property Management Fees group and stay on their own line.
+// Kouri: "Admin & Marketing" is MARKETING SPEND ONLY — the Advertising leaf / Total
+// Marketing subtotal. (Revised 2026-08-19, superseding the June definition that also
+// pulled in Technology Fees and Vendor Markups.)
+//
+// Do NOT re-add a bare 'admin' key here. Kouri's statement has a "Total Admin/Management"
+// section covering management fees and their payroll; a substring test on 'admin' swept
+// that whole section — and every leaf under it — into Admin & Marketing, which is what
+// made the benchmark read far above the marketing budget. Management Fees still land on
+// the Property Management Fees line (mgmt_fee is evaluated first and has no override), and
+// Total Admin/Management now classifies as null so it is benchmarked against nothing.
 const MGMT_STMT_KEY_OVERRIDES = {
   Kouri: {
-    admin: ['admin', 'marketing', 'advertising', 'technology fee', 'vendor markup'],
+    admin: ['marketing', 'advertising'],
   },
   RPME: {
     // RPME "Admin & Marketing" = the Marketing line + Legal & Professional + Office Supplies.
@@ -3545,6 +3552,19 @@ const MGMT_STMT_KEY_OVERRIDES = {
     admin: ['marketing', 'legal & professional', 'office supplies'],
   },
 };
+
+// Manager+group pairs where the statement's section SUBTOTAL is the correct aggregate for
+// an overridden group, rather than a sum of keyword-matching leaf rows. Keyed "Mgmt|group".
+//
+// Only add a pair when the group maps to exactly ONE contiguous section of the statement.
+// Kouri admin qualifies: it is the Marketing section, so "Total Marketing" captures leaves
+// whose labels carry no matching keyword (locator fees, resident referral) that a leaf-only
+// sum would silently miss.
+//
+// Do NOT add a manager whose overridden group is a UNION of unrelated lines. RPME admin =
+// Marketing + Legal & Professional + Office Supplies; preferring a single subtotal there
+// would return just the Marketing subtotal and silently drop the other two.
+const MGMT_SUBTOTAL_PREFERRED = new Set(['Kouri|admin']);
 
 // Resolve a property's management company the same way the portfolio view does.
 function getPropMgmt(prop) {
@@ -3728,10 +3748,17 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system, mgmt) {
     // single subtotal that covers Advertising + Technology Fees + Vendor Markups, so we
     // collect each leaf (excluding subtotals/totals, which would double-count).
     if(mgmtOverrides[item.group]) {
-      const leaves = stmtRows.filter(r =>
-        !r.isCategory && !r.isSubtotal && !r.isTotal &&
+      const matching = stmtRows.filter(r =>
+        !r.isCategory && !r.isTotal &&
         getStmtMatchGroup(r.label, mgmt) === item.group);
-      if(leaves.length) matches[item.group] = leaves.map(r => r.label);
+      // For a group that maps to a single statement section (see MGMT_SUBTOTAL_PREFERRED),
+      // the section subtotal is the correct aggregate. Otherwise sum the leaves. It is
+      // always one or the other — mixing a subtotal with its own children double-counts.
+      const subs = MGMT_SUBTOTAL_PREFERRED.has(mgmt + '|' + item.group)
+        ? matching.filter(r => r.isSubtotal)
+        : [];
+      const chosen = subs.length ? subs : matching.filter(r => !r.isSubtotal);
+      if(chosen.length) matches[item.group] = chosen.map(r => r.label);
       return;
     }
     let best = null;
