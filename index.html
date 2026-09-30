@@ -1784,6 +1784,9 @@ function handleRentRollBatch(files, propId, historyOnly = false) {
 
   const total = files.length;
   let processed = 0, errors = 0;
+  // Files rejected by the month-end gate — collected and reported together at the end
+  // rather than one alert per file, so a batch of twelve doesn't mean twelve dialogs.
+  const rejected = [];
   // Track the most recently dated snapshot — only promotes to active rent roll when historyOnly=false
   let latestDate    = (propData[propId].rentroll && propData[propId].rentroll.asOfDate) || '0000-00-00';
   let latestParsed  = null;
@@ -1805,6 +1808,23 @@ function handleRentRollBatch(files, propId, historyOnly = false) {
       renderRentRollTab();
       renderCapexTab();
       setSaveStatus('saved');
+      // Report every file the month-end gate turned away, in one dialog.
+      if(rejected.length) {
+        const fmtNice = iso => {
+          if(!iso) return 'no date found';
+          const [yy, mm, dd] = iso.split('-').map(Number);
+          return new Date(yy, mm - 1, dd).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
+        };
+        const list = rejected.map(r => `  • ${r.name} — as of ${fmtNice(r.asOfDate)}`).join('\n');
+        alert(
+          `${rejected.length} rent roll${rejected.length>1?'s were':' was'} not uploaded because `
+          + `${rejected.length>1?'they are':'it is'} not month-end:\n\n${list}\n\n`
+          + `Rent rolls must be as of the last day of a month so occupancy and rent progression `
+          + `line up with the month being reviewed. Re-run ${rejected.length>1?'these':'this'} `
+          + `report${rejected.length>1?'s':''} as of month-end and upload again.`
+          + (processed ? `\n\n${processed} other file${processed>1?'s':''} uploaded successfully.` : '')
+        );
+      }
       return;
     }
     setSaveStatus('saving');
@@ -1829,7 +1849,10 @@ function handleRentRollBatch(files, propId, historyOnly = false) {
             const m = MONTHS[moYr[1].toLowerCase().slice(0,3)];
             const y = parseInt(moYr[2]);
             if(m && y >= 2000 && y <= 2100) {
-              parsed.asOfDate = `${y}-${String(m).padStart(2,'0')}-28`; // last-ish day of month
+              // Actual last day of that month (not a flat 28) so the synthesized date
+              // satisfies the month-end rule and files under the right month.
+              const lastDay = new Date(y, m, 0).getDate();
+              parsed.asOfDate = `${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
             }
           }
           // Try numeric patterns: MM-YYYY, MM/YYYY, YYYY-MM
@@ -1840,11 +1863,20 @@ function handleRentRollBatch(files, propId, historyOnly = false) {
               const [mm, yyyy] = parseInt(a) > 12 ? [b, a] : [a, b];
               const m = parseInt(mm), y = parseInt(yyyy);
               if(m >= 1 && m <= 12 && y >= 2000 && y <= 2100) {
-                parsed.asOfDate = `${y}-${String(m).padStart(2,'0')}-28`;
+                const lastDay = new Date(y, m, 0).getDate();
+                parsed.asOfDate = `${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
               }
             }
           }
         }
+        // Month-end gate — skip this file, keep processing the rest of the batch.
+        const vr = validateRentRollAsOf(parsed.asOfDate);
+        if(!vr.ok) {
+          rejected.push({ name: file.name, asOfDate: parsed.asOfDate });
+          processNext(idx + 1);
+          return;
+        }
+        if(vr.normalized) parsed.asOfDate = vr.asOfDate;
         const snapDate = parsed.asOfDate || new Date().toISOString().slice(0,10);
         const snapYM   = snapDate.slice(0,7);
         const existIdx = propData[propId].rentRollHistory.findIndex(h => (h.asOfDate||'').slice(0,7) === snapYM);
@@ -1965,6 +1997,16 @@ function handleUpload(event, propId, fileKey) {
       } else if(fileKey==='rentroll') {
         const ws = wb.Sheets[wb.SheetNames[0]];
         parsed = parseRentRoll(ws, p.system);
+        // Month-end gate — a mid-month rent roll is rejected before anything is stored,
+        // so a bad snapshot can never reach the rent roll, the history, or the review.
+        const vr = validateRentRollAsOf(parsed.asOfDate);
+        if(!vr.ok) {
+          alert(vr.reason);
+          event.target.value = ''; // let them re-pick the same filename after re-exporting
+          setSaveStatus('');
+          return;
+        }
+        if(vr.normalized) parsed.asOfDate = vr.asOfDate;
         // Accumulate history — one snapshot per calendar month, deduped
         if(!propData[propId]) propData[propId] = {};
         if(!propData[propId].rentRollHistory) propData[propId].rentRollHistory = [];
@@ -3313,6 +3355,79 @@ function parseRentRollDate(val) {
   const d = new Date(s);
   if(!isNaN(d.getTime())) return d.toISOString().slice(0,10);
   return null;
+}
+
+// ─── RENT ROLL AS-OF DATE VALIDATION ──────────────────────────────────────────
+// A rent roll is a point-in-time snapshot, and every downstream calculation that uses it
+// — occupancy, rent progression, the monthly review — assumes it lines up with a closed
+// month. Pulling one mid-month (say Sep 18 when the review is for August) silently mixes
+// a partial month's leasing activity into a finished month's numbers, and nothing
+// downstream can detect that it happened. So the date is checked at the door: a rent roll
+// that isn't month-end is rejected outright rather than stored and flagged later.
+//
+// ACCEPTED: the last calendar day of any month (Aug 31, Sep 30, Feb 28 or 29 in a leap
+// year), and the 1st of the following month — AppFolio and Buildium both sometimes stamp
+// a month-end export with the next day's date. A 1st is normalized back to the prior
+// month-end so it files under the month it actually describes.
+// REJECTED: everything else, with no override.
+
+// isLastDayOfMonth: true when an ISO yyyy-mm-dd string is the final day of its month.
+function isLastDayOfMonth(iso) {
+  if(!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  const [y, m, d] = iso.split('-').map(Number);
+  // Day 0 of the *next* month is the last day of this one — handles 30/31 and leap years.
+  const lastDay = new Date(y, m, 0).getDate();
+  return d === lastDay;
+}
+
+// previousMonthEnd: given an ISO date, the last day of the month before it.
+function previousMonthEnd(iso) {
+  const [y, m] = iso.split('-').map(Number);
+  const dt = new Date(y, m - 1, 0); // day 0 of this month = last day of previous month
+  const yy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
+// validateRentRollAsOf: decides whether a parsed rent roll may be stored.
+// Returns { ok:true, asOfDate, normalized:bool } or { ok:false, reason }.
+// A rent roll with no detectable as-of date passes — that is a separate (and pre-existing)
+// data-quality problem, and blocking on it would reject files the parser simply couldn't
+// read a date out of.
+function validateRentRollAsOf(asOfDate) {
+  if(!asOfDate) return { ok: true, asOfDate: null, normalized: false };
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) return { ok: true, asOfDate, normalized: false };
+
+  if(isLastDayOfMonth(asOfDate)) return { ok: true, asOfDate, normalized: false };
+
+  // 1st of the month → treat as the prior month-end
+  const day = Number(asOfDate.slice(8, 10));
+  if(day === 1) {
+    return { ok: true, asOfDate: previousMonthEnd(asOfDate), normalized: true };
+  }
+
+  // Anything else is mid-month — reject and name the date they should have pulled.
+  const [y, m] = asOfDate.split('-').map(Number);
+  const expected = previousMonthEnd(asOfDate);
+  // Format from the string's own parts rather than via a Date object: a malformed date
+  // like 2026-04-31 would silently roll over to "May 1" and the message would name a day
+  // that isn't the one in the file.
+  const MONTH_NAMES = ['January','February','March','April','May','June',
+                       'July','August','September','October','November','December'];
+  const fmtNice = iso => {
+    const [yy, mm, dd] = iso.split('-').map(Number);
+    return `${MONTH_NAMES[mm - 1] || mm} ${dd}, ${yy}`;
+  };
+  // Also offer this month's end, for when they simply pulled the report too early.
+  const thisMonthEnd = `${y}-${String(m).padStart(2,'0')}-${String(new Date(y, m, 0).getDate()).padStart(2,'0')}`;
+  return {
+    ok: false,
+    reason: `This rent roll is as of ${fmtNice(asOfDate)}, which is mid-month.\n\n`
+          + `Rent rolls must be month-end so occupancy and rent progression line up with the `
+          + `month being reviewed. Re-run the report as of ${fmtNice(expected)} `
+          + `(or ${fmtNice(thisMonthEnd)} once that month closes) and upload again.`,
+  };
 }
 
 function parseAppfolioRentRoll(data) {
@@ -7576,6 +7691,134 @@ function getAMFRows(stmt) {
   });
 }
 
+// ─── CAPEX / DEBT SERVICE FLAG HELPERS ────────────────────────────────────────
+// CapEx and debt service sit below NOI and are not pf-mapped line items, so they are
+// invisible to the PF_LINE_ITEMS loops in computeFlags(). These two helpers mirror the
+// actual-vs-budget math already used by capexDetailRows() and debtDetailRows() in the
+// benchmark tab so the flag and the benchmark table can never disagree.
+
+// getStmtCapexRows: capex rows from a parsed statement, by label.
+// Mirrors the isCapex() predicate in renderBenchmarkTab. Subtotals are allowed because
+// Buildium stores capex as "Total for Capital Improvements" (isSubtotal:true); category
+// headers and grand totals are excluded so nothing is counted twice.
+function getStmtCapexRows(stmt) {
+  if(!stmt || !stmt.rows) return [];
+  const isCapexLabel = r => {
+    const lc = r.label.toLowerCase();
+    return lc.includes('capex') || lc.includes('capital expenditure') || lc.includes('capital improvement');
+  };
+  const dsRows  = new Set(getDSRows(stmt));
+  const amfRows = new Set(getAMFRows(stmt));
+  return stmt.rows.filter(r =>
+    isCapexLabel(r) && !r.isCategory && !r.isTotal && !dsRows.has(r) && !amfRows.has(r)
+  );
+}
+
+// computeCapexFlag: trailing-3-month capex average vs budget.
+//
+// WHY A TRAILING AVERAGE AND NOT THE SELECTED MONTH: capex is lumpy by nature. One roof,
+// one boiler, or one batch of appliances lands entirely in a single month, so a
+// month-vs-budget comparison routinely reads several hundred percent over on a property
+// that is spending exactly to plan for the year. The 3-month average smooths that timing
+// noise out, so the flag fires on sustained overspend rather than on when the invoice
+// happened to post. Thresholds are 25% AND $2,500 — the dollar floor is higher than the
+// $1,000 used for operating expenses for the same reason.
+//
+// LOC PROPERTIES ARE INCLUDED. Properties with hasLOC have capex funded from a line of
+// credit and the tool already zeroes capex out of their EFCF, so the overspend is not a
+// cash-flow event for them — but it is still an overspend, and it is exactly what shows
+// up in the monthly draw request. The flag is tagged LOC-funded instead of suppressed so
+// the variance is visible without reading as a cash problem.
+function computeCapexFlag(stmt, bg, pf, monthIdx, flagMonthLabel, prop) {
+  if(!stmt || !stmt.months || !stmt.months.length) return null;
+  const capexRows = getStmtCapexRows(stmt);
+  if(!capexRows.length) return null;
+
+  // Trailing 3 months ending at the selected month (fewer early in a statement's life)
+  const nMonths = Math.min(3, monthIdx + 1);
+  if(nMonths < 1) return null;
+  let actualTotal = 0;
+  capexRows.forEach(r => {
+    for(let i = 0; i < nMonths; i++) actualTotal += Math.abs(r.values[monthIdx - i] || 0);
+  });
+  const actualAvg = actualTotal / nMonths;
+
+  // Budget — monthly capex from the budget file, else proforma annual / 12
+  let budgetMonth = null;
+  if(bg) {
+    const bgCapexRows = bg.rows.filter(r => r.isCapex && r.total);
+    if(bgCapexRows.length) budgetMonth = Math.abs(bgRowsMonthly(bgCapexRows, bg, flagMonthLabel) || 0);
+  }
+  if(!budgetMonth && pf) {
+    const pfCapexRows = pf.rows.filter(r => r.isCapex && r.total);
+    if(pfCapexRows.length) budgetMonth = Math.abs(pfCapexRows.reduce((s, r) => s + r.total, 0)) / 12;
+  }
+  if(budgetMonth === null || budgetMonth === 0) return null;
+
+  const varD   = actualAvg - budgetMonth;
+  const varPct = varD / Math.abs(budgetMonth);
+  if(!(varD >= 2500 && varPct >= 0.25)) return null;
+
+  const locFunded = !!(prop && prop.hasLOC);
+  return {
+    label: 'Capital Expenditures',
+    group: 'capex',
+    stmtLabels: capexRows.map(r => r.label),
+    actual: actualAvg,
+    budget: budgetMonth,
+    varD, varPct,
+    isIncome: false,
+    isCapexFlag: true,
+    locFunded,
+    basisNote: `T-${nMonths} average vs budget — capex is lumpy, so a single month is not compared directly`
+      + (locFunded ? ' · funded from the line of credit, not operating cash' : ''),
+  };
+}
+
+// computeDebtServiceFlag: actual total debt service vs budget, for the selected month.
+//
+// WHY A TIGHTER THRESHOLD THAN OPERATING EXPENSES: debt service is a fixed, known payment.
+// Unlike repairs or utilities there is no legitimate month-to-month variability, so the
+// 25% used elsewhere would never fire on a real problem. Anything past 5% and $250 on a
+// fixed obligation is worth a look — and in practice the most common cause is a stale or
+// mis-entered budget figure rather than an actual change in what was paid, which is what
+// the flag's wording points at first.
+function computeDebtServiceFlag(stmt, bg, pf, monthIdx, flagMonthLabel) {
+  if(!stmt || !stmt.months || !stmt.months.length) return null;
+  const dsRows = getDSRows(stmt);
+  if(!dsRows.length) return null;
+
+  const actual = Math.abs(dsRows.reduce((s, r) => s + (r.values[monthIdx] || 0), 0));
+  if(!actual) return null;
+
+  let budgetMonth = null;
+  if(bg) {
+    const bgDSRows = bg.rows.filter(r => r.isDebtService && r.total);
+    if(bgDSRows.length) budgetMonth = Math.abs(bgRowsMonthly(bgDSRows, bg, flagMonthLabel) || 0);
+  }
+  if(!budgetMonth && pf) {
+    const pfDSRows = pf.rows.filter(r => r.isDebtService && r.total);
+    if(pfDSRows.length) budgetMonth = Math.abs(pfDSRows.reduce((s, r) => s + r.total, 0)) / 12;
+  }
+  if(budgetMonth === null || budgetMonth === 0) return null;
+
+  const varD   = actual - budgetMonth;
+  const varPct = varD / Math.abs(budgetMonth);
+  if(!(varD >= 250 && varPct >= 0.05)) return null;
+
+  return {
+    label: 'Total Debt Service',
+    group: 'debt_service',
+    stmtLabels: dsRows.map(r => r.label),
+    actual,
+    budget: budgetMonth,
+    varD, varPct,
+    isIncome: false,
+    isDebtServiceFlag: true,
+    basisNote: 'Debt service is a fixed payment — check the budget figure before treating this as an overpayment',
+  };
+}
+
 // ─── FLAGS TAB ────────────────────────────────────────────────────────────────
 
 function computeFlags(propId) {
@@ -7750,10 +7993,26 @@ function computeFlags(propId) {
     }
   }
 
-  // Sort: income flags first (by worst % shortfall), then expense flags (by worst % overage)
+  // ── Below-NOI flags: capex and debt service ────────────────────────────
+  // These are not pf-mapped line items, so the PF_LINE_ITEMS loops above never see them.
+  // Each has its own threshold logic — see the helper functions for the reasoning.
+  if(!suppressed['capex']) {
+    const capexFlag = computeCapexFlag(stmt, bg, pf, monthIdx, flagMonthLabel, p);
+    if(capexFlag) flags.push(capexFlag);
+  }
+  if(!suppressed['debt_service']) {
+    const dsFlag = computeDebtServiceFlag(stmt, bg, pf, monthIdx, flagMonthLabel);
+    if(dsFlag) flags.push(dsFlag);
+  }
+
+  // Sort: income flags first (by worst % shortfall), then expense flags (by worst % overage),
+  // then the below-NOI flags (capex, debt service) last — they sit below NOI on the
+  // statement, so keeping them at the bottom matches how the benchmark tab reads.
+  const belowNOI = f => !!(f.isCapexFlag || f.isDebtServiceFlag);
   const incFlags = flags.filter(f => f.isIncome).sort((a,b) => a.varPct - b.varPct);
-  const expFlags = flags.filter(f => !f.isIncome).sort((a,b) => b.varPct - a.varPct);
-  const sortedFlags = [...incFlags, ...expFlags];
+  const expFlags = flags.filter(f => !f.isIncome && !belowNOI(f)).sort((a,b) => b.varPct - a.varPct);
+  const blwFlags = flags.filter(f => belowNOI(f)).sort((a,b) => b.varPct - a.varPct);
+  const sortedFlags = [...incFlags, ...expFlags, ...blwFlags];
   return { flags: sortedFlags, selMonth };
 }
 
@@ -8556,40 +8815,85 @@ function renderCashReviewTab() {
   // ── Pre-capex FCF (the "fixed cost" floor) ────────────────────────────────
   const preCapexFCF = (noiMonthly || 0) - (dsMonthly || 0) - (amfMonthly || 0);
 
-  // ── Trailing 3-month capex average from statement ─────────────────────────
+  // ── Capex assumption — follows the NOI source selected above ──────────────
+  // The capex figure used in the projection tracks whichever NOI source is selected, so
+  // the two halves of the projection always describe the same period. Picking T6 NOI and
+  // silently pairing it with a 3-month capex average was the old behavior and it made the
+  // net FCF number hard to reason about: NOI came from one window, capex from another.
+  //   T3 Avg   → trailing 3-month capex average from the statement
+  //   T6 Avg   → trailing 6-month capex average from the statement
+  //   Budget   → budget capex annual / 12
+  //   Proforma → proforma capex annual / 12
+  // Each path falls back to the next available source when its own data is missing, so a
+  // property with no capex rows in the statement still gets a budget-derived figure.
   let trailingCapex = null, capexMonthsUsed = 0, capexSource = '';
-  if(stmt && stmt.rows && stmt.months && stmt.months.length) {
+
+  // Which window the selected NOI source implies. Budget/proforma NOI are annual/12
+  // run-rates, so their capex counterparts are too.
+  const capexWindow = noiSrcKey === 'stmt_t6' ? 6
+                    : noiSrcKey === 'stmt_avg' ? 3
+                    : null; // budget / proforma / unset → not a trailing window
+
+  const bgCapexMonthly = (() => {
+    if(!bg) return null;
+    const rows = bg.rows.filter(r => r.isCapex && r.total);
+    if(!rows.length) return null;
+    // Annual/12 on purpose: a monthly capex reserve assumption should be the 12-month
+    // average, not whatever the budget happens to load into the selected month.
+    return Math.abs(rows.reduce((s, r) => s + r.total, 0)) / 12;
+  })();
+
+  const pfCapexMonthly = (() => {
+    if(!pf) return null;
+    const rows = pf.rows.filter(r => r.isCapex && r.total);
+    if(!rows.length) return null;
+    return Math.abs(rows.reduce((s, r) => s + r.total, 0)) / 12;
+  })();
+
+  // Trailing average over an arbitrary window, from the statement's capex rows.
+  const stmtCapexAvg = (windowMonths) => {
+    if(!stmt || !stmt.rows || !stmt.months || !stmt.months.length) return null;
     const isCapexRow = r => {
       const lc = r.label.toLowerCase();
       return lc.includes('capex') || lc.includes('capital expenditure') || lc.includes('capital improvement');
     };
     // Include subtotal rows — Buildium stores capex as "Total for Capital Improvements" (isSubtotal)
     const capexRows = stmt.rows.filter(r => isCapexRow(r) && !r.isCategory && !r.isTotal);
-    if(capexRows.length) {
-      // Use the same reconciliation-aware anchor as all other trailing averages
-      const capexMi = getPrevMonthIdx(stmt.months, currentPropId);
-      const nMonths = Math.min(3, capexMi + 1);
-      let total = 0;
-      capexRows.forEach(r => {
-        for(let i = 0; i < nMonths; i++) total += Math.abs(r.values[capexMi - i] || 0);
-      });
-      trailingCapex = total / nMonths;
-      capexMonthsUsed = nMonths;
-      capexSource = 'stmt';
-    }
+    if(!capexRows.length) return null;
+    // Use the same reconciliation-aware anchor as all other trailing averages
+    const capexMi = getPrevMonthIdx(stmt.months, currentPropId);
+    const nMonths = Math.min(windowMonths, capexMi + 1);
+    if(nMonths < 1) return null;
+    let total = 0;
+    capexRows.forEach(r => {
+      for(let i = 0; i < nMonths; i++) total += Math.abs(r.values[capexMi - i] || 0);
+    });
+    return { value: total / nMonths, monthsUsed: nMonths };
+  };
+
+  if(capexWindow !== null) {
+    // Statement-based NOI selected — match it with the same trailing window.
+    const t = stmtCapexAvg(capexWindow);
+    if(t) { trailingCapex = t.value; capexMonthsUsed = t.monthsUsed; capexSource = 'stmt'; }
+  } else if(noiSrcKey === 'proforma' && pfCapexMonthly !== null) {
+    trailingCapex = pfCapexMonthly; capexMonthsUsed = 0; capexSource = 'proforma';
+  } else if(bgCapexMonthly !== null) {
+    // Covers an explicit Budget selection and the default (no selection) case.
+    trailingCapex = bgCapexMonthly; capexMonthsUsed = 0; capexSource = 'budget';
   }
-  // Fallback: if no capex in statement, use budget's capex rows as a monthly average
-  // (common for Buildium/PGO where capex isn't tracked in the income statement)
-  if(trailingCapex === null && bg) {
-    const bgCapexRows = bg.rows.filter(r => r.isCapex && r.total);
-    if(bgCapexRows.length) {
-      // Annual/12 on purpose: a monthly capex reserve assumption should be the 12-month
-      // average, not whatever the budget happens to load into the selected month.
-      const bgCapexAnnual = bgCapexRows.reduce((s, r) => s + r.total, 0);
-      trailingCapex = bgCapexAnnual / 12;
-      capexMonthsUsed = 0; // signals budget-derived, not trailing avg
-      capexSource = 'budget';
-    }
+
+  // Fallbacks, in order, when the selected source has no capex data of its own.
+  if(trailingCapex === null && bgCapexMonthly !== null) {
+    trailingCapex = bgCapexMonthly; capexMonthsUsed = 0; capexSource = 'budget';
+  }
+  if(trailingCapex === null && pfCapexMonthly !== null) {
+    trailingCapex = pfCapexMonthly; capexMonthsUsed = 0; capexSource = 'proforma';
+  }
+  if(trailingCapex === null) {
+    // Last resort: a trailing statement average even though a non-statement NOI source
+    // is selected — better than assuming zero capex in the projection.
+    const t = stmtCapexAvg(3);
+    if(t) { trailingCapex = t.value; capexMonthsUsed = t.monthsUsed; capexSource = 'stmt'; }
   }
 
   // ── Capex assumption: use saved override if set, otherwise trailing avg ───
@@ -8838,10 +9142,18 @@ function renderCashReviewTab() {
   </div>`;
 
   // ── Capex assumption editor ───────────────────────────────────────────────
+  // Label names the source the figure came from, and says so when that source is the one
+  // the NOI toggle selected (vs. a fallback used because the selected source had no capex).
+  const capexMatchesNoi = (capexSource === 'stmt'     && (noiSrcKey === 'stmt_t6' || noiSrcKey === 'stmt_avg'))
+                       || (capexSource === 'budget'   && (noiSrcKey === 'budget' || !noiSrcKey))
+                       || (capexSource === 'proforma' &&  noiSrcKey === 'proforma');
+  const capexBasisText = capexSource === 'budget'   ? `Budget avg/mo: ${fmt(trailingCapex)}`
+                       : capexSource === 'proforma' ? `Proforma avg/mo: ${fmt(trailingCapex)}`
+                       : `T${capexMonthsUsed} trailing avg: ${fmt(trailingCapex)}`;
   const trailingLabel = trailingCapex !== null
-    ? (capexSource === 'budget'
-        ? `Budget avg/mo: ${fmt(trailingCapex)}`
-        : `${capexMonthsUsed}-mo trailing avg: ${fmt(trailingCapex)}`)
+    ? capexBasisText + (capexMatchesNoi
+        ? ' · matches NOI source'
+        : ' · <span style="color:var(--amber)">no capex in the selected NOI source</span>')
     : 'No capex rows found in statement or budget';
   const inputVal = hasOverride ? d.crCapexOverride.toFixed(0) : (trailingCapex !== null ? trailingCapex.toFixed(0) : '0');
   const isEdited = hasOverride && trailingCapex !== null && Math.abs(d.crCapexOverride - trailingCapex) > 1;
@@ -9264,9 +9576,21 @@ function renderFlagsTab() {
     const varLabel  = isInc ? 'Under by $' : 'Over by $';
     const varPctLbl = isInc ? 'Under by %' : 'Over by %';
     const varSign   = isInc ? '−' : '+';
-    const flagTypeTag = isInc
-      ? `<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(220,60,60,0.12);color:var(--red);margin-left:6px;vertical-align:middle">INCOME</span>`
-      : `<span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(255,160,64,0.14);color:#c96a00;margin-left:6px;vertical-align:middle">EXPENSE</span>`;
+    // Tag styling: capex and debt service get their own tags so they read as below-NOI
+    // items rather than operating expenses, and LOC-funded capex is called out explicitly
+    // so the variance isn't mistaken for a cash-flow problem.
+    const tagStyle = (bg2, color) => `font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:${bg2};color:${color};margin-left:6px;vertical-align:middle`;
+    let flagTypeTag;
+    if(isInc) {
+      flagTypeTag = `<span style="${tagStyle('rgba(220,60,60,0.12)','var(--red)')}">INCOME</span>`;
+    } else if(f.isCapexFlag) {
+      flagTypeTag = `<span style="${tagStyle('rgba(74,144,217,0.14)','#2f6fb0')}">CAPEX</span>`
+        + (f.locFunded ? `<span style="${tagStyle('rgba(130,130,130,0.14)','var(--text3)')}">LOC-FUNDED</span>` : '');
+    } else if(f.isDebtServiceFlag) {
+      flagTypeTag = `<span style="${tagStyle('rgba(150,110,200,0.16)','#6b4fa0')}">DEBT SERVICE</span>`;
+    } else {
+      flagTypeTag = `<span style="${tagStyle('rgba(255,160,64,0.14)','#c96a00')}">EXPENSE</span>`;
+    }
 
     const dataTable = (muted) => `
       <table class="bench-table" style="width:100%;margin:0${muted?';opacity:0.6':''}">
@@ -9278,7 +9602,7 @@ function renderFlagsTab() {
           <th style="text-align:right">${varPctLbl}</th>
         </tr></thead>
         <tbody><tr>
-          <td style="font-weight:500">${f.label}${flagTypeTag}${f.stmtLabels.length>1?`<div style="font-size:10px;color:var(--text3);margin-top:2px">${f.stmtLabels.join(' + ')}</div>`:''}</td>
+          <td style="font-weight:500">${f.label}${flagTypeTag}${f.stmtLabels.length>1?`<div style="font-size:10px;color:var(--text3);margin-top:2px">${f.stmtLabels.join(' + ')}</div>`:''}${f.basisNote?`<div style="font-size:10px;color:var(--text3);margin-top:3px;font-weight:400;font-style:italic">${escHtml(f.basisNote)}</div>`:''}</td>
           <td style="text-align:right">${fmtAbs(f.budget)}</td>
           <td style="text-align:right"${muted?'':' class="val-neg"'}>${fmtAbs(f.actual)}</td>
           <td style="text-align:right"${muted?'':' class="val-neg"'}>${varSign}${varDStr}</td>
@@ -9380,8 +9704,10 @@ function getFlagHeuristic(flag, d, stmt, monthIdx) {
 
 function computeFlagHeuristic(flag, d, stmt, monthIdx) {
   const { actual, isIncome, stmtLabels } = flag;
-  // Derive group from PF_LINE_ITEMS (flag objects don't carry a group property)
-  const group = (PF_LINE_ITEMS.find(i => i.label === flag.label) || {}).group || flag.label;
+  // Prefer the flag's own group; fall back to deriving it from PF_LINE_ITEMS for older
+  // flag objects that predate the group property. Matches getFlagHeuristic's dismissal
+  // key, so "don't suggest this again" sticks to the same group the heuristic was for.
+  const group = flag.group || (PF_LINE_ITEMS.find(i => i.label === flag.label) || {}).group || flag.label;
   if(!stmt || !stmtLabels || !stmtLabels.length) return null;
 
   const fmtH = v => '$' + Math.abs(Math.round(v)).toLocaleString();
@@ -9409,6 +9735,35 @@ function computeFlagHeuristic(flag, d, stmt, monthIdx) {
   const t6Avg   = t6Slice.length ? t6Slice.reduce((a,b)=>a+b,0) / t6Slice.length : null;
 
   const monthLabel = stmt.months[monthIdx] || '';
+
+  // ── 0. Debt service — budget figure first ──────────────────────────────────
+  // Debt service is a fixed obligation. When actual and budget disagree, the payment
+  // almost never changed — the budget figure is stale or was entered wrong. Runs before
+  // the generic checks below so a mortgage payment doesn't get explained away as a
+  // "round number" or a one-time spike.
+  if(group === 'debt_service') {
+    const stable = priorAvg !== null && Math.abs(Math.abs(actual) - Math.abs(priorAvg)) < Math.abs(priorAvg) * 0.02;
+    return {
+      id: 'ds_budget_check',
+      icon: '🏦',
+      color: 'var(--blue,#4a90d9)',
+      text: stable
+        ? `Actual debt service has held steady at ${fmtH(actual)}/mo across the prior 3 months, so the payment itself has not changed — the budget figure is the more likely error. Verify it against the loan terms on the Property debt tab.`
+        : `Debt service is a fixed payment, so a variance this size usually means the budget figure is wrong rather than an overpayment. Check it against the loan terms on the Property debt tab before treating this as a cost overrun.`,
+    };
+  }
+
+  // ── 0b. CapEx — timing vs. sustained overspend ─────────────────────────────
+  // The capex flag already compares a 3-month average, so a hit here is not a single
+  // invoice landing in one month. Point at the two things that actually explain it.
+  if(group === 'capex') {
+    return {
+      id: 'capex_sustained',
+      icon: '🔨',
+      color: 'var(--blue,#4a90d9)',
+      text: `This compares a 3-month average, so it is not one invoice landing in one month — spend has run above budget for a sustained stretch. Check the General Ledger breakdown on the Capex tab to see whether it is unit turns or true capital work driving it.`,
+    };
+  }
 
   // ── 1. Zero-month ──────────────────────────────────────────────────────────
   // Expense/income was non-zero recently but is $0 this month
