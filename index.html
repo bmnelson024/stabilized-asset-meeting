@@ -1192,22 +1192,34 @@ function getStatusDot(id) {
 }
 
 // ─── PROPERTY SELECTION ───────────────────────────────────────────────────────
+// refreshDetailHeader: repaints the property name, breadcrumb and meta line in the detail
+// view. Called on property selection and again whenever an editable property field
+// (name, units, purchase date) changes, so the header never drifts from the record.
+function refreshDetailHeader(p) {
+  if(!p) return;
+  const nameEl  = document.getElementById('detail-prop-name');
+  const crumbEl = document.getElementById('breadcrumb-prop-name');
+  const metaEl  = document.getElementById('detail-prop-meta');
+  if(nameEl)  nameEl.textContent  = p.name;
+  if(crumbEl) crumbEl.textContent = p.name;
+  if(!metaEl) return;
+  const pfYear = p.purchaseDate ? getProformaYear(p.purchaseDate) : null;
+  const pfYearStr = pfYear ? ` · Proforma Year ${pfYear}` : ' · No purchase date set';
+  const stalenessMeta = (() => {
+    const s = getDataStaleness(p.id);
+    if(!s || s.level === 'fresh') return '';
+    const color = s.level === 'stale' ? 'var(--red)' : '#e07b00';
+    return ` &nbsp;<span style="color:${color};font-weight:600;font-size:11px">⚠ Data through ${s.lastMonth} (${s.monthsOld}mo old)</span>`;
+  })();
+  metaEl.innerHTML = `${p.system==='buildium'?'Buildium':'Appfolio'} · ${p.units||'?'} units${pfYearStr}${stalenessMeta}`;
+}
+
 function selectProp(id, tab) {
   currentPropId = id;
   const p = properties.find(x=>x.id===id);
   showView('detail');
   switchTab(tab || 'benchmarks');
-  document.getElementById('detail-prop-name').textContent = p.name;
-  document.getElementById('breadcrumb-prop-name').textContent = p.name;
-  const pfYear = p.purchaseDate ? getProformaYear(p.purchaseDate) : null;
-  const pfYearStr = pfYear ? ` · Proforma Year ${pfYear}` : ' · No purchase date set';
-  const stalenessMeta = (() => {
-    const s = getDataStaleness(id);
-    if(!s || s.level === 'fresh') return '';
-    const color = s.level === 'stale' ? 'var(--red)' : '#e07b00';
-    return ` &nbsp;<span style="color:${color};font-weight:600;font-size:11px">⚠ Data through ${s.lastMonth} (${s.monthsOld}mo old)</span>`;
-  })();
-  document.getElementById('detail-prop-meta').innerHTML = `${p.system==='buildium'?'Buildium':'Appfolio'} · ${p.units||'?'} units${pfYearStr}${stalenessMeta}`;
+  refreshDetailHeader(p);
   updateStabToggle(p);
   updatePmSelect(p);
   renderUploadTab(p);
@@ -1278,6 +1290,75 @@ function saveLOCBalance(propId, rawVal) {
   if(inp && num) inp.value = num.toLocaleString();
   save();
   renderBenchmarkTab();
+}
+
+// ─── EDITABLE PROPERTY FIELDS ─────────────────────────────────────────────────
+// Name, unit count and purchase date are captured in the Add Property dialog but were
+// previously fixed for the life of the property — correcting a typo meant deleting and
+// re-adding, which destroys every uploaded file and all history. These three setters make
+// them editable in place. Everything downstream is keyed on the property id, never the
+// name, so uploads, statements, flags, notes and rent roll history all survive a rename.
+
+// savePropertyName: rename a property, preserving its property-manager grouping.
+//
+// WHY THE PM STEP: property manager resolves as (p.pm || PM_MAP[p.name]). A property that
+// has never had its PM set explicitly relies on the PM_MAP name lookup, so renaming it
+// would silently drop it into the "Other" group on the portfolio view. Resolving the
+// current PM and writing it to p.pm BEFORE the rename pins the grouping in place first.
+function savePropertyName(propId, rawVal) {
+  const prop = properties.find(x => x.id === propId);
+  if(!prop) return;
+  const name = (rawVal || '').trim();
+  const inp = document.getElementById('prop-name-' + propId);
+  if(!name) {
+    alert('Property name cannot be empty.');
+    if(inp) { inp.value = prop.name; inp.focus(); }
+    return;
+  }
+  if(name === prop.name) return; // no-op — don't churn a save on a blur with no edit
+
+  // Pin the current PM before the name changes, if it was only resolving via PM_MAP.
+  if(!prop.pm) {
+    const resolvedPm = PM_MAP[prop.name];
+    if(resolvedPm) prop.pm = resolvedPm;
+  }
+  prop.name = name;
+  save();
+  refreshDetailHeader(prop);
+  updatePmSelect(prop);
+  renderPortfolio();
+}
+
+// savePropertyUnits: unit count. Blank clears it back to unknown.
+function savePropertyUnits(propId, rawVal) {
+  const prop = properties.find(x => x.id === propId);
+  if(!prop) return;
+  const num = parseInt((rawVal || '').toString().replace(/[^0-9]/g, ''), 10);
+  prop.units = (!isNaN(num) && num > 0) ? num : null;
+  const inp = document.getElementById('prop-units-' + propId);
+  if(inp) inp.value = prop.units || '';
+  save();
+  refreshDetailHeader(prop);
+  renderPortfolio();
+  renderPropertyValuationTab(); // value/unit and equity/unit depend on it
+  renderCapexTab();             // per-unit capex figures depend on it
+}
+
+// savePropertyPurchaseDate: purchase date. Drives which proforma year is read and the
+// hold-period/annualized-appreciation math on the Property Evaluation tab, so a change
+// here has to re-render everything that reads the proforma.
+function savePropertyPurchaseDate(propId, rawVal) {
+  const prop = properties.find(x => x.id === propId);
+  if(!prop) return;
+  const val = (rawVal || '').trim();
+  prop.purchaseDate = val || null;
+  save();
+  refreshDetailHeader(prop);
+  renderPortfolio();
+  renderProformaTab();
+  renderBenchmarkTab();
+  renderPropertyValuationTab();
+  renderFlagsTab();
 }
 
 function addProperty() {
@@ -1479,8 +1560,37 @@ function renderUploadTab(p) {
   if(locSettingsEl) {
     const hasLOC  = !!p.hasLOC;
     const locBal  = p.locBalance ? Number(p.locBalance).toLocaleString() : '';
+    const fieldInput = 'padding:5px 9px;background:var(--bg3);border:1px solid var(--border2);border-radius:5px;color:var(--text1);font-size:13px;font-family:inherit;outline:none';
+    const fieldLabel = 'font-size:11px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em';
     locSettingsEl.innerHTML = `
       <div class="upload-section-title">Property Settings</div>
+      <div style="display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+        <div>
+          <div style="${fieldLabel}">Property name</div>
+          <input type="text" id="prop-name-${p.id}" value="${escHtml(p.name || '')}"
+            onchange="savePropertyName('${p.id}', this.value)"
+            onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'"
+            style="${fieldInput};width:240px;font-weight:600">
+        </div>
+        <div>
+          <div style="${fieldLabel}">Units</div>
+          <input type="number" min="1" step="1" id="prop-units-${p.id}" value="${p.units || ''}"
+            placeholder="—"
+            onchange="savePropertyUnits('${p.id}', this.value)"
+            onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'"
+            style="${fieldInput};width:80px;text-align:right">
+        </div>
+        <div>
+          <div style="${fieldLabel}">Purchase date</div>
+          <input type="date" id="prop-purchase-${p.id}" value="${p.purchaseDate || ''}"
+            onchange="savePropertyPurchaseDate('${p.id}', this.value)"
+            onfocus="this.style.borderColor='var(--blue)'" onblur="this.style.borderColor='var(--border2)'"
+            style="${fieldInput};width:160px">
+        </div>
+        <div style="font-size:11px;color:var(--text3);padding-bottom:7px;max-width:260px;line-height:1.5">
+          Purchase date sets the proforma year and the hold period on Property Evaluation.
+        </div>
+      </div>
       <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text1);user-select:none">
           <input type="checkbox" id="loc-toggle-${p.id}" ${hasLOC ? 'checked' : ''}
@@ -1938,19 +2048,7 @@ function handleUpload(event, propId, fileKey) {
         renderProformaTab();
         renderPortfolio();
         // Refresh detail meta in case purchase date was updated
-        if(prop) {
-          document.getElementById('detail-prop-name').textContent = prop.name;
-          document.getElementById('breadcrumb-prop-name').textContent = prop.name;
-          const pfYear2 = prop.purchaseDate ? getProformaYear(prop.purchaseDate) : null;
-          const pfYearStr2 = pfYear2 ? ` · Proforma Year ${pfYear2}` : ' · No purchase date set';
-          const stalenessMeta2 = (() => {
-            const s = getDataStaleness(prop.id);
-            if(!s || s.level === 'fresh') return '';
-            const color = s.level === 'stale' ? 'var(--red)' : '#e07b00';
-            return ` &nbsp;<span style="color:${color};font-weight:600;font-size:11px">⚠ Data through ${s.lastMonth} (${s.monthsOld}mo old)</span>`;
-          })();
-          document.getElementById('detail-prop-meta').innerHTML = `${prop.system==='buildium'?'Buildium':'Appfolio'} · ${prop.units||'?'} units${pfYearStr2}${stalenessMeta2}`;
-        }
+        refreshDetailHeader(prop);
       } catch(err) {
         alert('Error parsing CSV proforma: '+err.message);
       }
