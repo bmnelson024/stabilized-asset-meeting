@@ -7917,6 +7917,114 @@ function computeDebtServiceFlag(stmt, bg, pf, monthIdx, flagMonthLabel) {
   };
 }
 
+// ─── FREE RENT / CONCESSION FLAG ──────────────────────────────────────────────
+// Free rent is given away, not budgeted. Point Guard books it to a "Free Rent Promotion"
+// account that matches no pro forma line item, so before this flag existed the spend was
+// invisible: it landed in no group, never reached the flag engine, and never appeared in a
+// monthly review. Rolling it into Admin & Marketing was considered and rejected — doing
+// that buries a leasing problem inside a marketing budget, and it reads as "marketing is
+// over" rather than "we are discounting rent to fill units".
+//
+// So it stands on its own with a budget of zero. Any material amount is the flag: there is
+// no acceptable run-rate for an expense nobody budgeted. When a property DOES carry a
+// budget line for it, that budget is used and the normal over-budget test applies instead.
+
+// Minimum monthly amount worth flagging. Low on purpose — the point is visibility, not
+// materiality — but above zero so a stray cent or a rounding artifact stays quiet.
+const FREE_RENT_FLAG_MIN = 100;
+
+// getStmtFreeRentRows: free-rent / concession-promotion rows from a parsed statement.
+// Deliberately narrow: 'free rent' and 'rent promotion' only. 'concession' is NOT matched
+// because it already appears in rental_income's stmtKeys — a concession row mapped into
+// income would be double-counted here.
+function getStmtFreeRentRows(stmt) {
+  if(!stmt || !stmt.rows) return [];
+  return stmt.rows.filter(r => {
+    if(r.isCategory || r.isTotal || r.isNOI || r.isNetIncome) return false;
+    const lc = r.label.toLowerCase();
+    return lc.includes('free rent') || lc.includes('rent promotion');
+  });
+}
+
+// computeFreeRentFlag: flags free rent given away in the selected month.
+// mapping is the property's pfMapping — any row already mapped to another group is skipped
+// so the amount is never counted twice.
+function computeFreeRentFlag(stmt, bg, pf, monthIdx, flagMonthLabel, mapping) {
+  if(!stmt || !stmt.months || !stmt.months.length) return null;
+
+  // Every statement label already claimed by a pfMapping group
+  const mappedLabels = new Set();
+  if(mapping) {
+    Object.values(mapping).forEach(v => {
+      (Array.isArray(v) ? v : [v]).forEach(l => { if(l) mappedLabels.add(l); });
+    });
+  }
+  const rows = getStmtFreeRentRows(stmt).filter(r => !mappedLabels.has(r.label));
+  if(!rows.length) return null;
+
+  // Subtotals are dropped when leaf rows are present, so a "Total for ..." row never
+  // double-counts the leaves it covers.
+  const leaves = rows.filter(r => !r.isSubtotal);
+  const useRows = leaves.length ? leaves : rows;
+
+  const actual = Math.abs(useRows.reduce((s, r) => s + (r.values[monthIdx] || 0), 0));
+  if(actual < FREE_RENT_FLAG_MIN) return null;
+
+  // Trailing context — how much has been given away recently. This is what makes the flag
+  // actionable: one month of free rent is a lease, several months running is a pricing or
+  // demand problem.
+  const trailing = n => {
+    const months = Math.min(n, monthIdx + 1);
+    let sum = 0;
+    useRows.forEach(r => {
+      for(let i = 0; i < months; i++) sum += Math.abs(r.values[monthIdx - i] || 0);
+    });
+    return { sum, months };
+  };
+  const t3  = trailing(3);
+  const t12 = trailing(12);
+
+  // A budget line for free rent is unusual but supported — if one exists, compare to it.
+  let budgetMonth = 0;
+  if(bg && Array.isArray(bg.rows)) {
+    const bgRows = bg.rows.filter(r => {
+      const lc = r.label.toLowerCase();
+      return (lc.includes('free rent') || lc.includes('rent promotion')) && r.total;
+    });
+    if(bgRows.length) budgetMonth = Math.abs(bgRowsMonthly(bgRows, bg, flagMonthLabel) || 0);
+  }
+
+  const varD = actual - budgetMonth;
+  // Budget of zero means no meaningful percentage — guarded as null so nothing downstream
+  // renders "Infinity%" or sorts on it.
+  const varPct = budgetMonth ? varD / Math.abs(budgetMonth) : null;
+
+  // With a real budget, fall back to the standard expense test rather than flagging spend
+  // that was planned for.
+  if(budgetMonth && !(varD >= 1000 && varPct >= 0.25)) return null;
+
+  const fmtFR = v => '$' + Math.round(Math.abs(v)).toLocaleString();
+  const basisNote = budgetMonth
+    ? `Compared against a budgeted free rent line of ${fmtFR(budgetMonth)}/mo`
+    : `Unbudgeted — free rent is given away, not planned for.`
+      + ` Last ${t3.months} mo: ${fmtFR(t3.sum)}`
+      + (t12.months > t3.months ? ` · last ${t12.months} mo: ${fmtFR(t12.sum)}` : '');
+
+  return {
+    label: 'Free Rent / Concessions',
+    group: 'free_rent',
+    stmtLabels: useRows.map(r => r.label),
+    actual,
+    budget: budgetMonth,
+    varD, varPct,
+    isIncome: false,
+    isFreeRentFlag: true,
+    isUnbudgeted: !budgetMonth,
+    trailing: { t3: t3.sum, t3Months: t3.months, t12: t12.sum, t12Months: t12.months },
+    basisNote,
+  };
+}
+
 // ─── FLAGS TAB ────────────────────────────────────────────────────────────────
 
 function computeFlags(propId) {
@@ -8102,14 +8210,30 @@ function computeFlags(propId) {
     const dsFlag = computeDebtServiceFlag(stmt, bg, pf, monthIdx, flagMonthLabel);
     if(dsFlag) flags.push(dsFlag);
   }
+  // Free rent / concessions — unbudgeted by design, so this sits with the expense flags
+  // rather than the below-NOI group.
+  if(!suppressed['free_rent']) {
+    const frFlag = computeFreeRentFlag(stmt, bg, pf, monthIdx, flagMonthLabel, mapping);
+    if(frFlag) flags.push(frFlag);
+  }
 
   // Sort: income flags first (by worst % shortfall), then expense flags (by worst % overage),
   // then the below-NOI flags (capex, debt service) last — they sit below NOI on the
   // statement, so keeping them at the bottom matches how the benchmark tab reads.
   const belowNOI = f => !!(f.isCapexFlag || f.isDebtServiceFlag);
-  const incFlags = flags.filter(f => f.isIncome).sort((a,b) => a.varPct - b.varPct);
-  const expFlags = flags.filter(f => !f.isIncome && !belowNOI(f)).sort((a,b) => b.varPct - a.varPct);
-  const blwFlags = flags.filter(f => belowNOI(f)).sort((a,b) => b.varPct - a.varPct);
+  // An unbudgeted flag has no percentage (zero budget), so sorting falls back to dollars.
+  // Sorting on a null varPct directly would produce NaN comparisons and an arbitrary order.
+  const byPct = dir => (a, b) => {
+    const aNull = a.varPct === null || a.varPct === undefined;
+    const bNull = b.varPct === null || b.varPct === undefined;
+    if(aNull && bNull) return Math.abs(b.varD) - Math.abs(a.varD);
+    if(aNull) return -1; // unbudgeted items sort to the top — nothing was planned for them
+    if(bNull) return 1;
+    return dir === 'asc' ? a.varPct - b.varPct : b.varPct - a.varPct;
+  };
+  const incFlags = flags.filter(f => f.isIncome).sort(byPct('asc'));
+  const expFlags = flags.filter(f => !f.isIncome && !belowNOI(f)).sort(byPct('desc'));
+  const blwFlags = flags.filter(f => belowNOI(f)).sort(byPct('desc'));
   const sortedFlags = [...incFlags, ...expFlags, ...blwFlags];
   return { flags: sortedFlags, selMonth };
 }
@@ -9645,7 +9769,9 @@ function renderFlagsTab() {
     const group = f.group || PF_LINE_ITEMS.find(i => i.label === f.label)?.group || f.label;
     const savedNote   = flagNotes[group] || '';
     const varDStr     = fmtAbs(f.varD);
-    const varPctStr   = (Math.abs(f.varPct) * 100).toFixed(1) + '%';
+    // varPct is null for an unbudgeted flag (zero budget = no meaningful percentage)
+    const hasPct      = f.varPct !== null && f.varPct !== undefined && isFinite(f.varPct);
+    const varPctStr   = hasPct ? (Math.abs(f.varPct) * 100).toFixed(1) + '%' : 'unbudgeted';
     // escAttr: safe for use inside single-quoted JS args within a double-quoted HTML onclick attr.
     // Escapes backslashes first, then single quotes (JS string), then HTML special chars.
     const escAttr = s => s.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -9686,6 +9812,9 @@ function renderFlagsTab() {
         + (f.locFunded ? `<span style="${tagStyle('rgba(130,130,130,0.14)','var(--text3)')}">LOC-FUNDED</span>` : '');
     } else if(f.isDebtServiceFlag) {
       flagTypeTag = `<span style="${tagStyle('rgba(150,110,200,0.16)','#6b4fa0')}">DEBT SERVICE</span>`;
+    } else if(f.isFreeRentFlag) {
+      flagTypeTag = `<span style="${tagStyle('rgba(255,160,64,0.14)','#c96a00')}">FREE RENT</span>`
+        + (f.isUnbudgeted ? `<span style="${tagStyle('rgba(220,60,60,0.12)','var(--red)')}">UNBUDGETED</span>` : '');
     } else {
       flagTypeTag = `<span style="${tagStyle('rgba(255,160,64,0.14)','#c96a00')}">EXPENSE</span>`;
     }
@@ -9704,7 +9833,7 @@ function renderFlagsTab() {
           <td style="text-align:right">${fmtAbs(f.budget)}</td>
           <td style="text-align:right"${muted?'':' class="val-neg"'}>${fmtAbs(f.actual)}</td>
           <td style="text-align:right"${muted?'':' class="val-neg"'}>${varSign}${varDStr}</td>
-          <td style="text-align:right"${muted?'':' class="val-neg"'}>${varSign}${varPctStr}</td>
+          <td style="text-align:right"${muted?'':' class="val-neg"'}>${hasPct ? varSign+varPctStr : varPctStr}</td>
         </tr></tbody>
       </table>`;
 
@@ -9848,6 +9977,32 @@ function computeFlagHeuristic(flag, d, stmt, monthIdx) {
       text: stable
         ? `Actual debt service has held steady at ${fmtH(actual)}/mo across the prior 3 months, so the payment itself has not changed — the budget figure is the more likely error. Verify it against the loan terms on the Property debt tab.`
         : `Debt service is a fixed payment, so a variance this size usually means the budget figure is wrong rather than an overpayment. Check it against the loan terms on the Property debt tab before treating this as a cost overrun.`,
+    };
+  }
+
+  // ── 0a. Free rent — what it means, not just what it cost ───────────────────
+  // Free rent is a leasing decision, not a cost overrun, so the explanation points at
+  // occupancy rather than at spend control. Runs before the generic checks so it isn't
+  // explained away as a "round number" or a one-time charge.
+  if(group === 'free_rent') {
+    const tr = flag.trailing || {};
+    const rrUnits = (d && d.rentroll && d.rentroll.units) || null;
+    let occNote = '';
+    if(rrUnits && rrUnits.length) {
+      const vacant = rrUnits.filter(u => u.isVacant).length;
+      occNote = vacant > 0
+        ? ` ${vacant} of ${rrUnits.length} units are vacant, so concessions are likely being used to fill them.`
+        : ` The rent roll shows no vacant units, so it is worth asking what these concessions bought.`;
+    }
+    const trailNote = tr.t12
+      ? ` ${fmtH(tr.t12)} has been given away over the last ${tr.t12Months} months.`
+      : '';
+    return {
+      id: 'free_rent_unbudgeted',
+      icon: '🏷',
+      color: 'var(--amber,#ffa040)',
+      text: `Free rent is not budgeted — every dollar here is rent the property agreed to forgo.${trailNote}${occNote}`
+          + ` Treat it as a pricing signal: if it recurs, asking rents are likely above what the market will pay.`,
     };
   }
 
@@ -11217,7 +11372,7 @@ function renderPortfolioFlags() {
         <td style="padding:7px 10px;font-size:12px">${statusBadge(f.status)}</td>
         <td style="padding:7px 10px;font-size:13px;font-weight:500;color:var(--text)">${escHtml(f.label)}${typeTag}${noteHtml}</td>
         <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">${varSign}${fmtAbs(f.varD)}</td>
-        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">${varSign}${(Math.abs(f.varPct)*100).toFixed(1)}%</td>
+        <td style="padding:7px 10px;font-size:13px;color:var(--red,#e05454);font-weight:600;white-space:nowrap">${(f.varPct===null||f.varPct===undefined||!isFinite(f.varPct)) ? 'unbudgeted' : varSign+(Math.abs(f.varPct)*100).toFixed(1)+'%'}</td>
       </tr>`;
     }).join('');
 
@@ -11388,8 +11543,11 @@ function exportFlags() {
       // Income flags are only generated for underperformance (varPct is always negative here).
       // Expense flags are only generated for overages (varPct is always positive here).
       // The '+'/'-' prefix reflects the direction from the caller's perspective (over/under budget).
-      const varSign = f.varPct >= 0 ? '+' : '−';
-      lines.push(`  ${f.isIncome ? '↓ INCOME' : '↑ EXPENSE'} ${f.label}: $${Math.round(Math.abs(f.actual)).toLocaleString()} actual vs $${Math.round(Math.abs(f.budget)).toLocaleString()} budget (${varSign}${Math.abs(f.varPct*100).toFixed(1)}%)`);
+      // An unbudgeted flag (zero budget) has no percentage — say so rather than print NaN.
+      const noPct   = f.varPct === null || f.varPct === undefined || !isFinite(f.varPct);
+      const varSign = (!noPct && f.varPct >= 0) ? '+' : '−';
+      const varTxt  = noPct ? 'unbudgeted' : `${varSign}${Math.abs(f.varPct*100).toFixed(1)}%`;
+      lines.push(`  ${f.isIncome ? '↓ INCOME' : '↑ EXPENSE'} ${f.label}: $${Math.round(Math.abs(f.actual)).toLocaleString()} actual vs $${Math.round(Math.abs(f.budget)).toLocaleString()} budget (${varTxt})`);
       if(note) lines.push(`  → ${note}`);
     });
     lines.push('');
@@ -11432,7 +11590,9 @@ function exportNotes() {
         if(!flagNotes[g]) return null;
         const flagType = f.isIncome ? '[INCOME FLAG]' : '[EXPENSE FLAG]';
         const varSign  = f.isIncome ? '-' : '+';
-        return `${flagType} ${f.label} (${varSign}${(Math.abs(f.varPct)*100).toFixed(1)}%): ${flagNotes[g]}`;
+        const noPct    = f.varPct === null || f.varPct === undefined || !isFinite(f.varPct);
+        const varTxt   = noPct ? 'unbudgeted' : `${varSign}${(Math.abs(f.varPct)*100).toFixed(1)}%`;
+        return `${flagType} ${f.label} (${varTxt}): ${flagNotes[g]}`;
       })
       .filter(Boolean);
     if(!propNotes.length && !flagLines.length) return;
