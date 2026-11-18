@@ -73,6 +73,20 @@
   /* FLAG REVIEW VIEW */
   .flagreview-view{display:none;flex-direction:column}
   .flagreview-view.active{display:flex}
+  .analytics-view{display:none;flex-direction:column}
+  .analytics-view.active{display:flex}
+  .an-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+  .an-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 18px}
+  .an-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px}
+  .an-sub{font-size:11px;color:var(--text3);margin-bottom:12px}
+  .an-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--bg3);margin:10px 0 12px}
+  .an-stat{display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;border-top:1px solid var(--border);font-size:12px;cursor:pointer}
+  .an-stat:first-of-type{border-top:none}
+  .an-stat .n{font-weight:600;font-size:13px}
+  .an-list{display:none;padding:4px 0 8px 14px;font-size:12px}
+  .an-list.open{display:block}
+  .an-list a{color:var(--text2);cursor:pointer;text-decoration:none;display:flex;justify-content:space-between;gap:10px;padding:2px 0}
+  .an-list a:hover{color:var(--text)}
   .kpi-card{background:var(--bg2);border-radius:var(--radius);padding:14px}
   .kpi-label{font-size:11px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.04em}
   .kpi-val{font-size:22px;font-weight:500}
@@ -265,6 +279,7 @@
         </div>
         <div style="display:flex;align-items:center;gap:12px">
           <div id="portfolio-last-saved" style="font-size:12px;color:var(--text3)"></div>
+          <button class="btn btn-primary" style="font-size:12px;padding:4px 10px" onclick="showView('analytics')">📊 Analytics</button>
           <button class="btn" style="font-size:12px;padding:4px 10px" onclick="setAllGroups(true)">Expand all</button>
           <button class="btn" style="font-size:12px;padding:4px 10px" onclick="setAllGroups(false)">Collapse all</button>
         </div>
@@ -489,6 +504,25 @@
         </div>
       </div>
       <div style="padding:20px 24px;overflow-y:auto;flex:1" id="flagreview-content"></div>
+    </div>
+
+    <!-- ANALYTICS VIEW -->
+    <div class="analytics-view" id="analytics-view">
+      <div class="detail-header">
+        <div class="detail-header-left">
+          <h2>Portfolio Analytics</h2>
+          <div class="detail-meta" id="analytics-sub">Current month vs budget, across properties</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="analytics-scope" onchange="renderAnalytics()" style="font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;color:var(--text);font-family:inherit">
+            <option value="all">All properties</option>
+            <option value="stab">Stabilized only</option>
+            <option value="ns">Non-stabilized only</option>
+          </select>
+          <button class="btn" onclick="showView('portfolio')" style="font-size:12px">← Back to Portfolio</button>
+        </div>
+      </div>
+      <div style="padding:20px 24px;overflow-y:auto;flex:1" id="analytics-content"></div>
     </div>
 
 </div>
@@ -1059,7 +1093,7 @@ function getEconOcc(propId) {
   return { pct: rent / mkt * 100, rent, mkt, month: stmt.months[mi], labels };
 }
 
-let portfolioSort = { col: null, dir: 1 }; // dir: 1=asc, -1=desc
+let portfolioSort = { col: 'name', dir: 1 }; // default load: A→Z by property name (within each PM group) // dir: 1=asc, -1=desc
 
 function getPortfolioSortValue(propId, col) {
   const d = propData[propId] || {};
@@ -1283,10 +1317,12 @@ function showView(view) {
   document.getElementById('portfolio-view').classList.toggle('active', view==='portfolio');
   document.getElementById('detail-view').classList.toggle('active', view==='detail');
   document.getElementById('flagreview-view').classList.toggle('active', view==='flagreview');
+  document.getElementById('analytics-view').classList.toggle('active', view==='analytics');
   document.getElementById('topbar-search').style.display = view==='portfolio' ? '' : 'none';
   document.getElementById('topbar-breadcrumb').classList.toggle('visible', view==='detail');
   if(view==='portfolio')   { currentPropId=null; renderPortfolio(); }
   if(view==='flagreview')  { renderPortfolioFlags(); }
+  if(view==='analytics')   { renderAnalytics(); }
 }
 
 function switchTab(name) {
@@ -1520,6 +1556,7 @@ function _stmtAncestorSubtotals(rows) {
       for(let k = stack.length - 1; k >= 0; k--) {
         if(norm(rows[stack[k]].label) === key) { catToSub[stack[k]] = i; stack.splice(k); break; }
       }
+      leafCats[i] = stack.slice(); // a nested subtotal rolls up into its enclosing sections
       return;
     }
     leafCats[i] = stack.slice();
@@ -1534,6 +1571,20 @@ function previewEscrowSpread(stmt, group) {
     const total = r.values.reduce((a, b) => a + (b || 0), 0);
     return { i, label: r.label, total, perMonth: total / n };
   }).filter(x => Math.abs(x.total) > 0.004);
+}
+
+// dropRowsInsideSelectedSubtotals: given rows picked from a statement by keyword, drop any row
+// that already rolls up into another picked subtotal. e.g. Cedar Haven picks both
+// "Total for Capital Improvements" and its own child "Capex Landscaping - Labor" — counting
+// both overstated capex by $345 in Oct 2026.
+function dropRowsInsideSelectedSubtotals(stmt, picked) {
+  if(!stmt || !stmt.rows || !picked || picked.length < 2) return picked || [];
+  const ancestorsOf = _stmtAncestorSubtotals(stmt.rows);
+  const sel = new Set(picked);
+  return picked.filter(r => {
+    const i = stmt.rows.indexOf(r);
+    return i < 0 || !ancestorsOf(i).some(si => sel.has(stmt.rows[si]));
+  });
 }
 
 async function spreadEscrowEvenly(propId, group) {
@@ -5960,7 +6011,7 @@ function renderBenchmarkTab() {
   const isCapex     = r => { const lc = r.label.toLowerCase(); return lc.includes('capex') || lc.includes('capital expenditure') || lc.includes('capital improvement'); };
   const debtSubs    = stmt.rows.filter(r => isDebtService(r));
   const amfSubs     = stmt.rows.filter(r => isAssetMgmtFee(r) && !isDebtService(r));
-  const capexSubs   = stmt.rows.filter(r => isCapex(r) && !isDebtService(r) && !isAssetMgmtFee(r));
+  const capexSubs   = dropRowsInsideSelectedSubtotals(stmt, stmt.rows.filter(r => isCapex(r) && !isDebtService(r) && !isAssetMgmtFee(r)));
 
   // If the statement has no AMF row, synthesize one from the budget (same pattern as syntheticDebtSubs).
   // This handles Buildium properties where the Asset Management Fee lives below NOI in the budget
@@ -8011,9 +8062,9 @@ function getStmtCapexRows(stmt) {
   };
   const dsRows  = new Set(getDSRows(stmt));
   const amfRows = new Set(getAMFRows(stmt));
-  return stmt.rows.filter(r =>
+  return dropRowsInsideSelectedSubtotals(stmt, stmt.rows.filter(r =>
     isCapexLabel(r) && !r.isCategory && !r.isTotal && !dsRows.has(r) && !amfRows.has(r)
-  );
+  ));
 }
 
 // computeCapexFlag: trailing-3-month capex average vs budget.
@@ -8031,6 +8082,20 @@ function getStmtCapexRows(stmt) {
 // cash-flow event for them — but it is still an overspend, and it is exactly what shows
 // up in the monthly draw request. The flag is tagged LOC-funded instead of suppressed so
 // the variance is visible without reading as a cash problem.
+// capexBudgetMonth: monthly capex budget — from the budget file, else proforma annual / 12.
+function capexBudgetMonth(bg, pf, flagMonthLabel) {
+  let budgetMonth = null;
+  if(bg) {
+    const bgCapexRows = bg.rows.filter(r => r.isCapex && r.total);
+    if(bgCapexRows.length) budgetMonth = Math.abs(bgRowsMonthly(bgCapexRows, bg, flagMonthLabel) || 0);
+  }
+  if(!budgetMonth && pf) {
+    const pfCapexRows = pf.rows.filter(r => r.isCapex && r.total);
+    if(pfCapexRows.length) budgetMonth = Math.abs(pfCapexRows.reduce((s, r) => s + r.total, 0)) / 12;
+  }
+  return budgetMonth || null;
+}
+
 function computeCapexFlag(stmt, bg, pf, monthIdx, flagMonthLabel, prop) {
   if(!stmt || !stmt.months || !stmt.months.length) return null;
   const capexRows = getStmtCapexRows(stmt);
@@ -8045,17 +8110,8 @@ function computeCapexFlag(stmt, bg, pf, monthIdx, flagMonthLabel, prop) {
   });
   const actualAvg = actualTotal / nMonths;
 
-  // Budget — monthly capex from the budget file, else proforma annual / 12
-  let budgetMonth = null;
-  if(bg) {
-    const bgCapexRows = bg.rows.filter(r => r.isCapex && r.total);
-    if(bgCapexRows.length) budgetMonth = Math.abs(bgRowsMonthly(bgCapexRows, bg, flagMonthLabel) || 0);
-  }
-  if(!budgetMonth && pf) {
-    const pfCapexRows = pf.rows.filter(r => r.isCapex && r.total);
-    if(pfCapexRows.length) budgetMonth = Math.abs(pfCapexRows.reduce((s, r) => s + r.total, 0)) / 12;
-  }
-  if(budgetMonth === null || budgetMonth === 0) return null;
+  const budgetMonth = capexBudgetMonth(bg, pf, flagMonthLabel);
+  if(!budgetMonth) return null;
 
   const varD   = actualAvg - budgetMonth;
   const varPct = varD / Math.abs(budgetMonth);
@@ -8231,7 +8287,11 @@ function computeFreeRentFlag(stmt, bg, pf, monthIdx, flagMonthLabel, mapping) {
 
 // ─── FLAGS TAB ────────────────────────────────────────────────────────────────
 
-function computeFlags(propId) {
+// computeFlags(propId, out): `out` is optional. When passed an object, it is filled with the
+// raw current-month actual vs budget for every comparable group, BEFORE thresholds and
+// dismissals — out.repairs, out.total_income, out.capex, ... each {actual, budget, month}.
+// Used by the Analytics view; the returned flags are unchanged either way.
+function computeFlags(propId, out) {
   const d = propData[propId] || {};
   const stmt = d.statement;
   const mapping = (d.pfMapping && Object.keys(d.pfMapping).length) ? d.pfMapping : null;
@@ -8342,12 +8402,14 @@ function computeFlags(propId) {
   // ── Expense flags: over budget by ≥25% AND ≥$1,000 ──────────────────────
   const expenseGroups = PF_LINE_ITEMS.filter(i => !i.isIncome && !i.isComputed && !i.isDebtService && !i.isAssetMgmt);
   expenseGroups.forEach(item => {
-    if(suppressed[item.group]) return;
+    if(suppressed[item.group] && !out) return;
     const stmtLabels = getMappedLabels(item.group);
     if(!stmtLabels.length) return;
     const actual = sumStmtMonth(stmtLabels);
     const budgetMonth = resolveBudgetMonth(item, stmtLabels);
     if(budgetMonth === null || budgetMonth === 0) return;
+    if(out) out[item.group] = { actual, budget: budgetMonth, month: selMonth };
+    if(suppressed[item.group]) return;
     const varD   = actual - budgetMonth;
     const varPct = varD / Math.abs(budgetMonth);
     if(varD >= 1000 && varPct >= 0.25) {
@@ -8358,12 +8420,14 @@ function computeFlags(propId) {
   // ── Income flags: under budget by ≥10% AND ≥$300 shortfall ──────────────
   const incomeGroups = PF_LINE_ITEMS.filter(i => i.isIncome && !i.isComputed);
   incomeGroups.forEach(item => {
-    if(suppressed[item.group]) return;
+    if(suppressed[item.group] && !out) return;
     const stmtLabels = getMappedLabels(item.group);
     if(!stmtLabels.length) return;
     const actual = sumStmtMonth(stmtLabels);
     const budgetMonth = resolveBudgetMonth(item, stmtLabels);
     if(budgetMonth === null || budgetMonth === 0) return;
+    if(out) out[item.group] = { actual, budget: budgetMonth, month: selMonth };
+    if(suppressed[item.group]) return;
     const varD   = actual - budgetMonth; // negative = underperforming
     const varPct = varD / Math.abs(budgetMonth);
     // Flag individual income lines: ≥15% under budget AND ≥$500 shortfall.
@@ -8400,6 +8464,31 @@ function computeFlags(propId) {
           flags.push({ label: 'Total Income', group: 'total_income', stmtLabels: [totalIncRow.label], actual, budget: budgetMonth, varD, varPct, isIncome: true, isTotalIncome: true });
         }
       }
+    }
+  }
+
+  if(out) {
+    const totalIncRow = stmt.rows.find(r => r.isTotalIncome);
+    if(totalIncRow) {
+      let budgetMonth = null;
+      if(bg) {
+        const bgTotRow = bg.rows.find(r => r.isTotalIncome);
+        if(bgTotRow && bgTotRow.total) budgetMonth = bgRowMonthly(bgTotRow, bg, flagMonthLabel);
+      }
+      if(budgetMonth === null && pf) {
+        const pfTotRow = pf.rows.find(r => r.isTotalIncome);
+        if(pfTotRow && pfTotRow.total) budgetMonth = pfTotRow.total / 12;
+      }
+      if(budgetMonth !== null && budgetMonth > 0)
+        out.total_income = { actual: totalIncRow.values[monthIdx] || 0, budget: budgetMonth, month: selMonth };
+    }
+    const capexRows = getStmtCapexRows(stmt);
+    const capexBudget = capexBudgetMonth(bg, pf, flagMonthLabel);
+    if(capexRows.length && capexBudget) {
+      out.capex = {
+        actual: capexRows.reduce((s, r) => s + Math.abs(r.values[monthIdx] || 0), 0),
+        budget: capexBudget, month: selMonth, locFunded: !!(p && p.hasLOC),
+      };
     }
   }
 
@@ -9284,7 +9373,7 @@ function renderCashReviewTab() {
       return lc.includes('capex') || lc.includes('capital expenditure') || lc.includes('capital improvement');
     };
     // Include subtotal rows — Buildium stores capex as "Total for Capital Improvements" (isSubtotal)
-    const capexRows = stmt.rows.filter(r => isCapexRow(r) && !r.isCategory && !r.isTotal);
+    const capexRows = dropRowsInsideSelectedSubtotals(stmt, stmt.rows.filter(r => isCapexRow(r) && !r.isCategory && !r.isTotal));
     if(!capexRows.length) return null;
     // Use the same reconciliation-aware anchor as all other trailing averages
     const capexMi = getPrevMonthIdx(stmt.months, currentPropId);
@@ -10390,7 +10479,7 @@ function renderCapexTab() {
   let capexRows = [], stmtMonths = [], t12CapexTotal = 0, egi = 0;
   if(stmt && stmt.rows && stmt.months) {
     stmtMonths = stmt.months;
-    capexRows = stmt.rows.filter(r => isCapexRow(r) && !r.isCategory && !r.isTotal);
+    capexRows = dropRowsInsideSelectedSubtotals(stmt, stmt.rows.filter(r => isCapexRow(r) && !r.isCategory && !r.isTotal));
     // Sum only the 12 months up to and including the reconciliation-aware current month
     const capexMi = getPrevMonthIdx(stmt.months, currentPropId);
     const capexStart = Math.max(0, capexMi - 11);
@@ -11261,11 +11350,11 @@ function portfolioPropRow(p, pm, isOpen) {
     const portfolioMi = getPrevMonthIdx(stmt.months, p.id);
     const dsRows  = getDSRows(stmt);
     const amfRows = getAMFRows(stmt);
-    const capexRows = stmt.rows.filter(r => {
+    const capexRows = dropRowsInsideSelectedSubtotals(stmt, stmt.rows.filter(r => {
       if(r.isCategory || r.isTotal) return false;
       const lc = r.label.toLowerCase();
       return lc.includes('capex') || lc.includes('capital expenditure') || lc.includes('capital improvement');
-    });
+    }));
     const curDS      = dsRows.reduce((sum, r)    => sum + Math.abs(r.values[portfolioMi] || 0), 0);
     const curAMF     = amfRows.reduce((sum, r)   => sum + Math.abs(r.values[portfolioMi] || 0), 0);
     const stmtCapex  = capexRows.reduce((sum, r) => sum + Math.abs(r.values[portfolioMi] || 0), 0);
@@ -11455,6 +11544,134 @@ function portfolioFlagsNavTo(propId) {
   if(!prop) return;
   showDetail(prop);
   setTimeout(() => switchTab('flags'), 50);
+}
+
+// ─── ANALYTICS VIEW ───────────────────────────────────────────────────────────
+// Portfolio-level counts and percentages. Each property is measured in its own current
+// month (getPrevMonthIdx — the same month the overview row uses). A property only counts
+// toward a metric when it has both an actual and a budget for it; the rest are listed as
+// "no data" so the percentages never silently include blanks.
+//   NOI vs budget  — same rule as the status dot: on track ≥ −5%, watch −5% to −10%, off track < −10%.
+//   Repairs / Total income / Capex — current-month actual vs that month's budget (budget file,
+//   else pro forma ÷ 12), any amount over or under; no flag thresholds, dismissals ignored.
+function renderAnalytics() {
+  const el = document.getElementById('analytics-content');
+  if(!el) return;
+  const scope = (document.getElementById('analytics-scope') || {}).value || 'all';
+  const props = properties.filter(p => scope === 'all' ? true : scope === 'stab' ? p.stabilized !== false : p.stabilized === false);
+  const byName = (a, b) => a.p.name.localeCompare(b.p.name);
+  const pct = (n, d) => d ? Math.round(n / d * 100) : 0;
+  const varTxt = (a, b) => { const d = a - b; const s = fmt(Math.abs(d)); return (d < 0 ? '(' + s + ')' : '+' + s) + (b ? ` · ${d >= 0 ? '+' : ''}${(d / Math.abs(b) * 100).toFixed(0)}%` : ''); };
+
+  // NOI vs budget
+  const noi = { ok: [], warn: [], flag: [], none: [] };
+  const cmp = { repairs: { over: [], under: [], none: [] }, total_income: { over: [], under: [], none: [] }, capex: { over: [], under: [], none: [] } };
+  const months = new Set();
+  const occB = { phys: { hi: [], mid: [], lo: [], none: [] }, econ: { hi: [], mid: [], lo: [], none: [] } };
+  const bucket = v => v >= 90 ? 'hi' : v >= 85 ? 'mid' : 'lo';
+  props.forEach(p => {
+    const d = propData[p.id] || {};
+    // Physical occupancy — same rent roll + unit filter as the overview Occupancy column
+    const rrU = d.rentroll ? d.rentroll.units : (d.acqrentroll ? d.acqrentroll.units : null);
+    const validU = rrU ? rrU.filter(u => !(u.unitType === 'Unknown' && u.marketRent === 0 && u.actualRent === 0)) : [];
+    if(validU.length) {
+      const occN = validU.filter(u => !u.isVacant).length;
+      const v = occN / validU.length * 100;
+      occB.phys[bucket(v)].push({ p, detail: `${v.toFixed(1)}% · ${occN}/${validU.length} units` });
+    } else occB.phys.none.push({ p });
+    // Economic occupancy — getEconOcc(), same as the overview Econ Occ column
+    let eo = null;
+    try { eo = getEconOcc(p.id); } catch(e) { console.error('Analytics: getEconOcc failed for', p.name, e); }
+    if(eo) occB.econ[bucket(eo.pct)].push({ p, detail: `${eo.pct.toFixed(1)}% · ${eo.month}: ${fmt(eo.rent)} / ${fmt(eo.mkt)}` });
+    else occB.econ.none.push({ p });
+    const stmt = d.statement;
+    const dot = getStatusDot(p.id);
+    if(dot === 'dot-none') noi.none.push({ p });
+    else {
+      const mi = getPrevMonthIdx(stmt.months, p.id);
+      const a = stmt.rows.find(r => r.isNOI).values[mi] || 0;
+      const b = getKeyMetric(p.id, 'budget_noi_month');
+      months.add(stmt.months[mi]);
+      noi[dot.replace('dot-', '')].push({ p, a, b, month: stmt.months[mi] });
+    }
+    const out = {};
+    try { if(stmt) computeFlags(p.id, out); } catch(e) { console.error('Analytics: computeFlags failed for', p.name, e); }
+    Object.keys(cmp).forEach(g => {
+      const c = out[g];
+      if(!c) { cmp[g].none.push({ p }); return; }
+      months.add(c.month);
+      cmp[g][c.actual > c.budget ? 'over' : 'under'].push({ p, a: c.actual, b: c.budget, month: c.month, locFunded: c.locFunded });
+    });
+  });
+
+  let listId = 0;
+  const statRow = (label, color, items, total, showVar) => {
+    const id = 'anl-' + (listId++);
+    const list = items.slice().sort(byName).map(x =>
+      `<a onclick="selectProp('${x.p.id}')"><span>${escHtml(x.p.name)}${x.locFunded ? ' <span style="color:var(--text3);font-size:10px">LOC</span>' : ''}</span>${x.detail ? `<span style="color:var(--text3)">${escHtml(x.detail)}</span>` : showVar && x.b !== undefined ? `<span style="color:var(--text3)">${x.month ? escHtml(x.month) + ' · ' : ''}${fmt(x.a)} vs ${fmt(x.b)} · ${varTxt(x.a, x.b)}</span>` : ''}</a>`).join('');
+    return `<div class="an-stat" onclick="document.getElementById('${id}').classList.toggle('open')">
+        <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:7px"></span>${label}</span>
+        <span><span class="n">${items.length}</span> <span style="color:var(--text3)">${total ? '· ' + pct(items.length, total) + '%' : ''}</span></span>
+      </div><div class="an-list" id="${id}">${list || '<span style="color:var(--text3)">None</span>'}</div>`;
+  };
+  const bar = segs => {
+    const tot = segs.reduce((a, s) => a + s.n, 0);
+    if(!tot) return '<div class="an-bar"></div>';
+    return `<div class="an-bar">${segs.map(s => s.n ? `<div style="width:${s.n / tot * 100}%;background:${s.c}" title="${s.n}"></div>` : '').join('')}</div>`;
+  };
+  const headline = (n, d, word, color) => `<div style="font-size:28px;font-weight:600;color:${color};letter-spacing:-0.5px">${d ? pct(n, d) + '%' : '—'}</div>
+      <div style="font-size:12px;color:var(--text2)">${n} of ${d} propert${d === 1 ? 'y' : 'ies'} ${word}</div>`;
+  const noneRow = items => items.length ? `<div class="an-stat" onclick="this.nextElementSibling.classList.toggle('open')" style="color:var(--text3)"><span>No budget or statement data</span><span>${items.length}</span></div>
+      <div class="an-list">${items.slice().sort(byName).map(x => `<a onclick="selectProp('${x.p.id}')"><span>${escHtml(x.p.name)}</span></a>`).join('')}</div>` : '';
+
+  const G = 'var(--green)', A = '#ffa040', R = 'var(--red)';
+  const noiTot = noi.ok.length + noi.warn.length + noi.flag.length;
+  let html = `<div class="an-grid">`;
+  html += `<div class="an-card">
+      <div class="an-title">NOI vs budget</div>
+      <div class="an-sub">On track ≥ −5% · Watch −5% to −10% · Off track below −10%</div>
+      ${headline(noi.ok.length, noiTot, 'on track', G)}
+      ${bar([{ n: noi.ok.length, c: G }, { n: noi.warn.length, c: A }, { n: noi.flag.length, c: R }])}
+      ${statRow('On track', G, noi.ok, noiTot, true)}
+      ${statRow('Watch', A, noi.warn, noiTot, true)}
+      ${statRow('Off track', R, noi.flag, noiTot, true)}
+      ${noneRow(noi.none)}
+    </div>`;
+  const cmpCard = (g, title, sub, overWord, overColor, underColor, overLabel, underLabel) => {
+    const c = cmp[g]; const tot = c.over.length + c.under.length;
+    return `<div class="an-card">
+      <div class="an-title">${title}</div>
+      <div class="an-sub">${sub}</div>
+      ${headline(c.over.length, tot, overWord, overColor)}
+      ${bar([{ n: c.over.length, c: overColor }, { n: c.under.length, c: underColor }])}
+      ${statRow(overLabel, overColor, c.over, tot, true)}
+      ${statRow(underLabel, underColor, c.under, tot, true)}
+      ${noneRow(c.none)}
+    </div>`;
+  };
+  const occCard = (k, title, sub) => {
+    const c = occB[k]; const tot = c.hi.length + c.mid.length + c.lo.length;
+    return `<div class="an-card">
+      <div class="an-title">${title}</div>
+      <div class="an-sub">${sub}</div>
+      ${headline(c.hi.length, tot, 'at 90% or higher', G)}
+      ${bar([{ n: c.hi.length, c: G }, { n: c.mid.length, c: A }, { n: c.lo.length, c: R }])}
+      ${statRow('90% and over', G, c.hi, tot, false)}
+      ${statRow('85% – 89.9%', A, c.mid, tot, false)}
+      ${statRow('Under 85%', R, c.lo, tot, false)}
+      ${noneRow(c.none).replace('No budget or statement data', k === 'phys' ? 'No rent roll' : 'No rent roll or income statement')}
+    </div>`;
+  };
+  html += occCard('phys', 'Physical occupancy', 'Occupied units ÷ total units, from the rent roll');
+  html += occCard('econ', 'Economic occupancy', 'Statement rental income ÷ market rent of all units');
+  html += cmpCard('repairs', 'Repairs vs budget', 'Current month repairs actual vs monthly budget', 'over budget', R, G, 'Over budget', 'At or under budget');
+  html += cmpCard('total_income', 'Total income vs budget', 'Current month total income actual vs monthly budget', 'over budget', G, R, 'Over budget', 'Under budget');
+  html += cmpCard('capex', 'Capex vs budget', 'Current month capex actual vs monthly budget (LOC-funded properties included, marked LOC)', 'over budget', R, G, 'Over budget', 'At or under budget');
+  html += `</div>
+    <div style="font-size:11px;color:var(--text3);margin-top:14px">Click a row to see the properties; click a property to open it. Each property is measured in its own current month${months.size ? ' (' + escHtml([...months].join(', ')) + ')' : ''}. Budget = budget file, or pro forma ÷ 12 when there is no budget.</div>`;
+  el.innerHTML = html;
+  const sub = document.getElementById('analytics-sub');
+  if(sub) sub.textContent = `${props.length} propert${props.length === 1 ? 'y' : 'ies'} · current month vs budget`;
 }
 
 function renderPortfolioFlags() {
