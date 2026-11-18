@@ -511,14 +511,9 @@
       <div class="detail-header">
         <div class="detail-header-left">
           <h2>Portfolio Analytics</h2>
-          <div class="detail-meta" id="analytics-sub">Current month vs budget, across properties</div>
+          <div class="detail-meta" id="analytics-sub">Stabilized properties only</div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
-          <select id="analytics-scope" onchange="renderAnalytics()" style="font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;color:var(--text);font-family:inherit">
-            <option value="all">All properties</option>
-            <option value="stab">Stabilized only</option>
-            <option value="ns">Non-stabilized only</option>
-          </select>
           <button class="btn" onclick="showView('portfolio')" style="font-size:12px">← Back to Portfolio</button>
         </div>
       </div>
@@ -1530,15 +1525,36 @@ function deleteProperty() {
 // uploading a new statement replaces all of it.
 const ESCROW_SPREAD_NAMES = { tax: 'property taxes', insurance: 'insurance' };
 
+// The broad 'tax' keyword group also catches payroll taxes (Modern Heights: FUTA, Medicare,
+// Social Security…), sales/local taxes (RPME: "Tax - Sales", "Tax - Local or Other") and
+// insurance-only escrow lines ("Mortgage Escrow Expense - Property Insurance"). None of those are
+// property taxes, so the ÷12 spread and the "Property Tax $0" warning use this narrower test:
+// a line counts only if it names property / real estate tax, is a mortgage escrow line that isn't
+// insurance-only, or is just "Tax"/"Taxes" — and it isn't inside a payroll section.
+const PAYROLL_TAX_RE = /payroll|unemployment|medicare|social security|fica|futa|suta|withholding/i;
+function _isPropertyTaxRow(rows, i, ancestorsOf) {
+  const lc = rows[i].label.toLowerCase().trim();
+  if(PAYROLL_TAX_RE.test(lc)) return false;
+  if(ancestorsOf(i).some(si => PAYROLL_TAX_RE.test(rows[si].label))) return false;
+  const hasTax = /\btax/.test(lc);
+  if(/insur|hazard/.test(lc) && !hasTax) return false;               // insurance-only escrow
+  if(hasTax && /property|real estate|\bre\b|ad valorem/.test(lc)) return true;
+  if(lc.includes('escrow')) return true;                              // "Mortgage Escrow Expense", "... - Taxes & Insurance"
+  return lc === 'tax' || lc === 'taxes';
+}
+
 function _escrowLeafIdx(stmt, group) {
   const incIdx = stmt.rows.findIndex(r => r.isTotalIncome);
   const expIdx = stmt.rows.findIndex(r => r.isTotalExpense);
+  const ancestorsOf = _stmtAncestorSubtotals(stmt.rows);
   const out = [];
   stmt.rows.forEach((r, i) => {
     if(r.isCategory || r.isSubtotal || r.isTotal || r.isNOI) return;
     if(incIdx >= 0 && i < incIdx) return;   // expense side only
     if(expIdx >= 0 && i > expIdx) return;   // operating expenses only (above NOI)
-    if(getStmtMatchGroup(r.label) === group) out.push(i);
+    if(getStmtMatchGroup(r.label) !== group) return;
+    if(group === 'tax' && !_isPropertyTaxRow(stmt.rows, i, ancestorsOf)) return;
+    out.push(i);
   });
   return out;
 }
@@ -1695,9 +1711,11 @@ function checkMissingEscrow(stmt) {
   if(mi < 0) mi = stmt.months.length - 1;
   const month = stmt.months[mi] || '';
   let foundTax = false, taxOk = false, foundIns = false, insOk = false;
-  stmt.rows.forEach(r => {
+  const ancestorsOf = _stmtAncestorSubtotals(stmt.rows);
+  stmt.rows.forEach((r, ri) => {
     if(r.isCategory) return;
     const grp = getStmtMatchGroup(r.label);
+    if(grp === 'tax' && !_isPropertyTaxRow(stmt.rows, ri, ancestorsOf)) return; // payroll / sales / insurance-only lines aren't property taxes
     if(grp === 'tax')      { foundTax = true; if(Math.abs(r.values[mi]||0) > 0) taxOk = true; }
     if(grp === 'insurance'){ foundIns = true; if(Math.abs(r.values[mi]||0) > 0) insOk = true; }
   });
@@ -11557,8 +11575,8 @@ function portfolioFlagsNavTo(propId) {
 function renderAnalytics() {
   const el = document.getElementById('analytics-content');
   if(!el) return;
-  const scope = (document.getElementById('analytics-scope') || {}).value || 'all';
-  const props = properties.filter(p => scope === 'all' ? true : scope === 'stab' ? p.stabilized !== false : p.stabilized === false);
+  // Stabilized properties only (same split as the overview's Stabilized section) — per Brian.
+  const props = properties.filter(p => p.stabilized !== false);
   const byName = (a, b) => a.p.name.localeCompare(b.p.name);
   const pct = (n, d) => d ? Math.round(n / d * 100) : 0;
   const varTxt = (a, b) => { const d = a - b; const s = fmt(Math.abs(d)); return (d < 0 ? '(' + s + ')' : '+' + s) + (b ? ` · ${d >= 0 ? '+' : ''}${(d / Math.abs(b) * 100).toFixed(0)}%` : ''); };
@@ -11671,7 +11689,7 @@ function renderAnalytics() {
     <div style="font-size:11px;color:var(--text3);margin-top:14px">Click a row to see the properties; click a property to open it. Each property is measured in its own current month${months.size ? ' (' + escHtml([...months].join(', ')) + ')' : ''}. Budget = budget file, or pro forma ÷ 12 when there is no budget.</div>`;
   el.innerHTML = html;
   const sub = document.getElementById('analytics-sub');
-  if(sub) sub.textContent = `${props.length} propert${props.length === 1 ? 'y' : 'ies'} · current month vs budget`;
+  if(sub) sub.textContent = `Stabilized properties only · ${props.length} propert${props.length === 1 ? 'y' : 'ies'}`;
 }
 
 function renderPortfolioFlags() {
