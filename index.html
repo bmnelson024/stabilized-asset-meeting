@@ -1484,6 +1484,155 @@ function deleteProperty() {
   showView('portfolio');
 }
 
+// ─── ESCROW SPREAD (even out lump-sum taxes / insurance) ─────────────────────
+// Some statements post property taxes or insurance as a lump sum (semi-annual, annual or
+// catch-up payments), leaving $0 in other months. spreadEscrowEvenly() replaces each
+// matching expense line's monthly values with (statement total ÷ number of months) and
+// moves the same per-month change through the line's parent subtotal(s), Total Expense,
+// NOI and Net Income. The annual totals don't change, only how they fall by month.
+// Original values are kept on stmt._preSpread so undoEscrowSpread() can restore them;
+// uploading a new statement replaces all of it.
+const ESCROW_SPREAD_NAMES = { tax: 'property taxes', insurance: 'insurance' };
+
+function _escrowLeafIdx(stmt, group) {
+  const incIdx = stmt.rows.findIndex(r => r.isTotalIncome);
+  const expIdx = stmt.rows.findIndex(r => r.isTotalExpense);
+  const out = [];
+  stmt.rows.forEach((r, i) => {
+    if(r.isCategory || r.isSubtotal || r.isTotal || r.isNOI) return;
+    if(incIdx >= 0 && i < incIdx) return;   // expense side only
+    if(expIdx >= 0 && i > expIdx) return;   // operating expenses only (above NOI)
+    if(getStmtMatchGroup(r.label) === group) out.push(i);
+  });
+  return out;
+}
+
+// Returns i => [indices of the subtotal rows that roll up leaf row i].
+// Categories are matched to subtotals by label ("Insurance" ↔ "Total for Insurance" /
+// "Total Insurance"), so a header with no subtotal can't throw the pairing off.
+function _stmtAncestorSubtotals(rows) {
+  const norm = l => (l || '').toLowerCase().replace(/^total\s+(for\s+)?/, '').replace(/\s+/g, ' ').trim();
+  const stack = [], catToSub = {}, leafCats = {};
+  rows.forEach((r, i) => {
+    if(r.isCategory) { stack.push(i); return; }
+    if(r.isSubtotal) {
+      const key = norm(r.label);
+      for(let k = stack.length - 1; k >= 0; k--) {
+        if(norm(rows[stack[k]].label) === key) { catToSub[stack[k]] = i; stack.splice(k); break; }
+      }
+      return;
+    }
+    leafCats[i] = stack.slice();
+  });
+  return i => (leafCats[i] || []).map(c => catToSub[c]).filter(x => x !== undefined && x > i);
+}
+
+function previewEscrowSpread(stmt, group) {
+  const n = stmt.months.length;
+  return _escrowLeafIdx(stmt, group).map(i => {
+    const r = stmt.rows[i];
+    const total = r.values.reduce((a, b) => a + (b || 0), 0);
+    return { i, label: r.label, total, perMonth: total / n };
+  }).filter(x => Math.abs(x.total) > 0.004);
+}
+
+async function spreadEscrowEvenly(propId, group) {
+  const d = propData[propId];
+  const stmt = d && d.statement;
+  if(!stmt || !stmt.rows || !stmt.months || !stmt.months.length) return;
+  const name = ESCROW_SPREAD_NAMES[group] || group;
+  const lines = previewEscrowSpread(stmt, group);
+  if(!lines.length) { alert(`No ${name} lines with a balance were found on this statement.`); return; }
+  const n = stmt.months.length;
+  const msg = `Spread ${name} evenly across the ${n} months on this statement?\n\n`
+    + lines.map(x => `${x.label}: ${fmt(x.total)} total → ${fmt(x.perMonth)}/mo`).join('\n')
+    + `\n\nTotal Expense, NOI and Net Income will update to match. Annual totals don't change. You can undo this.`;
+  if(!confirm(msg)) return;
+
+  const rows = stmt.rows;
+  const ancestorsOf = _stmtAncestorSubtotals(rows);
+  const expRow = rows.findIndex(r => r.isTotalExpense);
+  const noiRow = rows.findIndex(r => r.isNOI);
+  const netRows = rows.map((r, i) => r.isNetIncome ? i : -1).filter(i => i >= 0);
+  if(!stmt._preSpread) stmt._preSpread = {};
+  const keep = i => { if(i >= 0 && !(i in stmt._preSpread)) stmt._preSpread[i] = rows[i].values.slice(); };
+  const bump = (i, delta, sign) => {
+    if(i < 0) return;
+    keep(i);
+    rows[i].values = rows[i].values.map((v, m) => Math.round(((v || 0) + sign * delta[m]) * 100) / 100);
+  };
+
+  lines.forEach(x => {
+    const r = rows[x.i];
+    // Work in cents; any rounding remainder lands in the last month so the total still ties.
+    const totC = Math.round(x.total * 100);
+    const baseC = Math.round(totC / n);
+    const newVals = Array.from({length: n}, (_, m) => (m === n - 1 ? totC - baseC * (n - 1) : baseC) / 100);
+    const delta = newVals.map((v, m) => v - (r.values[m] || 0));
+    keep(x.i);
+    r.values = newVals;
+    ancestorsOf(x.i).forEach(si => bump(si, delta, +1));
+    bump(expRow, delta, +1);
+    bump(noiRow, delta, -1);
+    netRows.forEach(ni => bump(ni, delta, -1));
+  });
+
+  if(!stmt.escrowSpread) stmt.escrowSpread = {};
+  stmt.escrowSpread[group] = {
+    lines: lines.map(x => ({ label: x.label, total: x.total, perMonth: x.perMonth })),
+    months: n,
+    at: new Date().toISOString(),
+  };
+  await save(propId);
+  _rerenderAfterStmtChange(propId);
+}
+
+async function undoEscrowSpread(propId) {
+  const d = propData[propId];
+  const stmt = d && d.statement;
+  if(!stmt || !stmt._preSpread) return;
+  if(!confirm('Undo the even spread and restore the statement exactly as uploaded?')) return;
+  Object.entries(stmt._preSpread).forEach(([i, vals]) => { if(stmt.rows[i]) stmt.rows[i].values = vals; });
+  delete stmt._preSpread;
+  delete stmt.escrowSpread;
+  await save(propId);
+  _rerenderAfterStmtChange(propId);
+}
+
+function _rerenderAfterStmtChange(propId) {
+  try { renderPortfolio(); } catch(e) { console.error(e); }
+  if(currentPropId !== propId) return;
+  const p = properties.find(x => x.id === propId);
+  [() => renderUploadTab(p), renderFlagsTab, renderStatementTab, renderBenchmarkTab, renderRentRollTab,
+   renderCashReviewTab, renderPropertyValuationTab, updateDetailBadge]
+    .forEach(fn => { try { fn(); } catch(e) { console.error(e); } });
+}
+
+// Buttons for a missing-escrow warning: one per flagged item.
+function escrowSpreadButtons(propId, check) {
+  if(!check) return '';
+  const btn = (g, txt) => `<button onclick="event.stopPropagation();spreadEscrowEvenly('${propId}','${g}')"
+    style="font-size:11px;padding:4px 10px;margin:8px 8px 0 0;border:1px solid var(--amber,#ffa040);border-radius:var(--radius);background:var(--bg);color:var(--amber,#ffa040);cursor:pointer;font-family:inherit;font-weight:600">${txt}</button>`;
+  return (check.taxMissing ? btn('tax', '÷12 Spread taxes evenly') : '')
+       + (check.insMissing ? btn('insurance', '÷12 Spread insurance evenly') : '');
+}
+
+// Small note shown once a spread has been applied, with an Undo link.
+function escrowSpreadNote(propId) {
+  const stmt = propData[propId] && propData[propId].statement;
+  const sp = stmt && stmt.escrowSpread;
+  if(!sp || !Object.keys(sp).length) return '';
+  const parts = Object.entries(sp).map(([g, v]) => {
+    const per = v.lines.reduce((a, l) => a + l.perMonth, 0);
+    const tot = v.lines.reduce((a, l) => a + l.total, 0);
+    return `${ESCROW_SPREAD_NAMES[g] || g}: ${fmt(tot)} ÷ ${v.months} = ${fmt(per)}/mo`;
+  });
+  return `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-lg);padding:8px 14px;margin-bottom:12px;font-size:12px;color:var(--text2);display:flex;align-items:center;justify-content:space-between;gap:10px">
+    <span>✓ Spread evenly across the statement: ${escHtml(parts.join(' · '))}</span>
+    <button onclick="event.stopPropagation();undoEscrowSpread('${propId}')" style="font-size:11px;padding:3px 9px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);color:var(--text3);cursor:pointer;font-family:inherit">Undo</button>
+  </div>`;
+}
+
 // ─── ESCROW DETECTION ─────────────────────────────────────────────────────────
 function checkMissingEscrow(stmt) {
   if(!stmt || !stmt.rows || !stmt.months || !stmt.months.length) return null;
@@ -1662,10 +1811,14 @@ function renderUploadTab(p) {
           <div style="font-weight:600;font-size:13px;color:var(--amber,#ffa040);margin-bottom:3px">Missing escrow — ${escrowCheck.month}</div>
           <div style="font-size:12px;color:var(--text2)">
             <strong>${missing.charAt(0).toUpperCase()+missing.slice(1)}</strong> show $0 for ${escrowCheck.month}.
-            If these are not escrowed, re-upload a version of the statement with those amounts averaged across all months.
+            If they're paid in lump sums, spread the statement's total evenly across all months:
           </div>
+          <div>${escrowSpreadButtons(p.id, escrowCheck)}</div>
         </div>
-      </div>`;
+      </div>${escrowSpreadNote(p.id)}`;
+  } else if(d.statement && d.statement.escrowSpread) {
+    escrowEl.style.display = 'block';
+    escrowEl.innerHTML = escrowSpreadNote(p.id);
   } else {
     escrowEl.style.display = 'none';
     escrowEl.innerHTML = '';
@@ -6107,10 +6260,11 @@ function renderBenchmarkTab() {
       <span style="font-size:16px;line-height:1.4">⚠</span>
       <div style="font-size:12px;color:var(--text2)">
         <strong style="color:var(--amber,#ffa040)">${missing} — $0 for ${escrowCheck.month}.</strong>
-        These may not be escrowed. Re-upload a version of the statement with these amounts averaged across all months for accurate benchmarking.
+        These may be paid in lump sums. Spread the statement's total evenly across all months for accurate benchmarking.
+        <div>${escrowSpreadButtons(currentPropId, escrowCheck)}</div>
       </div>
     </div>`;
-  })() : '';
+  })() + escrowSpreadNote(currentPropId) : escrowSpreadNote(currentPropId);
 
   // ── Occupancy + Cash balance tile row ────────────────────────────────────
   const cb = d.cashbalance;
@@ -9562,7 +9716,8 @@ function computeDataQualityFlags(propId) {
       flags.push({
         group:  'dq_tax_escrow',
         label:  'Property Tax $0',
-        detail: `Property taxes show $0 for ${month}. This usually means the tax payment is escrowed and posted in a single month rather than spread evenly. Re-upload the statement with the annual amount averaged across all months, or confirm with the PM that taxes are current.`,
+        detail: `Property taxes show $0 for ${month}. This usually means taxes are paid in lump sums rather than monthly. Use the button to spread the statement's total evenly across all months, or confirm with the PM that taxes are current.`,
+        actionHtml: escrowSpreadButtons(propId, {taxMissing:true}),
         icon:   '🏛',
         month,
       });
@@ -9571,7 +9726,8 @@ function computeDataQualityFlags(propId) {
       flags.push({
         group:  'dq_ins_escrow',
         label:  'Insurance $0',
-        detail: `Insurance shows $0 for ${month}. This often happens when the annual premium is paid in a lump sum in a different month. Re-upload the statement with the premium averaged across all 12 months, or confirm the policy is current.`,
+        detail: `Insurance shows $0 for ${month}. This often happens when the annual premium is paid in a lump sum in a different month. Use the button to spread the statement's total evenly across all months, or confirm the policy is current.`,
+        actionHtml: escrowSpreadButtons(propId, {insMissing:true}),
         icon:   '🛡',
         month,
       });
@@ -9701,7 +9857,7 @@ function renderFlagsTab() {
           <div style="padding:10px 14px;display:flex;align-items:flex-start;gap:10px;opacity:0.7">
             <span style="font-size:18px;line-height:1.3;flex-shrink:0">${f.icon}</span>
             <div><div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:3px">${escHtml(f.label)}</div>
-            <div style="font-size:12px;color:var(--text3)">${escHtml(f.detail)}</div></div>
+            <div style="font-size:12px;color:var(--text3)">${escHtml(f.detail)}</div>${f.actionHtml||''}</div>
           </div>
           ${savedNote ? `<div style="padding:6px 12px 8px;font-size:11px;color:var(--text3);background:var(--bg2);border-top:1px solid var(--border)">${escHtml(savedNote)}</div>` : ''}
         </div>`;
@@ -9717,7 +9873,7 @@ function renderFlagsTab() {
           <div style="padding:10px 14px;display:flex;align-items:flex-start;gap:10px">
             <span style="font-size:18px;line-height:1.3;flex-shrink:0">${f.icon}</span>
             <div><div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:3px">${escHtml(f.label)}</div>
-            <div style="font-size:12px;color:var(--text2);line-height:1.5">${escHtml(f.detail)}</div></div>
+            <div style="font-size:12px;color:var(--text2);line-height:1.5">${escHtml(f.detail)}</div>${f.actionHtml||''}</div>
           </div>
           <div style="padding:10px 12px;background:var(--bg2);border-top:1px solid var(--border)">
             <input type="text" value="${escHtml(savedNote)}" placeholder="Describe the action needed..."
@@ -9738,7 +9894,7 @@ function renderFlagsTab() {
           <div style="padding:10px 14px;display:flex;align-items:flex-start;gap:10px">
             <span style="font-size:18px;line-height:1.3;flex-shrink:0">${f.icon}</span>
             <div><div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:3px">${escHtml(f.label)}</div>
-            <div style="font-size:12px;color:var(--text2);line-height:1.5">${escHtml(f.detail)}</div></div>
+            <div style="font-size:12px;color:var(--text2);line-height:1.5">${escHtml(f.detail)}</div>${f.actionHtml||''}</div>
           </div>
           <div style="padding:10px 12px;background:var(--bg2);border-top:1px solid var(--border)">
             <input type="text" value="${escHtml(savedNote)}" placeholder="Add explanation or action..."
