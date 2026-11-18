@@ -292,6 +292,7 @@
               <th class="psortable" id="psh-name" onclick="sortPortfolioBy('name')">Property<span class="psort-ind"></span></th>
               <th class="psortable" id="psh-status" onclick="sortPortfolioBy('status')">Status<span class="psort-ind"></span></th>
               <th class="psortable" id="psh-occ" onclick="sortPortfolioBy('occ')">Occupancy<span class="psort-ind"></span></th>
+              <th class="psortable" id="psh-econocc" onclick="sortPortfolioBy('econocc')" title="Rental income on the income statement (portfolio month) ÷ market rent of all units on the rent roll">Econ Occ<span class="psort-ind"></span></th>
               <th class="psortable" id="psh-cash" onclick="sortPortfolioBy('cash')">Cash Balance<span class="psort-ind"></span></th>
               <th class="psortable" id="psh-income" onclick="sortPortfolioBy('income')">Total Income<span class="psort-ind"></span></th>
               <th class="psortable" id="psh-expense" onclick="sortPortfolioBy('expense')">Total Expense<span class="psort-ind"></span></th>
@@ -1022,6 +1023,42 @@ async function loadAndRender() {
 
 // ─── PORTFOLIO SEARCH ─────────────────────────────────────────────────────────
 // ── Portfolio table sort ───────────────────────────────────────────────────────
+// ─── ECONOMIC OCCUPANCY (Portfolio Overview) ─────────────────────────────────
+// Rental income actually recorded on the income statement for the portfolio month
+// ÷ market rent of ALL units on the rent roll (gross potential rent).
+// Rental income uses the same "Total Rental Income" mapping (pfMapping.rental_income) the
+// Benchmarks tab shows, so the two can't disagree. If no mapping is saved yet, one is built
+// on the fly (not saved) from the statement alone.
+function getEconOcc(propId) {
+  const d = propData[propId] || {};
+  const stmt = d.statement;
+  const rr = d.rentroll || d.acqrentroll;
+  if(!stmt || !stmt.rows || !rr || !rr.units || !rr.units.length) return null;
+  const valid = rr.units.filter(u => !(u.unitType==='Unknown' && u.marketRent===0 && u.actualRent===0));
+  const mkt = valid.reduce((a,u)=>a+(u.marketRent||0),0);
+  if(!(mkt > 0)) return null;
+  let mapping = d.pfMapping;
+  if(!mapping || !mapping.rental_income) {
+    const p = properties.find(x => x.id === propId);
+    try {
+      mapping = autoMatchProformaToStatement([], stmt.rows, p?.system || stmt.system || '', getPropMgmt(p));
+    } catch(e) { mapping = null; }
+  }
+  const raw = mapping && mapping.rental_income;
+  const labels = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
+  if(!labels.length) return null;
+  const mi = getPrevMonthIdx(stmt.months, propId);
+  if(mi < 0) return null;
+  const lookup = buildStmtLookup(stmt);
+  let rent = 0, found = false;
+  labels.forEach(lbl => {
+    const r = lookup[lbl];
+    if(r && r.values) { rent += (r.values[mi] || 0); found = true; }
+  });
+  if(!found) return null;
+  return { pct: rent / mkt * 100, rent, mkt, month: stmt.months[mi], labels };
+}
+
 let portfolioSort = { col: null, dir: 1 }; // dir: 1=asc, -1=desc
 
 function getPortfolioSortValue(propId, col) {
@@ -1042,6 +1079,10 @@ function getPortfolioSortValue(propId, col) {
     if(!rr || !rr.units) return null;
     const valid = rr.units.filter(u => !(u.unitType==='Unknown' && u.marketRent===0 && u.actualRent===0));
     return valid.length ? valid.filter(u=>!u.isVacant).length / valid.length * 100 : null;
+  }
+  if(col === 'econocc') {
+    const eo = getEconOcc(propId);
+    return eo ? eo.pct : null;
   }
   if(col === 'cash') {
     const cb = d.cashbalance;
@@ -1134,7 +1175,7 @@ function sortPortfolioBy(col) {
 }
 
 function updatePortfolioSortHeaders() {
-  const SORT_COLS = ['name','status','occ','cash','income','expense','noi','efcf','trend','expratio','dscr','budget_var','pf_var','flags'];
+  const SORT_COLS = ['name','status','occ','econocc','cash','income','expense','noi','efcf','trend','expratio','dscr','budget_var','pf_var','flags'];
   SORT_COLS.forEach(col => {
     const th = document.getElementById('psh-' + col);
     if(!th) return;
@@ -3975,8 +4016,15 @@ function autoMatchProformaToStatement(pfRows, stmtRows, system, mgmt) {
       tax:           lc => lc.includes('property tax') || lc.includes('real estate tax')
                         || lc.includes('mortgage escrow')
                         || (lc.includes('escrow') && lc.includes('tax')),
-      insurance:     lc => (lc.includes('insurance') && !lc.includes('mortgage insurance') && !lc.includes('mip') && !lc.includes('pmi') && !lc.includes('income') && !lc.includes('claim'))
-                        || (lc.includes('escrow') && (lc.includes('insur') || lc.includes('haz'))),
+      // A combined escrow line ("Mortgage Escrow Expense - Taxes & Insurance") goes to TAX only —
+      // it already matches the tax rule above, and counting it in both groups double-counts it
+      // (Cedar Haven Oct 2026: insurance showed $8,575.43 = $2,212.51 Property Insurance + $6,362.92 escrow).
+      // An escrow line that names insurance alone (no tax) still counts as insurance.
+      insurance:     lc => {
+        if(lc.includes('escrow') && lc.includes('tax')) return false;
+        return (lc.includes('insurance') && !lc.includes('mortgage insurance') && !lc.includes('mip') && !lc.includes('pmi') && !lc.includes('income') && !lc.includes('claim'))
+            || (lc.includes('escrow') && (lc.includes('insur') || lc.includes('haz')));
+      },
       repairs:       lc => lc.includes('repair') || lc.includes('maintenance') || lc.includes('make ready')
                         || lc.includes('make-ready') || lc.includes('pest') || lc.includes('locksmith')
                         || lc.includes('rekey') || lc.includes('drain'),
@@ -6632,8 +6680,10 @@ function renderRentRollTab() {
     .reduce((a,u)=>a+(u.marketRent - u.actualRent), 0);
   // Vacancy loss: market rent for vacant units
   const vacancyLoss = rrUnits.filter(u=>u.isVacant).reduce((a,u)=>a+u.marketRent, 0);
-  // Economic occupancy: actual collected / gross potential
-  const econOcc = totalMarket > 0 ? (totalActual / totalMarket * 100) : null;
+  // Economic occupancy: statement rental income (portfolio month) / market rent of all units.
+  // Shared with the Portfolio Overview "Econ Occ" column via getEconOcc() so they always match.
+  const eoRR = getEconOcc(currentPropId);
+  const econOcc = eoRR ? eoRR.pct : null;
   const ltlPct  = totalMarket > 0 ? (lossToLease / totalMarket * 100) : null;
 
   const econOccColor = econOcc === null ? '' : econOcc >= 92 ? 'var(--green)' : econOcc >= 85 ? '#ffa040' : 'var(--red)';
@@ -6648,7 +6698,7 @@ function renderRentRollTab() {
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
     <div class="kpi-card"><div class="kpi-label">Loss to lease</div><div class="kpi-val" style="color:${ltlColor}">${lossToLease > 0 ? fmt(lossToLease) : '$0'}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">${ltlPct !== null ? ltlPct.toFixed(1)+'% of GPR' : ''}</div></div>
     <div class="kpi-card"><div class="kpi-label">Vacancy loss</div><div class="kpi-val" style="color:${vacancyLoss>0?'var(--red)':'var(--green)'}">${fmt(vacancyLoss)}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">${totalMarket>0?(vacancyLoss/totalMarket*100).toFixed(1)+'% of GPR':''}</div></div>
-    <div class="kpi-card"><div class="kpi-label">Economic occupancy</div><div class="kpi-val" style="color:${econOccColor}">${econOcc !== null ? econOcc.toFixed(1)+'%' : '—'}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">actual / potential</div></div>
+    <div class="kpi-card"><div class="kpi-label">Economic occupancy</div><div class="kpi-val" style="color:${econOccColor}"${eoRR ? ` title="${escHtml(eoRR.month+': '+fmt(eoRR.rent)+' rental income ('+eoRR.labels.join(' + ')+') / '+fmt(eoRR.mkt)+' market rent, all units')}"` : ''}>${econOcc !== null ? econOcc.toFixed(1)+'%' : '—'}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">${eoRR ? `${escHtml(eoRR.month)} rental income / GPR` : 'needs income statement'}</div></div>
     <div class="kpi-card"><div class="kpi-label">Total revenue gap</div><div class="kpi-val" style="color:var(--text2)">${fmt(lossToLease + vacancyLoss)}</div><div style="font-size:11px;color:var(--text3);margin-top:3px">LTL + vacancy</div></div>
   </div>
   <div class="rr-wrap"><table class="rr-table">
@@ -10966,6 +11016,14 @@ function portfolioPropRow(p, pm, isOpen) {
     const occColor = occPctP >= 90 ? 'var(--green)' : occPctP >= 85 ? '#ffa040' : 'var(--red)';
     occHTML = `<span style="color:${occColor};font-weight:500">${occPctP}%</span> <span style="color:var(--text3);font-size:11px">${occupiedP}/${validP.length}</span>`;
   }
+  // Economic occupancy: statement rental income for the portfolio month ÷ market rent of all units
+  let econOccHTML = '—';
+  const eo = getEconOcc(p.id);
+  if(eo) {
+    const econColor = eo.pct >= 92 ? 'var(--green)' : eo.pct >= 85 ? '#ffa040' : 'var(--red)';
+    const tip = `${eo.month}: ${fmt(eo.rent)} rental income (${eo.labels.join(' + ')}) / ${fmt(eo.mkt)} market rent, all units`;
+    econOccHTML = `<span style="color:${econColor};font-weight:500" title="${escHtml(tip)}">${eo.pct.toFixed(0)}%</span>`;
+  }
 
   // Compute current-month NOI, income, and expense (matching the month used by benchmarks/flags tabs)
   let annualizedNoi = null;
@@ -11093,6 +11151,7 @@ function portfolioPropRow(p, pm, isOpen) {
     <td><strong>${escHtml(p.name)}</strong>${staleBadge}${reviewedBadge}${subLine?` <span style="color:var(--text3);font-weight:400;font-size:11px">${subLine}</span>`:''}</td>
     <td>${statusBadge}</td>
     <td>${occHTML}</td>
+    <td>${econOccHTML}</td>
     <td>${(() => {
       const cb = d.cashbalance;
       if(!cb || cb.cash === null || cb.cash === undefined) return '—';
@@ -11450,7 +11509,7 @@ function renderPortfolio() {
     if(!propList.length) return '';
     const groups = buildPmGroups(propList);
     const allPms = [...GROUP_ORDER, ...Object.keys(groups).filter(k=>!GROUP_ORDER.includes(k))];
-    let html = `<tr><td colspan="15" style="padding:8px 12px 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text2);background:var(--bg);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:2">${sectionLabel} <span style="font-weight:400;color:var(--text3)">(${propList.length})</span></td></tr>`;
+    let html = `<tr><td colspan="16" style="padding:8px 12px 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text2);background:var(--bg);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:2">${sectionLabel} <span style="font-weight:400;color:var(--text3)">(${propList.length})</span></td></tr>`;
     allPms.forEach(pm => {
       const props = groups[pm];
       if(!props || !props.length) return;
@@ -11470,7 +11529,7 @@ function renderPortfolio() {
         return `<span class="${pct>=0?'val-pos':'val-neg'}">${pct>=0?'+':''}${pct.toFixed(1)}%</span>`;
       })() : '—';
       html += `<tr class="ptbl-group-row" data-pm="${escHtml(stateKey)}" onclick="togglePortfolioGroup('${escHtml(stateKey)}')">
-        <td colspan="15">
+        <td colspan="16">
           <span class="ptbl-chevron ${isOpen?'open':''}" id="bch-${escHtml(stateKey)}">▶</span>
           <span class="prop-dot ${summaryDotClass}" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle"></span>
           ${pm}
@@ -11496,7 +11555,7 @@ function renderPortfolio() {
   }
 
   let tbody = renderSection(stabProps, 'Stabilized', 'stab') + renderSection(nonStabProps, 'Non-Stabilized', 'ns');
-  if(!properties.length) tbody=`<tr><td colspan="15" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
+  if(!properties.length) tbody=`<tr><td colspan="16" style="text-align:center;padding:32px;color:var(--text3)">No properties added yet. Click "+ Add property" to get started.</td></tr>`;
   document.getElementById('portfolio-tbody').innerHTML=tbody;
   document.getElementById('pk-loaded').textContent=loaded;
   document.getElementById('pk-ok').textContent=ok;
